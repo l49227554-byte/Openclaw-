@@ -61,15 +61,32 @@ export const isForegroundGmailRunInvocation = (argv) => {
   return commandPath.join(" ") === "webhooks gmail run";
 };
 
+// Startup cannot import the built service owner. Mirror its stable environment
+// contract instead of maintaining another copy of the Gateway CLI vocabulary.
+const isManagedGatewayService = (env) => {
+  if (env.OPENCLAW_SERVICE_MARKER?.trim() !== "openclaw") {
+    return false;
+  }
+  const kind = env.OPENCLAW_SERVICE_KIND?.trim();
+  return !kind || kind === "gateway";
+};
+
 const respawnSignals =
   process.platform === "win32"
     ? ["SIGTERM", "SIGINT", "SIGBREAK"]
     : ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"];
 const respawnSignalExitGraceMs = 1_000;
+// Gateway drain (315s) plus teardown (10s) fits the 330s systemd stop budget.
+// Leave the final two seconds for this wrapper's force/hard-exit backstops.
+const gatewayRespawnSignalExitGraceMs = 328_000;
 const respawnSignalForceKillGraceMs = 1_000;
 const respawnSignalHardExitGraceMs = 1_000;
 
 export const runRespawnedChild = (command, args, env) => {
+  const signalExitGraceMs =
+    process.platform === "linux" && isManagedGatewayService(env)
+      ? gatewayRespawnSignalExitGraceMs
+      : respawnSignalExitGraceMs;
   const stdioIsTerminal = process.stdin.isTTY || process.stdout.isTTY;
   const child = spawn(command, args, {
     stdio: "inherit",
@@ -131,7 +148,7 @@ export const runRespawnedChild = (command, args, env) => {
     }
     signalExitTimer = setTimeout(() => {
       requestChildTermination();
-    }, respawnSignalExitGraceMs);
+    }, signalExitGraceMs);
     signalExitTimer.unref?.();
   };
   for (const signal of respawnSignals) {

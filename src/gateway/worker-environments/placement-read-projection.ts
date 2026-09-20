@@ -2,51 +2,24 @@ import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { DB as StateDatabase } from "../../state/openclaw-state-db.generated.js";
-import type { WorkerEnvironmentRecord } from "./environment-record.js";
-import {
-  readWorkerPlacementMovesReadOnly,
-  type WorkerPlacementMoveIntent,
-} from "./placement-move-intent.js";
-import type { WorkerSessionPlacementRecord, WorkerSessionTurnClaim } from "./placement-record.js";
+import { readWorkerPlacementMovesReadOnly } from "./placement-move-intent.js";
+import type {
+  WorkerEnvironmentPlacementFacts,
+  WorkerPlacementConflictBinding,
+  WorkerSessionPlacementProjection,
+  WorkerSessionPlacementReadResult,
+} from "./placement-read-projection.types.js";
 import {
   hasCurrentWorkspaceResultClaim,
   readWorkerWorkspaceReconciliationFacts,
 } from "./placement-workspace-result.js";
-import { fromRow as decodeWorkerEnvironmentRow } from "./store.js";
-
-export type WorkerEnvironmentPlacementFacts = Pick<
-  WorkerEnvironmentRecord,
-  | "environmentId"
-  | "providerId"
-  | "profileId"
-  | "profileSnapshot"
-  | "state"
-  | "leaseId"
-  | "ownerEpoch"
-  | "nodeDeviceId"
-  | "attachedSessionIds"
->;
-
-export type WorkerSessionPlacementProjection = {
-  placements: ReadonlyMap<string, WorkerSessionPlacementRecord>;
-  moves: ReadonlyMap<string, WorkerPlacementMoveIntent>;
-  workspaceResultReconcilingSessionIds: ReadonlySet<string>;
-  environments: ReadonlyMap<string, WorkerEnvironmentPlacementFacts>;
-};
-
-export type WorkerPlacementConflictBinding = {
-  placement: Pick<
-    WorkerSessionPlacementRecord,
-    "sessionId" | "generation" | "environmentId" | "activeOwnerEpoch"
-  >;
-  claim: WorkerSessionTurnClaim;
-};
+import { decodeWorkerEnvironmentRow } from "./store.js";
 
 export function readWorkerSessionPlacementProjectionInDatabase(
   db: DatabaseSync,
   sessionIds: readonly string[],
   conflictBindings: readonly WorkerPlacementConflictBinding[],
-) {
+): WorkerSessionPlacementReadResult {
   return runSqliteDeferredTransactionSync(db, () => {
     const { placements, reconcilingSessionIds } = readWorkerWorkspaceReconciliationFacts(
       db,

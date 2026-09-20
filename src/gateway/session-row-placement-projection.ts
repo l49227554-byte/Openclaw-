@@ -2,35 +2,27 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { withCanonicalSessionValidationDeferral } from "../config/sessions/session-canonical-validation-deferral.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SessionRowChange } from "../sessions/session-row-changes.js";
+import type { SessionRowPlacementFacts } from "./session-row-placement-projection.types.js";
 import { withPreparedSessionRows, type SessionRowReadView } from "./session-row-prepared-read.js";
 import type { Row, Lookup } from "./session-row-projection-record.js";
-import type { WorkerPlacementMoveIntent } from "./worker-environments/placement-move-intent.js";
-import type {
-  WorkerSessionPlacementProjection,
-  WorkerEnvironmentPlacementFacts,
-} from "./worker-environments/placement-read-projection.js";
-import type { WorkerSessionPlacementRecord } from "./worker-environments/placement-record.js";
+import type { WorkerSessionPlacementProjection } from "./worker-environments/placement-read-projection.types.js";
 import type { WorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
-
-type PlacementFacts = {
-  placement: WorkerSessionPlacementRecord | undefined;
-  move: WorkerPlacementMoveIntent | undefined;
-  environment: WorkerEnvironmentPlacementFacts | undefined;
-  workspaceResultReconciling: boolean;
-};
 
 /** Placement facts share the resident row lifecycle; private exact reads retain only their frame. */
 export function createSessionRowPlacementProjection(
   reader: Pick<WorkerSessionPlacementStore, "readProjection"> | undefined,
 ) {
   const inOwnerContext = AsyncLocalStorage.snapshot();
-  const resident = new Map<string, PlacementFacts>();
+  const resident = new Map<string, SessionRowPlacementFacts>();
   const registered = new Set<string>();
   const dirty = new Set<string>();
-  let exact: ReadonlyMap<string, PlacementFacts> | undefined;
+  let exact: ReadonlyMap<string, SessionRowPlacementFacts> | undefined;
   let revision = 0;
   let disposed = false;
-  const select = (snapshot: WorkerSessionPlacementProjection, id: string): PlacementFacts => {
+  const select = (
+    snapshot: WorkerSessionPlacementProjection,
+    id: string,
+  ): SessionRowPlacementFacts => {
     const placement = snapshot.placements.get(id);
     return {
       placement,
@@ -198,8 +190,3 @@ export function createSessionRowPlacementProjection(
   };
   return owner;
 }
-
-export type SessionRowPlacementFactsReader = Pick<
-  ReturnType<typeof createSessionRowPlacementProjection>,
-  "getProjectionFacts"
->;

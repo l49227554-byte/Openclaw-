@@ -5,7 +5,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { projectSessionActivitySummary } from "../session-activity-summary-state.js";
 import { isSessionPermissionChangePending } from "../session-permission-change.js";
-import type { SessionRowPlacementFactsReader } from "../session-row-placement-projection.js";
+import type { SessionRowPlacementFactsReader } from "../session-row-placement-projection.types.js";
 import {
   projectWorkerPlacementMove,
   projectWorkerSessionPlacement,

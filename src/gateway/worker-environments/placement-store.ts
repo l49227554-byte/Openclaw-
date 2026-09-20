@@ -12,7 +12,7 @@ import {
 import { drainWorkerSessionPlacement } from "./placement-drain.js";
 import { createPlacementMoveOps } from "./placement-move-intent.js";
 import { createPlacementPendingFailureOps } from "./placement-pending-failure.js";
-import type { WorkerSessionPlacementProjection } from "./placement-read-projection.js";
+import type { WorkerSessionPlacementProjection } from "./placement-read-projection.types.js";
 import {
   isCurrentPlacementTurnClaim,
   nextGeneration,

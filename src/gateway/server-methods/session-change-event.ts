@@ -271,8 +271,11 @@ async function publishSessionChange(context: SessionChangeContext, change: Sessi
   const { payload, scope, captured } = change;
   const projection = getSessionRowProjection(context);
   const query = snapshotTarget(payload, scope);
-  const broadcast = (includeSnapshot = true) =>
+  let publicationStarted = false;
+  const broadcast = (includeSnapshot = true) => {
+    publicationStarted = true;
     broadcastSessionsChanged(context, payload, scope, includeSnapshot);
+  };
   try {
     if (change.captureFailed) {
       broadcast(false);
@@ -290,6 +293,9 @@ async function publishSessionChange(context: SessionChangeContext, change: Sessi
       broadcast();
     }
   } catch (error) {
+    if (publicationStarted) {
+      throw error;
+    }
     log.warn("Session change preparation failed", { error });
     broadcast(false);
   }

@@ -15,7 +15,7 @@ import type {
   WorkerPlacementMoveSource,
   WorkerPlacementMoveTarget,
 } from "./placement-move-intent.js";
-import type { WorkerEnvironmentPlacementFacts } from "./placement-read-projection.js";
+import type { WorkerEnvironmentPlacementFacts } from "./placement-read-projection.types.js";
 import type {
   WorkerSessionPlacementRecord,
   WorkerPlacementExecutionMode,

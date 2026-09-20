@@ -7,7 +7,7 @@ import type {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { DEVICE_WORKER_PROVIDER_ID } from "./device-provider-identity.js";
 import type { WorkerPlacementMoveIntent } from "./placement-move-intent.js";
-import type { WorkerEnvironmentPlacementFacts } from "./placement-read-projection.js";
+import type { WorkerEnvironmentPlacementFacts } from "./placement-read-projection.types.js";
 import type { WorkerSessionPlacementRecord } from "./placement-store.js";
 import type { WorkerEnvironmentServiceContract } from "./service-contract.js";
 

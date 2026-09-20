@@ -60,6 +60,8 @@ with all four. Reply with a choice, or describe custom work and a name. Role
 choices use the same [role templates](/cli/agents#role-templates) as the CLI;
 creation waits for operator approval. Created agents appear in Agents home and
 the agent switcher.
+Opening **New agent** keeps your existing Ask OpenClaw conversation. Finish any
+pending wizard or approval before opening the creation choices.
 If team creation stops partway through, the custodian reports the retained
 agents so you can inspect them before creating the missing members.
 

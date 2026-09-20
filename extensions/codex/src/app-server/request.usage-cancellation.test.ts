@@ -15,7 +15,8 @@ vi.mock("./shared-client.js", () => ({
 
 // Prepare the deferred runtime dependency before testing controlled cancellation.
 await import("./sandbox-guard.js");
-const { readCodexAppServerUsage } = await import("./request.js");
+const { CodexAppServerScopedRequestRejectedError, readCodexAppServerUsage } =
+  await import("./request.js");
 
 describe("Codex usage cancellation", () => {
   beforeEach(() => {
@@ -68,7 +69,12 @@ describe("Codex usage cancellation", () => {
         const producerSignal = await Promise.race([
           started.promise,
           settledError.then((error) => {
-            throw error ?? new Error("Usage completed without starting its producer");
+            throw error instanceof Error
+              ? error
+              : new CodexAppServerScopedRequestRejectedError(
+                  "Usage completed without starting its producer",
+                  { cause: error },
+                );
           }),
         ]);
         controller.abort(reason);

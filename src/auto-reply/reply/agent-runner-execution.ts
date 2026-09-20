@@ -503,7 +503,8 @@ async function executeAgentTurnInternalLoop(
     });
     const replyExpectation = resolveReplyExpectation(params.followupRun.run);
     terminalFailurePayload = buildTerminalAgentRunFailureReplyPayload({
-      isHeartbeat: useHeartbeatFailureCopy,
+      isHeartbeat: params.isHeartbeat,
+      useHeartbeatFailureCopy,
       replyExpectation,
       visibleReplyDelivered:
         replyExpectation === "optional"

@@ -4,7 +4,10 @@ import {
   HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
 } from "../agents/failover/user-copy.js";
 import { classifyHeartbeatAgentOutcome } from "./heartbeat-delivery-normalization.js";
-import { resolveHeartbeatRunPrompt } from "./heartbeat-runner-prompt.js";
+import {
+  resolveHeartbeatRunPrompt,
+  resolveHeartbeatTurnEventSelection,
+} from "./heartbeat-runner-prompt.js";
 
 describe("classifyHeartbeatAgentOutcome (#153543)", () => {
   it("does not rewrite generic failure to heartbeat failure copy for exec completions", () => {
@@ -67,6 +70,66 @@ describe("classifyHeartbeatAgentOutcome (#153543)", () => {
 });
 
 describe("resolveHeartbeatRunPrompt (#153543)", () => {
+  it("selects one route cohort and excludes foreign queued content", () => {
+    const preflight = {
+      isExecEventWake: true,
+      isCronWake: false,
+      isWakePayload: false,
+      session: {
+        sessionKey: "agent:main:heartbeat",
+        inspectsRunQueue: true,
+        entry: undefined,
+        run: { kind: "shared" as const, sessionKey: "agent:main:heartbeat" },
+        conversationEntry: undefined,
+        storePath: "/tmp/store.json",
+        suppressOriginatingContext: false,
+      },
+      pendingEventEntries: [
+        {
+          id: "exec-a",
+          ts: 1,
+          text: "exec finished: route-a",
+          contextKey: "exec:a",
+          deliveryContext: { channel: "discord", to: "conversation-a" },
+        },
+        {
+          id: "task-b",
+          ts: 2,
+          text: "private task content from conversation B",
+          contextKey: "task:b",
+          deliveryContext: { channel: "feishu", to: "user:b" },
+        },
+      ],
+      turnSourceDeliveryContext: { channel: "feishu", to: "user:b" },
+      hasTaggedCronEvents: false,
+      shouldInspectPendingEvents: true,
+      authoritativeScheduledTick: false,
+    };
+
+    const eventSelection = resolveHeartbeatTurnEventSelection({
+      preflight,
+      scheduledTasks: [],
+    });
+    expect(eventSelection.turnSourceDeliveryContext).toMatchObject({
+      channel: "discord",
+      to: "conversation-a",
+    });
+    expect(eventSelection.execEvents.map((event) => event.id)).toEqual(["exec-a"]);
+    expect(eventSelection.genericEvents).toEqual([]);
+
+    const result = resolveHeartbeatRunPrompt({
+      cfg: {},
+      preflight,
+      canRelayToUser: true,
+      startedAt: 3,
+      scheduledTasks: [],
+      useHeartbeatResponseTool: false,
+      eventSelection,
+    });
+    expect(result.genericEvents).toEqual([]);
+    expect(result.prompt).not.toContain("private task content from conversation B");
+  });
+
   it("does not admit queued generic events into scheduled task turns", () => {
     const result = resolveHeartbeatRunPrompt({
       cfg: {},

@@ -12,6 +12,7 @@ import {
   buildEmptyInteractiveReplyPayload,
   buildExternalRunFailureReply,
   buildKnownAgentRunFailureReplyPayload,
+  buildTerminalAgentRunFailureReplyPayload,
   shouldUseHeartbeatFailureCopy,
 } from "./agent-runner-failure-reply.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
@@ -176,6 +177,29 @@ describe("buildExternalRunFailureReply", () => {
     expect(reply.text).not.toContain("secret-canary");
     expect(reply.text).not.toBe(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
     expect(reply.isGenericRunnerFailure).toBe(false);
+  });
+});
+
+describe("heartbeat event failure visibility (#153543)", () => {
+  it("uses generic wording without suppressing a heartbeat-backed event failure", () => {
+    const external = buildExternalRunFailureReply(
+      { message: "event failure", error: new Error("event failure") },
+      { isHeartbeat: true, useHeartbeatFailureCopy: false },
+    );
+    expect(external).toEqual({
+      text: GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
+      isGenericRunnerFailure: false,
+    });
+
+    const terminal = buildTerminalAgentRunFailureReplyPayload({
+      isHeartbeat: true,
+      useHeartbeatFailureCopy: false,
+      replyExpectation: "optional",
+      visibleReplyDelivered: false,
+    });
+    expect(terminal.text).toBe(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
+    expect(terminal.text).not.toBe(SILENT_REPLY_TOKEN);
+    expect(terminal.isError).toBe(true);
   });
 });
 

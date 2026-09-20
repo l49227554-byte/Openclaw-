@@ -32,21 +32,20 @@ import { CommandLane } from "../process/lanes.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
-import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import { formatErrorMessage } from "./errors.js";
 import { isWithinActiveHours } from "./heartbeat-active-hours.js";
 import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.js";
 import { resolveHeartbeatForWake, type HeartbeatConfig } from "./heartbeat-config.js";
-import { isCronSystemEvent, isExecCompletionEvent } from "./heartbeat-events-filter.js";
+import { isExecCompletionEvent } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent } from "./heartbeat-events.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
 import { shouldUseHeartbeatResponseToolPrompt } from "./heartbeat-runner-config.js";
 import {
   resolveHeartbeatPreflight,
   resolveHeartbeatRunPrompt,
+  resolveHeartbeatTurnEventSelection,
   shouldPreflightWakeBeforeBusy,
-  type HeartbeatPreflight,
 } from "./heartbeat-runner-prompt.js";
 import {
   resolveHeartbeatSession,
@@ -72,7 +71,6 @@ import {
   resolveHeartbeatDeliveryTargetWithSessionRoute,
   resolveHeartbeatSenderContext,
 } from "./outbound/targets.js";
-import { resolveSystemEventDeliveryContext, type SystemEvent } from "./system-events.js";
 
 const CRON_COMMAND_LANE: string = CommandLane.Cron;
 
@@ -347,56 +345,6 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
 type StageResult<T, K extends string> = Extract<Awaited<T>, { kind: K }>;
 export type ReadyHeartbeatWake = StageResult<ReturnType<typeof resolveHeartbeatWakeStage>, "ready">;
 
-function resolveSelectedHeartbeatTurnSource(params: {
-  preflight: HeartbeatPreflight;
-  scheduledTasks: readonly HeartbeatScheduledTask[];
-}): DeliveryContext | undefined {
-  if (params.scheduledTasks.length > 0 || !params.preflight.session.inspectsRunQueue) {
-    return undefined;
-  }
-  const pending = params.preflight.pendingEventEntries;
-  // Mirror the event classification in resolveHeartbeatRunPrompt exactly so
-  // that routing always follows the events that were actually admitted to the
-  // turn prompt. The three buckets below match the prompt owner's loop:
-  //   1. exec-completion events (highest priority, same shouldInspect guard)
-  //   2. cron-tagged events that pass the cron content test
-  //   3. generic events (hook/task wakes, session-created notices, etc.)
-  // Only the highest-priority non-empty bucket reaches the resolver so the
-  // selected-event delivery context, not the coalesced wake origin, drives routing.
-  if (params.preflight.shouldInspectPendingEvents) {
-    const execEvents = pending.filter((e: SystemEvent) => isExecCompletionEvent(e.text));
-    if (execEvents.length > 0) {
-      return resolveSystemEventDeliveryContext(execEvents);
-    }
-  }
-  if (params.preflight.isCronWake || params.preflight.hasTaggedCronEvents) {
-    // Use the same per-event predicate as the prompt owner: an event is a cron
-    // content event only when it carries a cron: contextKey AND passes the cron
-    // content test. The prompt classifies all other cron-qualified events as
-    // cronNoise; they do not own routing.
-    const cronEvents = pending.filter(
-      (e: SystemEvent) =>
-        (params.preflight.isCronWake || e.contextKey?.startsWith("cron:")) &&
-        isCronSystemEvent(e.text),
-    );
-    if (cronEvents.length > 0) {
-      return resolveSystemEventDeliveryContext(cronEvents);
-    }
-  }
-  // Generic events (hook/task wakes, session-created notices) retain their
-  // requester origin. queueTaskSystemEvent attaches deliveryContext; preserve it
-  // so background-task replies reach the original conversation, not last-route.
-  const genericEvents = pending.filter(
-    (e: SystemEvent) =>
-      !isExecCompletionEvent(e.text) &&
-      !(params.preflight.isCronWake || e.contextKey?.startsWith("cron:")),
-  );
-  if (genericEvents.length > 0) {
-    return resolveSystemEventDeliveryContext(genericEvents);
-  }
-  return undefined;
-}
-
 export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   const { cfg, agentId, heartbeat, preflight } = wake;
   const { scheduledTasks, startedAt } = wake;
@@ -425,6 +373,11 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
         }
       : undefined;
 
+  const turnEventSelection = resolveHeartbeatTurnEventSelection({
+    preflight,
+    scheduledTasks,
+  });
+
   // When isolatedSession is enabled, create a fresh session via the same
   // pattern as cron sessionTarget: "isolated". This gives the heartbeat
   // a new session ID (empty transcript) each run, avoiding the cost of
@@ -439,10 +392,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     // A base queue's route stays excluded; events on the actual isolated queue
     // own their route only when selected for this turn. Scheduled tasks and
     // unselected events never override the configured delivery destination.
-    turnSource: resolveSelectedHeartbeatTurnSource({
-      preflight,
-      scheduledTasks,
-    }),
+    turnSource: turnEventSelection.turnSourceDeliveryContext,
   });
   // Operator-chosen suppression is the resolver's verdict, not a config string:
   // an explicit target that never resolves to a route also reports `target-none`.
@@ -510,6 +460,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     scheduledTasks,
     heartbeatScratchContent: preflight.heartbeatScratchContent,
     useHeartbeatResponseTool: useHeartbeatResponseToolPrompt,
+    eventSelection: turnEventSelection,
   });
 
   const runSessionKey = run.sessionKey;
@@ -612,6 +563,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
         scheduledTasks,
         heartbeatScratchContent: preflight.heartbeatScratchContent,
         useHeartbeatResponseTool: useHeartbeatResponseToolPrompt,
+        eventSelection: turnEventSelection,
       });
     }
   }

@@ -179,7 +179,8 @@ export async function handleAgentExecutionError(params: {
       { message, error: err },
       {
         includeDetails: isVerboseFailureDetailEnabled(turn.resolvedVerboseLevel),
-        isHeartbeat: useHeartbeatFailureCopy,
+        isHeartbeat: turn.isHeartbeat,
+        useHeartbeatFailureCopy,
       },
     );
     const text =
@@ -266,7 +267,8 @@ export async function handleAgentExecutionError(params: {
           {
             includeAuthProfileId: !isNonDirectConversationContext(turn.sessionCtx),
             includeDetails: isVerboseFailureDetailEnabled(turn.resolvedVerboseLevel),
-            isHeartbeat: useHeartbeatFailureCopy,
+            isHeartbeat: turn.isHeartbeat,
+            useHeartbeatFailureCopy,
             replayPrevented,
             failoverFacts,
           },
@@ -297,6 +299,6 @@ export async function handleAgentExecutionError(params: {
     },
     !failureSummary &&
       !isContextOverflow &&
-      (externalRunFailureCandidate?.isGenericRunnerFailure ?? !useHeartbeatFailureCopy),
+      (externalRunFailureCandidate?.isGenericRunnerFailure ?? !turn.isHeartbeat),
   );
 }

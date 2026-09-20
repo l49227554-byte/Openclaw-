@@ -96,14 +96,14 @@ it
   .each([
     "none",
     "inventory",
-    "pack",
+    "missing-pack",
     "retry",
     "missing-before",
     "legacy-git",
     "configured-limit",
-  ] as const)("bounds transfer inventories and binary input (failure=%s)", async (failure) => {
+  ] as const)("stages complete Git transfers (failure=%s)", async (failure) => {
   const overflow = failure === "inventory";
-  const oversized = failure === "pack";
+  const missingPack = failure === "missing-pack";
   const root = temporary.make("git-transfer-bounds-");
   const source = path.join(root, "source");
   const install = path.join(root, "install");
@@ -199,11 +199,8 @@ it
       packBytes = (options.input as Buffer).byteLength;
     }
     const result = await runCommandWithTimeout(argv, { ...options, env });
-    if (oversized && argv.includes("pack-objects") && result.code === 0) {
-      // Grow a real staged pack sparsely; refusal must precede a large allocation.
-      const packPath = `${argv.at(-1)}-${result.stdout.trim()}.pack`;
-      fs.chmodSync(packPath, 0o600);
-      fs.truncateSync(packPath, 256 * 1024 * 1024 + 1);
+    if (missingPack && argv.includes("pack-objects") && result.code === 0) {
+      fs.unlinkSync(`${argv.at(-1)}-${result.stdout.trim()}.pack`);
     }
     return result;
   };
@@ -226,7 +223,7 @@ it
     step: step(source),
   });
   expect(historyInventoryAllowsMissingObjects).toBe(true);
-  if (overflow || oversized) {
+  if (overflow || missingPack) {
     expect(transfer).toBeUndefined();
     if (overflow) {
       expect(boundedExitObserved).toBe(true);
@@ -235,7 +232,8 @@ it
       expect(results).toContainEqual(
         expect.objectContaining({
           exitCode: 1,
-          stderrTail: expect.stringContaining("file exceeds limit of 268435456 bytes"),
+          name: "git-update-pack-read",
+          stderrTail: expect.stringContaining("Cannot stage the Git update pack"),
         }),
       );
     }

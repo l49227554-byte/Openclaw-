@@ -7,10 +7,6 @@ import { runStep } from "./update-runner-command.js";
 import { classifyPartialCloneGitFailure } from "./update-runner-git-target.js";
 import type { RunStepOptions, UpdateStepResult } from "./update-runner-types.js";
 
-// Bound the retained import buffer independently of Git's pack-file size. An
-// oversized candidate must fail in staging while the installed runtime still serves.
-const MAX_CANDIDATE_PACK_BYTES = 256 * 1024 * 1024;
-
 function recordStagingFailure(
   step: RunStepOptions,
   name: string,
@@ -112,7 +108,7 @@ export async function prepareGitCandidateTransfer(params: {
     return undefined;
   }
   const retained = new Set<string>();
-  // Capability probing is read-only. Older Git safely transfers the full bounded
+  // Capability probing is read-only. Older Git safely transfers the full
   // candidate instead of risking a lazy fetch while checking installed objects.
   const probe = beforeSha
     ? await step.runCommand(["git", "--no-lazy-fetch", "version"], {
@@ -201,7 +197,6 @@ export async function prepareGitCandidateTransfer(params: {
   try {
     ({ buffer: pack } = await readLocalFileSafely({
       filePath: packPath,
-      maxBytes: MAX_CANDIDATE_PACK_BYTES,
     }));
   } catch (error) {
     return recordStagingFailure(

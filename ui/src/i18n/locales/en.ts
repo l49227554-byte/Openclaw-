@@ -4013,6 +4013,10 @@ export const en: TranslationMap & {
       hideDetails: "Hide goal details",
     },
     asyncQuestions: {
+      title: "Answer when ready",
+      pendingOne: "{count} unanswered question",
+      pendingMany: "{count} unanswered questions",
+      inComposer: "Answer above the message box.",
       sendFailed: "Could not send your answer. Your draft is preserved.",
     },
     questions: {

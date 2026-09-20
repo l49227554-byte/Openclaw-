@@ -37,9 +37,10 @@ import {
   renderChatComposerNotices,
   renderChatTopbarNotices,
 } from "./chat-view-notices.ts";
+import { createAsyncQuestionPresentation } from "./components/chat-async-question.ts";
 import { createChatAttachmentDropHandlers } from "./components/chat-attachments.ts";
-import { resolveChatCommentAnchor } from "./components/chat-comment-anchor.ts";
 import "./components/chat-comment-controller.ts";
+import { resolveChatCommentAnchor } from "./components/chat-comment-anchor.ts";
 import { getChatComposerState } from "./components/chat-composer-state.ts";
 import type { ChatComposerProps } from "./components/chat-composer-types.ts";
 import { isChatRunWorking, renderChatComposer } from "./components/chat-composer.ts";
@@ -55,6 +56,7 @@ import {
   type ChatTaskSuggestionTrayProps,
 } from "./components/chat-task-suggestions.ts";
 import {
+  getTranscriptState,
   renderTranscriptSearch,
   toggleTranscriptSearch,
   type ChatThreadProps,
@@ -85,6 +87,7 @@ export type ChatProps = Omit<
   ChatTaskSuggestionTrayProps &
   ChatPlacementStartupNoticeProps & {
     transcript: ChatTranscriptController;
+    onAsyncQuestionSubmit?: (message: string) => Promise<boolean>;
     presented?: boolean;
     historyState?: ChatState;
     onSessionKeyChange: (next: string) => void;
@@ -154,6 +157,8 @@ export function renderChat(props: ChatProps) {
   const pendingInputs = props.historyState ? getChatPendingInputs(props.historyState) : undefined;
   const requestUpdate = props.onRequestUpdate ?? (() => {});
   const canCompose = props.canSend;
+  const questionState = getTranscriptState(props.paneId);
+  const asyncQuestions = createAsyncQuestionPresentation(questionState, props);
   const openImage = props.onOpenImage
     ? (item: ImageLightboxItem, requestVersion?: number) =>
         requestVersion === undefined
@@ -183,6 +188,7 @@ export function renderChat(props: ChatProps) {
     renderChatThread(
       {
         ...props,
+        asyncQuestions,
         loading: props.loading && !placementStartup,
         streamStartedAt: placementStartup?.startedAt ?? props.streamStartedAt,
         queue,
@@ -348,8 +354,11 @@ export function renderChat(props: ChatProps) {
   // The composer keeps the outbox queue; only the transcript includes the
   // placement initial turn, whose retry action belongs to startup.
   const notices = renderChatComposerNotices(props);
+  // Transcript invalidation replaces its render context; bind submission afterward.
+  questionState.transcriptRenderContext.onAsyncQuestionSubmit = props.onAsyncQuestionSubmit;
   const defaultComposer = renderChatComposer({
     ...props,
+    asyncQuestions,
     displayQueue: selectChatInputDisplay(
       props.messages,
       props.queue,

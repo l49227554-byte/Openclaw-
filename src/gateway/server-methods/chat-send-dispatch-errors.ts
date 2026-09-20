@@ -153,6 +153,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
   context: GatewayRequestContext;
   isAgentRunStarted: () => boolean;
   isQueuedFollowupEnqueued: () => boolean;
+  isQueuedFollowupCompleted?: () => boolean;
   classifyFailure?: (error: unknown) => AcceptedChatSendFailureDisposition;
   isReplyDispatchRun?: () => boolean;
   persistUserTurnTranscript: () => Promise<unknown>;
@@ -204,7 +205,10 @@ export function createChatSendDispatchErrorLifecycle(params: {
           entry: {
             ts: Date.now(),
             ok: true,
-            payload: { runId: clientRunId, status: "ok" as const },
+            payload: {
+              runId: clientRunId,
+              status: params.isQueuedFollowupCompleted?.() ? "completed" : "ok",
+            },
           },
         });
         broadcastChatFinal({

@@ -189,6 +189,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     context,
     isAgentRunStarted: () => agentRunStarted,
     isQueuedFollowupEnqueued: queuedFollowup.isEnqueued,
+    isQueuedFollowupCompleted: progressRefresh ? queuedFollowup.isCompleted : undefined,
     persistUserTurnTranscript: persistGatewayUserTurnTranscript,
     session,
     terminalizeRestartSafeAdmission,
@@ -615,10 +616,13 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                       })
                     : {
                         runId: clientRunId,
-                        // Only a finished standalone refresh may retire its retry intent.
-                        // Steering and queued admission acknowledge custody, not completion.
+                        // Only finished refresh work may retire its retry intent.
+                        // Steering and queued admission alone acknowledge custody.
                         status:
-                          progressRefresh && !queuedFollowup.isEnqueued() ? "completed" : "ok",
+                          progressRefresh &&
+                          (!queuedFollowup.isEnqueued() || queuedFollowup.isCompleted())
+                            ? "completed"
+                            : "ok",
                         ...(replyDispatchResult?.terminalOutcome?.stopReason
                           ? { stopReason: replyDispatchResult.terminalOutcome.stopReason }
                           : {}),

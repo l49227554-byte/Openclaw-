@@ -56,6 +56,8 @@ export type MSTeamsChannelConfig = {
   toolsBySender?: GroupToolPolicyBySenderConfig;
   /** Reply style: "thread" replies to the message, "top-level" posts a new message. */
   replyStyle?: MSTeamsReplyStyle;
+  /** Session context for this channel. Inherits the team/global policy when unset. */
+  threadSessionPolicy?: MSTeamsConfig["threadSessionPolicy"];
 };
 
 /** Team-level config for MS Teams. */
@@ -67,6 +69,8 @@ export type MSTeamsTeamConfig = {
   toolsBySender?: GroupToolPolicyBySenderConfig;
   /** Default reply style for channels in this team. */
   replyStyle?: MSTeamsReplyStyle;
+  /** Default session context for channels in this team. */
+  threadSessionPolicy?: MSTeamsConfig["threadSessionPolicy"];
   /** Per-channel overrides. Key is conversation ID (e.g., "19:...@thread.tacv2"). */
   channels?: Record<string, MSTeamsChannelConfig>;
 };
@@ -127,6 +131,8 @@ export type MSTeamsConfig = Omit<
     requireMention?: boolean;
     /** Default reply style: "thread" replies to the message, "top-level" posts a new message. */
     replyStyle?: MSTeamsReplyStyle;
+    /** Channel session context: isolated per thread (default) or shared across the channel. */
+    threadSessionPolicy?: "thread" | "channel";
     /** Per-team config. Key is team ID (from the /team/ URL path segment). */
     teams?: Record<string, MSTeamsTeamConfig>;
     /** SharePoint site ID for file uploads in group chats/channels (e.g., "contoso.sharepoint.com,guid1,guid2"). */

@@ -50,14 +50,14 @@ describe("msteamsPlugin.security.collectWarnings", () => {
 describe("msteamsPlugin", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it("distinguishes users from channel and group conversations", () => {
+  it("distinguishes users from channel and group conversations", async () => {
     const infer = msteamsPlugin.messaging?.inferTargetChatType;
     const ownerId = "00000000-0000-0000-0000-000000000001";
     expect(infer?.({ to: ownerId })).toBe("direct");
     expect(infer?.({ to: "19:channel@thread.tacv2" })).toBe("channel");
     expect(infer?.({ to: "19:group@thread.v2" })).toBe("group");
     expect(
-      msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+      await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
         cfg: {},
         agentId: "main",
         target: ownerId,
@@ -447,6 +447,36 @@ describe("msteams config schema", () => {
       expect(res.data.teams?.team123?.replyStyle).toBe("thread");
       expect(res.data.teams?.team123?.channels?.chan456?.replyStyle).toBe("top-level");
     }
+  });
+
+  it.each(["thread", "channel"])("accepts threadSessionPolicy=%s at every level", (policy) => {
+    const input = {
+      threadSessionPolicy: policy,
+      teams: {
+        team123: {
+          threadSessionPolicy: policy,
+          channels: { chan456: { threadSessionPolicy: policy } },
+        },
+      },
+    };
+    expect(MSTeamsConfigSchema.parse(input)).toMatchObject(input);
+  });
+
+  it("preserves omitted threadSessionPolicy overrides for runtime inheritance", () => {
+    const parsed = MSTeamsConfigSchema.parse({
+      teams: { team123: { channels: { chan456: {} } } },
+    });
+    expect(parsed.threadSessionPolicy).toBeUndefined();
+    expect(parsed.teams?.team123?.threadSessionPolicy).toBeUndefined();
+    expect(parsed.teams?.team123?.channels?.chan456?.threadSessionPolicy).toBeUndefined();
+  });
+
+  it.each([
+    { threadSessionPolicy: "shared" },
+    { teams: { team123: { threadSessionPolicy: "shared" } } },
+    { teams: { team123: { channels: { chan456: { threadSessionPolicy: "shared" } } } } },
+  ])("rejects unsupported threadSessionPolicy values: %j", (input) => {
+    expect(MSTeamsConfigSchema.safeParse(input).success).toBe(false);
   });
 
   it("accepts Teams SDK cloud and serviceUrl configuration", () => {

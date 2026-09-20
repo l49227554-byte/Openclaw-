@@ -19,6 +19,7 @@ import {
   MAX_CARD_EVENTS,
   READY_STRANDED_MS,
   RUNNING_HEARTBEAT_STALE_MS,
+  isWorkboardClaimReclaimable,
 } from "./store-constants.js";
 import type { WorkboardMutationScope } from "./store-inputs.js";
 import {
@@ -350,7 +351,11 @@ export function assertCanMutateClaimedCard(
   }
   const ownerId = normalizeOptionalString(scope.ownerId);
   const token = normalizeOptionalString(scope.token);
-  if (claim.ownerId !== ownerId && !safeEqualSecret(token, claim.token)) {
+  if (
+    claim.ownerId !== ownerId &&
+    !safeEqualSecret(token, claim.token) &&
+    !isWorkboardClaimReclaimable(claim, Date.now())
+  ) {
     throw new Error(`card is claimed by ${claim.ownerId}.`);
   }
 }

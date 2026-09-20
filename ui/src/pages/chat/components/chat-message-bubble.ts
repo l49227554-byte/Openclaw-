@@ -51,7 +51,6 @@ import type {
 import { prepareChatMessageRender } from "./chat-message-markdown.ts";
 import { prepareMarkdownMedia } from "./chat-message-media-markdown.ts";
 import {
-  projectMessageMedia,
   schedulePairingQrExpiryRefresh,
   type ArtifactDownloadResolver,
 } from "./chat-message-media.ts";
@@ -214,7 +213,7 @@ export function renderGroupedMessage(
   onOpenSidebar?: (content: SidebarContent) => void,
 ) {
   const disclosure = opts.assistantMessageDisclosure;
-  const { message, normalizedMessage, displayMarkdown, humanMentions } =
+  const { message, normalizedMessage, displayMarkdown, humanMentions, media, onlyComments } =
     disclosure?.expanded && disclosure.message
       ? prepareChatMessageRender(disclosure.message)
       : preparation;
@@ -240,7 +239,7 @@ export function renderGroupedMessage(
     orderedContent,
     supplementalImages,
     supplementalAttachments,
-  } = projectMessageMedia(message, normalizedMessage.content);
+  } = media;
   schedulePairingQrExpiryRefresh(messageKey, nextPairingQrExpiresAt, opts.onRequestUpdate);
   const hasImages = images.length > 0;
   const videoPreviews =
@@ -512,7 +511,16 @@ export function renderGroupedMessage(
       { ...prepared.media, text: bodyMarkdown ?? "" },
     );
   };
-  const renderMessageContent = () => (renderInOrder ? renderOrderedContent() : renderText());
+  const renderAttachments = () =>
+    renderAssistantAttachments(
+      renderInOrder ? supplementalAttachments : cardAttachments,
+      imageRenderOptions,
+      onOpenSidebar,
+      opts.onAssistantAttachmentLoaded,
+      normalizedRole === "assistant",
+    );
+  const renderMessageContent = () =>
+    onlyComments ? renderAttachments() : renderInOrder ? renderOrderedContent() : renderText();
   // Collapsed tool results must not load attachments or render hidden markdown.
   // Retained panes use opacity, so hidden transcripts must unmount video previews.
   const renderBody = () => html`
@@ -538,14 +546,7 @@ export function renderGroupedMessage(
         `,
       ),
     )}
-    ${renderOmittedMedia(omittedMedia)}
-    ${renderAssistantAttachments(
-      renderInOrder ? supplementalAttachments : cardAttachments,
-      imageRenderOptions,
-      onOpenSidebar,
-      opts.onAssistantAttachmentLoaded,
-      normalizedRole === "assistant",
-    )}
+    ${renderOmittedMedia(omittedMedia)} ${onlyComments ? nothing : renderAttachments()}
     ${isStandaloneToolMessage ? assistantViewContent : nothing}
     ${
       reasoningMarkdown

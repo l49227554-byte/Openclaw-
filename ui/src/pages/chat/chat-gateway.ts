@@ -4,6 +4,7 @@ import {
   reduceSessionProjectionRunEvent,
 } from "@openclaw/gateway-client/browser";
 import { asNullableRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
+import { extractAssistantPhaseText } from "../../../../src/shared/chat-message-content.js";
 import { t } from "../../i18n/index.ts";
 import { accumulatedStreamText } from "../../lib/chat/chat-types.ts";
 import { isAssistantHeartbeatAckForDisplay } from "../../lib/chat/heartbeat-display.ts";
@@ -63,20 +64,75 @@ function isPendingLocalChatRun(state: ChatState, runId: string): boolean {
   return state.chatQueue.some((item) => item.sendRunId === runId && item.sendState === "sending");
 }
 
+function hasSplitModelSpecialToken(currentStream: string, deltaText: string): boolean {
+  const lastAsciiOpen = currentStream.lastIndexOf("<|");
+  const lastFullWidthOpen = currentStream.lastIndexOf("<｜");
+  const lastBareOpen = currentStream.endsWith("<") ? currentStream.length - 1 : -1;
+  const openIndex = Math.max(lastAsciiOpen, lastFullWidthOpen, lastBareOpen);
+  if (openIndex < 0) {
+    return false;
+  }
+
+  // Only inspect the suffix that can join the incoming delta. A complete
+  // token already present in the stream cannot be changed by this delta.
+  const currentSuffix = currentStream.slice(openIndex);
+  const candidate = `${currentSuffix}${deltaText}`;
+  const candidateToken = /^<[|｜][^|｜]*[|｜]>/u.exec(candidate)?.[0];
+  return Boolean(candidateToken && candidateToken.length > currentSuffix.length);
+}
+
 function resolveDeltaChatStreamText(
   currentStream: string | null,
   payload: ChatEventPayload,
 ): string | null {
-  const snapshot = payload.message == null ? null : extractText(payload.message);
-  if (typeof payload.deltaText === "string") {
+  const deltaText = payload.deltaText;
+  if (typeof deltaText === "string") {
     if (payload.replace === true) {
-      return payload.deltaText;
+      // Replacement deltas are authoritative by contract; do not sanitize an
+      // ignored cumulative snapshot before accepting the replacement.
+      return deltaText;
     }
+
     if (currentStream === null) {
+      const snapshot = payload.message == null ? null : extractText(payload.message);
       return typeof snapshot === "string" ? snapshot : payload.deltaText;
     }
+
+    if (payload.message == null) {
+      return `${currentStream}${deltaText}`;
+    }
+
+    // The cumulative prefix can match even when the newly appended delta
+    // introduces hidden scaffolding. Project the small delta before taking
+    // the shortcut so the canonical sanitizer remains authoritative for that
+    // case without rescanning the growing snapshot.
+    if (extractText({ role: "assistant", content: deltaText }) !== deltaText) {
+      const snapshot = extractText(payload.message);
+      return typeof snapshot === "string" ? snapshot : `${currentStream}${deltaText}`;
+    }
+
+    // A model control token can begin in one delta and finish in the next;
+    // projecting the delta alone cannot see that boundary-spanning token.
+    if (hasSplitModelSpecialToken(currentStream, deltaText)) {
+      const snapshot = extractText(payload.message);
+      return typeof snapshot === "string" ? snapshot : `${currentStream}${deltaText}`;
+    }
+
+    // Gateway append deltas carry a cumulative assistant snapshot. Normal
+    // visible text needs no projection work: compare that raw snapshot with
+    // the already-visible prefix first, and reserve the full sanitizer for
+    // missed deltas or messages containing hidden scaffolding.
+    const rawSnapshot = extractAssistantPhaseText(payload.message);
+    if (typeof rawSnapshot === "string") {
+      const rawPrefixLength = rawSnapshot.length - deltaText.length;
+      if (rawPrefixLength === currentStream.length && rawSnapshot.startsWith(currentStream)) {
+        return `${currentStream}${deltaText}`;
+      }
+    }
+
+    const snapshot = extractText(payload.message);
     if (typeof snapshot === "string") {
-      const prefixLength = snapshot.length - payload.deltaText.length;
+      const prefixLength = snapshot.length - deltaText.length;
       if (
         prefixLength !== currentStream.length ||
         snapshot.slice(0, prefixLength) !== currentStream
@@ -84,9 +140,9 @@ function resolveDeltaChatStreamText(
         return snapshot;
       }
     }
-    return `${currentStream}${payload.deltaText}`;
+    return `${currentStream}${deltaText}`;
   }
-  return typeof snapshot === "string" ? snapshot : null;
+  return payload.message == null ? null : extractText(payload.message);
 }
 
 function normalizeAbortedAssistantMessage(message: unknown): Record<string, unknown> | null {

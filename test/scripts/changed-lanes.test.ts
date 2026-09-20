@@ -2182,7 +2182,7 @@ describe("scripts/changed-lanes", () => {
     })),
     {
       name: "selects consuming test graphs with UI CSS and docs companions",
-      path: "ui/src/e2e/about.e2e.test.ts",
+      path: "ui/src/e2e/chat-composer-picker-layout.e2e.test.ts",
       extraPaths: [
         "ui/src/styles/chat/composer.css",
         "ui/src/styles/chat/composer-surface.css",
@@ -2194,7 +2194,7 @@ describe("scripts/changed-lanes", () => {
         excludes: ["tsgo:core"],
         coreTestChecks: ["checkBoundary", "checkTypes"],
         stylelintTargets: [
-          "ui/src/e2e/about.e2e.test.ts",
+          "ui/src/e2e/chat-composer-picker-layout.e2e.test.ts",
           "ui/src/styles/chat/composer-surface.css",
           "ui/src/styles/chat/composer.css",
         ],

@@ -1321,6 +1321,7 @@
   "ui/src/components/file-kind.ts",
   "ui/src/components/gateway-status.ts",
   "ui/src/components/gateway-url-confirmation.ts",
+  "ui/src/components/github-link-eligibility.ts",
   "ui/src/components/github-link-target.ts",
   "ui/src/components/github-mark.ts",
   "ui/src/components/hub-tabs.ts",

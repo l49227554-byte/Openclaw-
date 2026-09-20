@@ -99,13 +99,13 @@ describe("gateway lifetime sidecars", () => {
   });
 
   test("joins session events admitted after the initial sidecar drain", async () => {
-    vi.useFakeTimers();
     const sessionKey = "agent:main:late";
     const projection = createSessionRowProjectionFixture({
       cfg: {},
       agentId: "main",
       store: { [sessionKey]: { sessionId: "late", updatedAt: 1 } },
     });
+    vi.useFakeTimers();
     const context = {
       broadcastToConnIds: vi.fn(),
       chatAbortControllers: new Map(),

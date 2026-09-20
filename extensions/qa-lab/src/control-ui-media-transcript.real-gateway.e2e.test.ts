@@ -415,7 +415,7 @@ suite.define(() => {
               return (
                 pane?.state?.connected === true &&
                 pane.state.sessionKey === "agent:qa:main" &&
-                pane.state.chatLoading === false
+                !pane.state.chatLoading
               );
             });
             const composer = page.locator(".agent-chat__composer-combobox textarea");

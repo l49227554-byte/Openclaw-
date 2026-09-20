@@ -1,14 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { SqliteWorkerStore } from "../infra/sqlite-worker-contract.js";
-import {
-  runWithSqliteWorkerStateContext,
-  type SqliteWorkerStateContext,
-} from "../infra/sqlite-worker-state-context.js";
-import { cleanupRetiredAgentDatabaseLease } from "./openclaw-agent-execution-cleanup.js";
-import {
-  assertOpenClawStateSchemaRepairAllowed,
-  getExistingOpenClawStateSchemaPath,
-} from "./openclaw-state-db-schema-policy.js";
+import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerCleanupOperations } from "./openclaw-state-worker-contract.js";
 
@@ -53,6 +45,13 @@ vi.mock("../infra/sqlite-worker-store.js", () => ({
     context: SqliteWorkerStateContext,
   ) => runWithSqliteWorkerStateContext(context, () => operation(store)),
 }));
+
+// The non-isolated CI shard may have cached the production cleanup module first.
+vi.resetModules();
+const { runWithSqliteWorkerStateContext } = await import("../infra/sqlite-worker-state-context.js");
+const { assertOpenClawStateSchemaRepairAllowed, getExistingOpenClawStateSchemaPath } =
+  await import("./openclaw-state-db-schema-policy.js");
+const { cleanupRetiredAgentDatabaseLease } = await import("./openclaw-agent-execution-cleanup.js");
 
 function inspectRepairPolicy(phase: string, databasePath: string) {
   let error: unknown;

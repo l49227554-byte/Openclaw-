@@ -198,6 +198,7 @@ export type FollowupRun = {
     /** Prepared source delivery ownership; a lost source must not restore host media reads. */
     mediaNormalizationOwner?: "gateway";
     clientCaps?: string[];
+    bootstrapUserProfileId?: string;
     gatewayUiCommandTarget?: GatewayUiCommandTarget;
     toolBindings?: Readonly<Record<string, unknown>>;
     chatType?: ChatType;

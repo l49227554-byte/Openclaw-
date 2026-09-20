@@ -387,8 +387,6 @@ describe("node worker supervisor recovery", () => {
               available: totalCapacity,
             });
           });
-          // Anchor identity death can precede kernel removal of its process group.
-          // The terminal receipt and released slot certify the complete cleanup boundary.
           expect(inspectOwnedNodeWorkerTree(anchor)).toBe("dead");
           expect(await reconcile()).toMatchObject(
             completed ? { ...completed, workerLineageSettled: true } : { state: terminalState },

@@ -475,7 +475,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
         this.activateComposerPresentation();
       }),
     );
-    this.subscribeSessionRepositoryContext();
+    this.subscribeSessionContext();
     chatState.addCleanup(
       this.context.gateway.subscribeEvents((event) => {
         const state = this.state;

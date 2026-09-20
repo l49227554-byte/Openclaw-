@@ -9,10 +9,7 @@ import { isAppServerRuntimeModelBackendBinding } from "../../agents/app-server-r
 import { resolveAgentHarnessOwnerPluginIds } from "../../agents/harness/runtime-plugin.js";
 import { isCliRuntimeAliasForProvider } from "../../agents/model-runtime-aliases.js";
 import { normalizeProviderId } from "../../agents/model-selection.js";
-import {
-  resolveCompatibleAgentRuntimeForProvider,
-  resolveSessionRuntimeOverrideForProvider,
-} from "../../agents/session-runtime-compat.js";
+import { resolveCompatibleAgentRuntimeForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace-default.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -32,25 +29,15 @@ export function resolveModelRuntimeDirective(params: {
   workspaceDir?: string;
   sessionEntry?: Pick<SessionEntry, "agentRuntimeOverride">;
 }): ModelRuntimeDirectiveResolution {
-  const rawRuntime = params.rawRuntime?.trim();
+  const requestedRuntime = params.rawRuntime?.trim();
+  const rawRuntime = requestedRuntime || params.sessionEntry?.agentRuntimeOverride?.trim();
   if (!rawRuntime) {
-    const persistedRuntime = params.sessionEntry?.agentRuntimeOverride?.trim();
-    if (
-      persistedRuntime &&
-      !resolveSessionRuntimeOverrideForProvider({
-        provider: params.provider,
-        entry: params.sessionEntry,
-        cfg: params.cfg,
-      })
-    ) {
-      return { kind: "clear" };
-    }
     return { kind: "unchanged" };
   }
 
   const runtime = normalizeOptionalAgentRuntimeId(rawRuntime);
   if (isDefaultAgentRuntimeId(runtime)) {
-    return { kind: "clear" };
+    return { kind: requestedRuntime ? "clear" : "unchanged" };
   }
 
   const provider = normalizeProviderId(params.provider);
@@ -60,6 +47,9 @@ export function resolveModelRuntimeDirective(params: {
     cfg: params.cfg,
   });
   if (compatibleRuntime) {
+    if (!requestedRuntime) {
+      return { kind: "unchanged" };
+    }
     const unavailableText = resolveUnavailableHarnessOwnerText({
       runtime: compatibleRuntime,
       rawRuntime,

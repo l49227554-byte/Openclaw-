@@ -202,7 +202,10 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
     });
 
     // Must deliver to configured telegram owner, NEVER leaking into discord group
-    expect(resolved).toMatchObject({ channel: "telegram", to: "123456789" });
+    expect(resolved).toMatchObject({
+      channel: "telegram",
+      to: "telegram:123456789",
+    });
     expect(resolved.channel).not.toBe("discord");
     expect(resolved.to).not.toBe("channel:general-discussion");
   });

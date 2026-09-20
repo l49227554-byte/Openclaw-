@@ -78,7 +78,7 @@ describe("resolveHeartbeatRunPrompt (#153543)", () => {
           sessionKey: "agent:main:heartbeat",
           inspectsRunQueue: true,
           entry: undefined,
-          run: { kind: "direct", sessionKey: "agent:main:heartbeat" },
+          run: { kind: "shared", sessionKey: "agent:main:heartbeat" },
           conversationEntry: undefined,
           storePath: "/tmp/store.json",
           suppressOriginatingContext: false,
@@ -86,6 +86,7 @@ describe("resolveHeartbeatRunPrompt (#153543)", () => {
         pendingEventEntries: [
           {
             id: "evt-discord-1",
+            ts: Date.now(),
             text: "background event from Discord",
             contextKey: "task:background-job",
             deliveryContext: {

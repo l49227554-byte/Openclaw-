@@ -16,6 +16,7 @@ import type {
   SkillWorkshopRunOptions,
 } from "../../../skills/workshop/types.js";
 import type { ModelFallbackAvailability } from "../../agent-scope.js";
+import type { ExecCompletionRoutingOptions } from "../../agent-tools.exec-completion-routing.js";
 import type { AssistantErrorTranscript } from "../../assistant-error-transcript.js";
 import type { ExecApprovalContinuationPromptRange } from "../../bash-tools.exec-approval-output.js";
 import type { ExecElevatedDefaults, ExecToolDefaults } from "../../bash-tools.exec-types.js";
@@ -327,7 +328,8 @@ export type RunEmbeddedAgentParams = {
   AgentRunModelOptions &
   AgentRunInputContext &
   AgentRunTranscriptContext &
-  AgentRunLifecycle;
+  AgentRunLifecycle &
+  ExecCompletionRoutingOptions;
 
 export type EmbeddedForegroundPromptContext = Pick<
   RunEmbeddedAgentParams,

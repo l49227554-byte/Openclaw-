@@ -23,6 +23,13 @@ import {
   recordSystemEventStoreReplaced,
 } from "./system-event-ownership.js";
 
+export type SystemEventSourceGeneration = {
+  sessionKey: string;
+  sessionId: string;
+  lifecycleRevision?: string;
+  sessionStore?: string;
+};
+
 export type SystemEvent = {
   /**
    * OpenClaw-assigned opaque identity for one queued occurrence. Preserve it when returning a
@@ -35,6 +42,8 @@ export type SystemEvent = {
   contextKey?: string | null;
   deliveryContext?: DeliveryContext;
   sessionStorePath?: string | null;
+  /** Source-session authority that must remain current through final delivery. */
+  sourceGeneration?: SystemEventSourceGeneration;
 };
 
 const MAX_EVENTS = 20;
@@ -64,6 +73,7 @@ registerSystemEventStoreOwner(SYSTEM_EVENT_QUEUES_KEY, () => {
 type SystemEventOptions = {
   sessionKey: string;
   sessionStorePath?: string | null;
+  sourceGeneration?: SystemEventSourceGeneration;
   contextKey?: string | null;
   deliveryContext?: DeliveryContext;
   /** Replace the pending event for this context and delivery route. Requires contextKey. */
@@ -106,6 +116,7 @@ function cloneSystemEvent(event: SystemEvent): SystemEvent {
   return {
     ...event,
     ...(event.deliveryContext ? { deliveryContext: { ...event.deliveryContext } } : {}),
+    ...(event.sourceGeneration ? { sourceGeneration: { ...event.sourceGeneration } } : {}),
   };
 }
 
@@ -149,7 +160,8 @@ function enqueueOwnedSystemEventEntry(
   const normalizedDeliveryContext = normalizeDeliveryContext(options.deliveryContext);
   const matches = (event: SystemEvent) =>
     (event.contextKey ?? null) === normalizedContextKey &&
-    areDeliveryContextsEqual(event.deliveryContext, normalizedDeliveryContext);
+    areDeliveryContextsEqual(event.deliveryContext, normalizedDeliveryContext) &&
+    JSON.stringify(event.sourceGeneration) === JSON.stringify(options.sourceGeneration);
   if (options.replace) {
     if (normalizedContextKey === null) {
       throw new Error("replaced system events require a contextKey");
@@ -179,6 +191,7 @@ function enqueueOwnedSystemEventEntry(
     ...(sessionStorePath === undefined ? {} : { sessionStorePath }),
     contextKey: normalizedContextKey,
     deliveryContext: normalizedDeliveryContext,
+    ...(options.sourceGeneration ? { sourceGeneration: { ...options.sourceGeneration } } : {}),
   };
   entry.queue.push(event);
   if (entry.queue.length > MAX_EVENTS) {
@@ -238,7 +251,8 @@ function areLegacySystemEventsEqual(left: SystemEvent, right: SystemEvent): bool
     left.text === right.text &&
     left.ts === right.ts &&
     (left.contextKey ?? null) === (right.contextKey ?? null) &&
-    areDeliveryContextsEqual(left.deliveryContext, right.deliveryContext)
+    areDeliveryContextsEqual(left.deliveryContext, right.deliveryContext) &&
+    JSON.stringify(left.sourceGeneration) === JSON.stringify(right.sourceGeneration)
   );
 }
 

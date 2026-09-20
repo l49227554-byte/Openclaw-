@@ -15,6 +15,7 @@ import {
 } from "../../agents/cli-session.js";
 import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
 import { createDeferredEmbeddedRunLifecycleManager } from "../../agents/embedded-agent-runner/run/deferred-lifecycle-owner.js";
+import { SUPPRESS_EXEC_NOTIFY_OVERRIDES } from "../../agents/exec-defaults.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook-helpers.js";
 import { findModelInCatalog, modelSupportsInput } from "../../agents/model-catalog-lookup.js";
@@ -45,7 +46,7 @@ import { resolveCronAuthenticatedChannelRequester } from "../tools-allow-provena
 import type { CronAgentExecutionPhaseUpdate, CronJob } from "../types.js";
 import {
   resolveCronChannelOutputPolicy,
-  resolveCurrentChannelTarget,
+  resolveCurrentChannelContext,
 } from "./channel-output-policy.js";
 import { resolveCronPayloadOutcome } from "./helpers.js";
 import {
@@ -462,12 +463,20 @@ function createCronPromptExecutor(
           agentId: params.agentId,
           sessionEntry: params.cronSession.sessionEntry,
         });
+        // Both runners get the same resolved route so detached exec completions stay on the source topic.
+        const currentChannelContext = await resolveCurrentChannelContext({
+          channel: messageChannel,
+          to: params.resolvedDelivery.to,
+          threadId: params.resolvedDelivery.threadId,
+        });
         // Snapshot mutable session and transcript facts only when the runtime is invoked.
         const buildCommonRunParams = () =>
           ({
             preparedRunAdmission,
             sessionId: params.cronSession.sessionEntry.sessionId,
             sessionKey: params.runSessionKey,
+            execCompletionSessionKey: params.completionSessionKey,
+            execCompletionSessionGeneration: params.completionSessionGeneration,
             sessionTarget,
             agentId: params.agentId,
             trigger: "cron",
@@ -485,6 +494,10 @@ function createCronPromptExecutor(
             skillsSnapshot: params.skillsSnapshot,
             messageChannel,
             agentAccountId: params.resolvedDelivery.accountId,
+            ...currentChannelContext,
+            execOverrides: params.suppressExecNotifyOnExit
+              ? SUPPRESS_EXEC_NOTIFY_OVERRIDES
+              : undefined,
             sourceReplyDeliveryMode,
             requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
             scheduledToolPolicy,
@@ -639,13 +652,6 @@ function createCronPromptExecutor(
           provider: providerOverride,
           model: modelOverride,
         });
-        const currentChannelId = await resolveCurrentChannelTarget({
-          channel: messageChannel,
-          to: params.resolvedDelivery.to,
-          threadId: params.resolvedDelivery.threadId,
-        });
-        // Embedded runs receive both the explicit route and the current-channel
-        // id so message-tool policy can target the same chat as fallback delivery.
         const result = await runEmbeddedAgent({
           ...buildCommonRunParams(),
           promptCacheKey,
@@ -653,7 +659,6 @@ function createCronPromptExecutor(
           allowGatewaySubagentBinding: true,
           messageTo: params.resolvedDelivery.to,
           messageThreadId: params.resolvedDelivery.threadId,
-          currentChannelId,
           agentDir: params.agentDir,
           ...rootedAgentRunParams(params.workspaceDir, params.executionRoot),
           provider: providerOverride,
@@ -673,12 +678,6 @@ function createCronPromptExecutor(
           scheduledRuntimeAuthorityRecoveryRequired:
             params.job.runtimeAuthorityRecoveryRequired === true,
           execSession: params.cronSession.sessionEntry,
-          execOverrides: params.suppressExecNotifyOnExit
-            ? {
-                notifyOnExit: false,
-                notifyOnExitEmptySuccess: false,
-              }
-            : undefined,
           deferTerminalLifecycle: true,
           onAgentEvent: params.lifecycle.note,
           // Cron owns the resolved delivery contract. A valid announce route

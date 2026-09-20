@@ -20,6 +20,7 @@ import type { PluginInstanceConsumer } from "../../plugins/plugin-instance.types
 import type { SpawnSecretInput } from "../../process/supervisor/types.js";
 import type { SkillWorkshopProposalRevisionConstraint } from "../../skills/workshop/types.js";
 import type { AdmittedRunContext } from "../admitted-run-context.js";
+import type { ExecCompletionRoutingOptions } from "../agent-tools.exec-completion-routing.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import type { ExecElevatedDefaults } from "../bash-tools.exec-types.js";
 import type { BootstrapContextMode } from "../bootstrap-files.js";
@@ -41,7 +42,7 @@ import type {
   CurrentInboundPromptContext,
   ResolvedToolPromptFinalizer,
 } from "../embedded-agent-runner/run/params.js";
-import type { ExecPolicyOverrides } from "../exec-defaults.js";
+import type { ExecRunOverrides } from "../exec-defaults.js";
 import type { PreparedQuestionAnswerAuthority } from "../harness/host-private-capabilities.js";
 import type { AgentHarnessIsolatedCompletionParamsV2 } from "../harness/types.js";
 import type { ReplyExpectation } from "../reply-completion.js";
@@ -145,7 +146,7 @@ export type RunCliAgentParams = {
   bootstrapContextMode?: BootstrapContextMode;
   chatId?: string;
   /** Effective turn-local exec policy resolved before entering the CLI runtime. */
-  execOverrides?: ExecPolicyOverrides;
+  execOverrides?: ExecRunOverrides;
   /** Effective elevated-exec defaults resolved before entering the CLI runtime. */
   bashElevated?: ExecElevatedDefaults;
   /** Runtime tool allow-list. CLI harnesses need a backend-owned exact translation. */
@@ -184,7 +185,8 @@ export type RunCliAgentParams = {
   AgentRunModelOptions &
   AgentRunInputContext &
   AgentRunTranscriptContext &
-  AgentRunLifecycle;
+  AgentRunLifecycle &
+  ExecCompletionRoutingOptions;
 
 /** Backend config after MCP, skill, env, and cleanup preparation. */
 export type CliSecretInput = SpawnSecretInput & {

@@ -32,6 +32,7 @@ import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import { isDetachedCronSessionTarget } from "../session-target.js";
 import type { CronJob, CronRunDiagnostics } from "../types.js";
+import { resolveCronRouteCompletionSession } from "./delivery-route-session-key.js";
 import {
   resolveCronModelSelection,
   resolveCronModelSelectionOwner,
@@ -99,6 +100,8 @@ export type PreparedCronRunContext = {
   agentDir: string;
   agentSessionKey: string;
   sourceSessionKey?: string;
+  completionSessionKey?: string;
+  completionSessionGeneration?: { sessionId: string; lifecycleRevision?: string };
   sourceSessionGeneration?: { sessionId: string; lifecycleRevision: string | undefined };
   runSessionId: string;
   currentRunSessionId: () => string;
@@ -510,6 +513,14 @@ export async function prepareCronRunContext(params: {
         job: input.job,
         agentId,
       });
+    const completionSession = resolveCronRouteCompletionSession({
+      job: input.job,
+      agentSessionKey,
+      sourceSessionKey,
+      usesDetachedRunSession,
+      delivery: resolvedDelivery,
+      sessionStore: cronSession.store,
+    });
 
     const { formattedTime, timeLine } = resolveCronStyleNow(runtimeCfg, now);
     // Current jobs stay detached; a bounded tail preserves context without transcript continuation.
@@ -657,6 +668,8 @@ export async function prepareCronRunContext(params: {
         agentDir,
         agentSessionKey,
         sourceSessionKey,
+        completionSessionKey: completionSession.sessionKey,
+        completionSessionGeneration: completionSession.generation,
         sourceSessionGeneration,
         runSessionId,
         currentRunSessionId,
@@ -686,7 +699,8 @@ export async function prepareCronRunContext(params: {
         resolvedDelivery,
         deliveryRequested,
         sourceDelivery,
-        suppressExecNotifyOnExit: deliveryPlan.mode === "none",
+        suppressExecNotifyOnExit:
+          deliveryPlan.mode === "none" || completionSession.rejectDetachedCompletion,
         skillsSnapshot,
         liveSelection,
         useSubagentFallbacks,

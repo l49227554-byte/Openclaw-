@@ -39,6 +39,17 @@ export type ExecPolicyOverrides = {
   node?: string;
 };
 
+/** Turn-local exec settings that may cross an isolated runtime boundary. */
+export type ExecRunOverrides = ExecPolicyOverrides & {
+  notifyOnExit?: boolean;
+  notifyOnExitEmptySuccess?: boolean;
+};
+
+export const SUPPRESS_EXEC_NOTIFY_OVERRIDES = {
+  notifyOnExit: false,
+  notifyOnExitEmptySuccess: false,
+} satisfies ExecRunOverrides;
+
 // Gather the shared config state once so exec resolution applies one
 // agent/global/session precedence order.
 function resolveExecConfigState(params: {

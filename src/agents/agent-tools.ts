@@ -6,7 +6,6 @@
 
 import { HEARTBEAT_RESPONSE_TOOL_NAME } from "../auto-reply/heartbeat-tool-response.js";
 import { messageToolOwnsVisibleReply } from "../auto-reply/source-reply-delivery-mode.js";
-import { resolveEventSessionRoutingPolicy } from "../infra/event-session-routing.js";
 import { mergeGatewayAgentCliPath } from "../infra/openclaw-cli-shim.js";
 import { logWarn } from "../logger.js";
 import type { PluginHookToolRequesterContext } from "../plugins/hook-types.js";
@@ -23,6 +22,7 @@ import {
   copyAgentToolMetadata,
 } from "./agent-tool-metadata.js";
 import { createCodingToolsGatewayCaller } from "./agent-tools.caller.js";
+import { resolveExecCompletionRouting } from "./agent-tools.exec-completion-routing.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
 import {
   filterToolsByMessageProvider,
@@ -360,12 +360,7 @@ export function createOpenClawCodingToolsInternal(
       runSessionKey: executionSessionKey,
       sessionId: options?.sessionId,
       sessionStore: options?.config?.session?.store,
-      eventRouting: resolveEventSessionRoutingPolicy({
-        cfg: options?.config,
-        sessionKey: options?.runSessionKey ?? options?.sessionKey,
-        channel: options?.messageProvider,
-        accountId: options?.agentAccountId,
-      }),
+      ...resolveExecCompletionRouting(options),
       messageProvider: options?.messageProvider,
       currentChannelId: options?.currentChannelId,
       currentThreadTs: options?.currentThreadTs,

@@ -1,0 +1,49 @@
+{
+  "id": "tekizai",
+  "categories": ["models"],
+  "activation": {
+    "onStartup": false
+  },
+  "enabledByDefault": true,
+  "providers": ["tekizai"],
+  "modelCatalog": {
+    "discovery": {
+      "tekizai": "runtime"
+    }
+  },
+  "providerEndpoints": [
+    {
+      "endpointClass": "tekizai-openai-responses",
+      "hosts": ["api.tekiz.ai"]
+    }
+  ],
+  "setup": {
+    "providers": [
+      {
+        "id": "tekizai",
+        "envVars": ["TEKIZAI_API_KEY"]
+      }
+    ]
+  },
+  "providerAuthChoices": [
+    {
+      "provider": "tekizai",
+      "method": "api-key",
+      "choiceId": "tekizai-api-key",
+      "appGuidedSecret": true,
+      "choiceLabel": "TEKIZAI API key",
+      "groupId": "tekizai",
+      "groupLabel": "TEKIZAI",
+      "groupHint": "Intelligent multi-provider routing",
+      "optionKey": "tekizaiApiKey",
+      "cliFlag": "--tekizai-api-key",
+      "cliOption": "--tekizai-api-key <key>",
+      "cliDescription": "TEKIZAI API key"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

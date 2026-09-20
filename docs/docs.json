@@ -2259,6 +2259,7 @@
                       "providers/radius",
                       "providers/stepfun",
                       "providers/synthetic",
+                      "providers/tekizai",
                       "providers/tencent",
                       "providers/together",
                       "providers/venice",

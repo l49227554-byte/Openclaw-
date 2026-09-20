@@ -351,6 +351,7 @@
     "!dist/extensions/tavily/**",
     "!dist/extensions/team-reports/**",
     "!dist/extensions/teams-meetings/**",
+    "!dist/extensions/tekizai/**",
     "!dist/extensions/tencent/**",
     "!dist/extensions/tokenjuice/**",
     "!dist/extensions/tlon/**",

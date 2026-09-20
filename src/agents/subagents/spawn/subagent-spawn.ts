@@ -647,6 +647,10 @@ export async function spawnSubagentDirect(
       await emitSpawnLifecycleHooks(childRunId);
     }
 
+    // Publish only after preparation releases its hold and exposes the scheduler's capacity state.
+    if (swarmReservation) {
+      await swarmReservation.release();
+    }
     // Emit lifecycle event so the gateway can broadcast sessions.changed to SSE subscribers.
     emitSessionLifecycleEvent({
       sessionKey: childSessionKey,

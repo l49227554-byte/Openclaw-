@@ -298,7 +298,7 @@ describe("task maintenance session metadata", () => {
           () => {
             creationSettled = true;
           },
-          (error) => {
+          (error: unknown) => {
             creationSettled = true;
             recordFailure(error);
           },

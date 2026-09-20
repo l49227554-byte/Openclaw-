@@ -48,7 +48,7 @@ import {
   shouldPreflightWakeBeforeBusy,
   type HeartbeatPreflight,
 } from "./heartbeat-runner-prompt.js";
-import { resolveSystemEventDeliveryContext } from "./system-events.js";
+import { resolveSystemEventDeliveryContext, type SystemEvent } from "./system-events.js";
 import {
   resolveHeartbeatSession,
   resolveStaleHeartbeatIsolatedSessionKey,
@@ -355,17 +355,44 @@ function resolveSelectedHeartbeatTurnSource(params: {
     return undefined;
   }
   const pending = params.preflight.pendingEventEntries;
+  // Mirror the event classification in resolveHeartbeatRunPrompt exactly so
+  // that routing always follows the events that were actually admitted to the
+  // turn prompt. The three buckets below match the prompt owner's loop:
+  //   1. exec-completion events (highest priority, same shouldInspect guard)
+  //   2. cron-tagged events that pass the cron content test
+  //   3. generic events (hook/task wakes, session-created notices, etc.)
+  // Only the highest-priority non-empty bucket reaches the resolver so the
+  // selected-event delivery context, not the coalesced wake origin, drives routing.
   if (params.preflight.shouldInspectPendingEvents) {
-    const execEvents = pending.filter((e) => isExecCompletionEvent(e.text));
+    const execEvents = pending.filter((e: SystemEvent) => isExecCompletionEvent(e.text));
     if (execEvents.length > 0) {
       return resolveSystemEventDeliveryContext(execEvents);
     }
   }
   if (params.preflight.isCronWake || params.preflight.hasTaggedCronEvents) {
-    const cronEvents = pending.filter((e) => isCronSystemEvent(e.text));
+    // Use the same per-event predicate as the prompt owner: an event is a cron
+    // content event only when it carries a cron: contextKey AND passes the cron
+    // content test. The prompt classifies all other cron-qualified events as
+    // cronNoise; they do not own routing.
+    const cronEvents = pending.filter(
+      (e: SystemEvent) =>
+        (params.preflight.isCronWake || e.contextKey?.startsWith("cron:")) &&
+        isCronSystemEvent(e.text),
+    );
     if (cronEvents.length > 0) {
       return resolveSystemEventDeliveryContext(cronEvents);
     }
+  }
+  // Generic events (hook/task wakes, session-created notices) retain their
+  // requester origin. queueTaskSystemEvent attaches deliveryContext; preserve it
+  // so background-task replies reach the original conversation, not last-route.
+  const genericEvents = pending.filter(
+    (e: SystemEvent) =>
+      !isExecCompletionEvent(e.text) &&
+      !(params.preflight.isCronWake || e.contextKey?.startsWith("cron:")),
+  );
+  if (genericEvents.length > 0) {
+    return resolveSystemEventDeliveryContext(genericEvents);
   }
   return undefined;
 }

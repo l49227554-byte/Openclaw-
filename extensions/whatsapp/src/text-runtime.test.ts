@@ -131,8 +131,10 @@ describe("markdownToWhatsApp", () => {
     expect(chunks.join("")).not.toMatch(/\p{Co}/u);
   });
 
-  it("applies the chunk limit to whitespace-only text", () => {
-    expect(markdownToWhatsAppChunks(" ".repeat(12), 5)).toEqual(["    ", "    ", "  "]);
+  it("returns no chunks for whitespace-only text", () => {
+    // Whitespace-only text produces no chunks: the Markdown fallback suppresses
+    // whitespace-only chunks so channel adapters do not reject empty sends.
+    expect(markdownToWhatsAppChunks(" ".repeat(12), 5)).toEqual([]);
   });
 
   it("does not count the parse-only indentation guard toward the chunk limit", () => {

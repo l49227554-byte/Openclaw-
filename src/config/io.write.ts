@@ -81,10 +81,10 @@ import {
   type ConfigWriteRollbackStatus,
 } from "./io.write-errors.js";
 import { resolvePersistCandidateForWrite } from "./io.write-prepare.js";
+import { rejectConfigWriteForBlockingReasons } from "./io.write-rejected.js";
 import {
   assertBaseSnapshotStillCurrent,
   createGuardedConfigFileSystem,
-  rejectConfigWriteForBlockingReasons,
   resolveConfigSizeBaselineBytes,
   resolveConfigStatMetadata,
   resolveConfigWriteBlockingReasons,

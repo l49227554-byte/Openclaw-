@@ -18,8 +18,6 @@
     "../../src/shared/**/*.test.tsx",
     "../../src/infra/sqlite-*.test.ts",
     "../../src/config/sessions/**/*.test.ts",
-    "../../src/config/sessions/**/*.test.tsx",
-    "../../src/hooks/**/*.test.ts",
-    "../../src/hooks/**/*.test.tsx"
+    "../../src/config/sessions/**/*.test.tsx"
   ]
 }

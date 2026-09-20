@@ -428,6 +428,8 @@ const COMPACT_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["agentic-control-plane-startup-restart-close", 10],
   // Run 33364935118 measured 21s of tests; the build belongs to bin admission.
   ["agentic-gateway-core-runtime", 21],
+  // Two-CPU Linux proof: 40s including preparation, 19s for the 13,000-file case.
+  ["agentic-gateway-core-inventory", 40],
   ["agentic-gateway-core-1", 99],
   ["agentic-gateway-core-2", 99],
   ["agentic-gateway-core-3", 99],
@@ -629,6 +631,7 @@ const COMPACT_GITHUB_GROUP_SECONDS_HINTS = new Map<string, number>([
   ["agentic-gateway-core-1", 176],
   ["agentic-gateway-core-2", 149],
   ["agentic-gateway-core-3", 141],
+  ["agentic-gateway-core-inventory", 40],
   ["agentic-gateway-methods", 169],
   ["agentic-plugin-sdk", 70],
   ["auto-reply-core-top-level", 43],
@@ -740,7 +743,7 @@ const COMPACT_BLACKSMITH_SPLIT_OWNERS = new Set([
 // concurrent sibling Vitest run competes for the 4 vCPU runner. Pack them
 // into bins the shard runner executes at concurrency 1.
 const EXCLUSIVE_COMPACT_GROUP_RE =
-  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^agentic-gateway-core-runtime$|^agentic-cli(?:-process(?:-hosted-\d+)?)?$/u;
+  /^core-tooling(?:-\d+(?:-hosted-\d+)?|-isolated)$|^core-runtime-tui-pty$|^agentic-gateway-core-(?:runtime|inventory)$|^agentic-cli(?:-process(?:-hosted-\d+)?)?$/u;
 // Exclusive bins run serially, so their packed estimate is their wall clock.
 // An indivisible file above this budget must not acquire additional work.
 const COMPACT_EXCLUSIVE_JOB_SECONDS = 150;
@@ -1933,13 +1936,21 @@ function createAgenticGatewayCoreSplitShards(): NodeTestSplitShard[] {
     ...gatewayFiles,
     ...packageFiles,
   ]);
+  const inventoryFile = "src/gateway/worker-environments/workspace-large-inventory.test.ts";
   return [
     ...createStripedSplitShards({
       configs,
-      files: otherFiles,
+      files: otherFiles.filter((file) => file !== inventoryFile),
       shardName: "agentic-gateway-core",
       stripeCount: AGENTIC_GATEWAY_CORE_STRIPES,
     }),
+    // Keep the full journal/apply/recovery proof off the shared Vitest worker pool.
+    {
+      configs: ["test/vitest/vitest.gateway-core.config.ts"],
+      includePatterns: [inventoryFile],
+      requiresDist: false,
+      shardName: "agentic-gateway-core-inventory",
+    },
     ...(runtimeFiles.length > 0
       ? [
           {

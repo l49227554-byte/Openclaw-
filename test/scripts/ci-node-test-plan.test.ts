@@ -2800,6 +2800,33 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   });
 
   it.each(["blacksmith", "github", "hybrid"])(
+    "runs large workspace inventory without sibling files in %s plans",
+    (runnerBackend) => {
+      const inventory = "src/gateway/worker-environments/workspace-large-inventory.test.ts";
+      const owners = defaultShards.filter((shard) => shard.includePatterns?.includes(inventory));
+      expect(owners).toHaveLength(1);
+      expect(owners[0]!.includePatterns).toEqual([inventory]);
+
+      for (const plan of [
+        getCommittedCompactPlan("pull-request", runnerBackend),
+        getCommittedCompactPlan("push", runnerBackend),
+      ]) {
+        const jobs = plan.filter((job) =>
+          job.groups.some((group) => group.includePatterns?.includes(inventory)),
+        );
+        expect(jobs).toHaveLength(1);
+        expect(jobs[0]!.planConcurrency).toBe(1);
+        const groups = jobs[0]!.groups.filter((group) =>
+          group.includePatterns?.includes(inventory),
+        );
+        expect(groups).toHaveLength(1);
+        expect(groups[0]!.includePatterns).toEqual([inventory]);
+        expect(groups[0]!.configs).toEqual(["test/vitest/vitest.gateway-core.config.ts"]);
+      }
+    },
+  );
+
+  it.each(["blacksmith", "github", "hybrid"])(
     "retains measured Gateway worker fallback in precise %s plans",
     (runnerBackend) => {
       const core = expectDefined(

@@ -439,7 +439,7 @@ describe("CLI operator-equivalent failover through the real prepare runner", () 
       vi.restoreAllMocks();
       resetCliRunnerPrepareTestDeps();
       cliBackendsTesting.resetDepsForTest();
-      fixture.cleanup();
+      await fixture.cleanup();
     }
   });
 

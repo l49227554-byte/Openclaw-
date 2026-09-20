@@ -139,7 +139,11 @@ describe("inspectTelegramConversationRouteOwner", () => {
       expect.objectContaining({ conversationId: "2002" }),
     );
   });
-  it.each([
+  const inactiveAccounts: Array<{
+    name: string;
+    accountId: string;
+    telegram: NonNullable<OpenClawConfig["channels"]>["telegram"];
+  }> = [
     {
       name: "removed account",
       accountId: "retired",
@@ -160,21 +164,21 @@ describe("inspectTelegramConversationRouteOwner", () => {
       accountId: "default",
       telegram: { enabled: false, accounts: { default: { enabled: true } } },
     },
-  ] satisfies Array<{
-    name: string;
-    accountId: string;
-    telegram: NonNullable<OpenClawConfig["channels"]>["telegram"];
-  }>)("rejects a $name without requiring a runtime binding owner", ({ accountId, telegram }) => {
-    unregisterSessionBindingAdapter({ channel: "telegram", accountId: "default", adapter });
+  ];
+  it.each(inactiveAccounts)(
+    "rejects a $name without requiring a runtime binding owner",
+    ({ accountId, telegram }) => {
+      unregisterSessionBindingAdapter({ channel: "telegram", accountId: "default", adapter });
 
-    expect(
-      inspectTelegramConversationRouteOwner({
-        cfg: { channels: { telegram } },
-        accountId,
-        conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
-      }),
-    ).toBeNull();
-  });
+      expect(
+        inspectTelegramConversationRouteOwner({
+          cfg: { channels: { telegram } },
+          accountId,
+          conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
+        }),
+      ).toBeNull();
+    },
+  );
 
   it("keeps binding-created accounts on inherited single-bot credentials", () => {
     expect(

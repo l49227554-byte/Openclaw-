@@ -112,7 +112,11 @@ describe("inspectSlackConversationRouteOwner", () => {
     releaseInstallation = undefined;
     expect(inspectSlackConversationRouteOwner(input)).toEqual({ kind: "unavailable" });
   });
-  it.each([
+  const inactiveAccounts: Array<{
+    name: string;
+    accountId: string;
+    slack: NonNullable<OpenClawConfig["channels"]>["slack"];
+  }> = [
     {
       name: "removed account",
       accountId: "retired",
@@ -133,22 +137,22 @@ describe("inspectSlackConversationRouteOwner", () => {
       accountId: "default",
       slack: { enabled: false, accounts: { default: { enabled: true } } },
     },
-  ] satisfies Array<{
-    name: string;
-    accountId: string;
-    slack: NonNullable<OpenClawConfig["channels"]>["slack"];
-  }>)("rejects a $name without requiring installation identity", ({ accountId, slack }) => {
-    releaseInstallation?.();
-    releaseInstallation = undefined;
+  ];
+  it.each(inactiveAccounts)(
+    "rejects a $name without requiring installation identity",
+    ({ accountId, slack }) => {
+      releaseInstallation?.();
+      releaseInstallation = undefined;
 
-    expect(
-      inspectSlackConversationRouteOwner({
-        cfg: { channels: { slack } },
-        accountId,
-        conversation: { kind: "channel", peerId: "C456" },
-      }),
-    ).toBeNull();
-  });
+      expect(
+        inspectSlackConversationRouteOwner({
+          cfg: { channels: { slack } },
+          accountId,
+          conversation: { kind: "channel", peerId: "C456" },
+        }),
+      ).toBeNull();
+    },
+  );
 
   it("preserves a configured default while its token and installation are unavailable", () => {
     vi.stubEnv("OPENCLAW_TEST_MISSING_SLACK_BOT_TOKEN", undefined);

@@ -142,6 +142,7 @@ export const forcedUnitFastTestFiles = [
   // Its mocked transport must not inherit another file's process-global state worker owner.
   "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/status/status-message.test.ts",
+  "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/trajectory/cleanup.test.ts",
   "src/trajectory/export.test.ts",
   "src/trajectory/metadata.test.ts",

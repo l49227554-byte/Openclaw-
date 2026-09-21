@@ -139,6 +139,23 @@ export async function prepareTaskRegistryReadOwner(): Promise<TaskRegistryReadOw
   return { context, store, assertCurrent };
 }
 
+/** Sequential page retries share their accepted prefix while refreshing current rows. */
+export function createTaskRegistryReadPreparation() {
+  let owner: TaskRegistryReadOwner | undefined;
+  return async (): Promise<TaskRegistryRead | undefined> => {
+    if (owner) {
+      const store = getTaskRegistryStore();
+      assertTaskRegistryOwnerCurrent(owner.context, store);
+      // A replacement store starts its own fence; an invalid database cannot be reopened here.
+      if (store !== owner.store) {
+        owner = undefined;
+      }
+    }
+    owner ??= await prepareTaskRegistryReadOwner();
+    return prepareTaskRegistryRead(owner);
+  };
+}
+
 export async function prepareTaskRegistryRead(
   owner?: TaskRegistryReadOwner,
 ): Promise<TaskRegistryRead | undefined> {

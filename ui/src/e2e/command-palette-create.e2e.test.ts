@@ -419,8 +419,8 @@ suite.define(() => {
           const composer = page.locator(".agent-chat__composer-combobox textarea:visible");
           await composer.fill(foregroundDraft);
           const url = page.url();
-          await module.request;
           await page.keyboard.press("ControlOrMeta+K");
+          await module.request;
           const input = page.locator(".cmd-palette__input");
           await input.fill("Start exactly this cold task");
           await input.press("ControlOrMeta+Enter");

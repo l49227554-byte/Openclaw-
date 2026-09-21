@@ -75,7 +75,7 @@ export function renderSidebarOutboxItem(params: {
         <span class="sidebar-issues-panel__entity">${label}</span>
         <span class="sidebar-outbox-row__meta">
           <span class="sidebar-issues-panel__state" title=${scope}>${scope}</span>
-          ${offline ? html`<span class="sidebar-outbox-row__offline">${t("attention.outbox.offline")}</span>` : nothing}
+          ${offline ? html`<span class="sidebar-outbox-row__offline"><span aria-hidden="true">·</span> ${t("attention.outbox.offline")}</span>` : nothing}
         </span>
       </div>
       <openclaw-tooltip .content=${guidance}>

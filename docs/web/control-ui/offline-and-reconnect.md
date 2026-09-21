@@ -131,6 +131,11 @@ reload, follow the displayed save or cancel guidance, then try again.
 If chat history times out, its **Retry** action reloads the saved conversation and restores
 its live session subscription, including approval updates.
 
+When the Gateway confirms that it holds the same pending input, the Control UI clears the
+uncertain-delivery warning without sending the message again. The browser keeps its retry
+payload until consumption or cancellation is confirmed. If delivery is still unknown,
+the review warning remains.
+
 Once the Gateway confirms that a message is in the transcript, reconnecting retires its temporary browser copy even when the original message is outside the latest history page. Loading older history shows the saved message in its original position without adding a second copy.
 
 Retiring a delivered attachment does not discard the run's completion. If the browser misses

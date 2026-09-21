@@ -15,11 +15,21 @@ afterEach(() => {
 });
 
 it.each([
-  { phase: "connected", command: false, unconfirmed: true, title: "Delivery unconfirmed" },
-  { phase: "reconnecting", command: false, unconfirmed: true, title: "Delivery unconfirmed" },
-  { phase: "connected", command: false, unconfirmed: false, title: "Not sent" },
-  { phase: "connected", command: true, unconfirmed: true, title: "Command unconfirmed" },
-  { phase: "connected", command: true, unconfirmed: false, title: "Command failed" },
+  {
+    phase: "connected",
+    command: false,
+    unconfirmed: true,
+    title: "Your message may not have arrived",
+  },
+  {
+    phase: "reconnecting",
+    command: false,
+    unconfirmed: true,
+    title: "Your message may not have arrived",
+  },
+  { phase: "connected", command: false, unconfirmed: false, title: "Your message wasn’t sent" },
+  { phase: "connected", command: true, unconfirmed: true, title: "Your command may not have run" },
+  { phase: "connected", command: true, unconfirmed: false, title: "Your command failed" },
 ] as const)(
   "reviews $title while $phase without sending or clearing it",
   ({ phase, command, unconfirmed, title }) => {
@@ -65,15 +75,11 @@ it.each([
     const tooltip = container.querySelector<HTMLElement & { content: string }>("openclaw-tooltip");
     expect(container.querySelector(".sidebar-issues-panel__entity")?.textContent).toBe(title);
     expect(tooltip?.content).toContain(
-      unconfirmed
-        ? command
-          ? "may already have run"
-          : "may have reached the Gateway"
-        : "pending submission",
+      unconfirmed ? (command ? "may already have run" : "check whether it arrived") : "review it",
     );
     expect(container.querySelector("p, .sidebar-issues-panel__actions")).toBeNull();
     expect(container.querySelector(".sidebar-outbox-row__offline")?.textContent ?? null).toBe(
-      phase === "reconnecting" ? "Offline" : null,
+      phase === "reconnecting" ? "· Offline" : null,
     );
     expect(container.querySelector("button")).toBeNull();
     link.click();

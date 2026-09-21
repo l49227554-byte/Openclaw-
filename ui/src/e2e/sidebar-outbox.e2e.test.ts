@@ -6,6 +6,8 @@ import {
   controlUiSessionUrl,
   createChatFlowE2eSuite,
   installMockGateway,
+  requireRecord,
+  requireString,
 } from "./chat-flow.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
@@ -18,15 +20,31 @@ async function expectCompactRow(incident: Locator) {
       .getBoundingClientRect();
     const action = element.querySelector("a")!.getBoundingClientRect();
     const meta = element.querySelector(".sidebar-outbox-row__meta")!.getBoundingClientRect();
+    const title = element.querySelector(".sidebar-issues-panel__entity")!;
+    const context = element.querySelector(".sidebar-issues-panel__state")!;
+    const offline = element.querySelector(".sidebar-outbox-row__offline");
+    const contextText = document.createRange();
+    contextText.selectNodeContents(context);
     return {
       height: row.height,
       fits: element.scrollWidth <= element.clientWidth,
       actionFits: action.right <= row.right && action.left >= content.right,
       metaHeight: meta.height,
+      titleFits:
+        title.scrollWidth <= title.clientWidth && title.scrollHeight <= title.clientHeight + 1,
+      offlineGap:
+        offline && context.scrollWidth <= context.clientWidth
+          ? offline.getBoundingClientRect().left - contextText.getBoundingClientRect().right
+          : null,
     };
   });
   expect(geometry.height).toBeGreaterThanOrEqual(64);
-  expect(geometry.height).toBeLessThanOrEqual(80);
+  expect(geometry.height).toBeLessThanOrEqual(96);
+  expect(geometry.titleFits).toBe(true);
+  if (geometry.offlineGap !== null) {
+    expect(geometry.offlineGap).toBeGreaterThanOrEqual(0);
+    expect(geometry.offlineGap).toBeLessThanOrEqual(16);
+  }
   expect(geometry.fits).toBe(true);
   expect(geometry.actionFits).toBe(true);
   expect(geometry.metaHeight).toBeLessThan(26);
@@ -97,7 +115,7 @@ suite.define(() => {
         await page.locator(".sidebar-issues-button").click();
         await page.locator("#sidebar-issues-tab-system").click();
         const incident = page.locator('[data-attention-kind="outbox"]');
-        await incident.getByText("Delivery unconfirmed", { exact: true }).waitFor();
+        await incident.getByText("Your message may not have arrived", { exact: true }).waitFor();
         expect(await incident.textContent()).toContain("Release notes");
         expect(await incident.textContent()).not.toContain(
           "Please review the release notes before publishing.",
@@ -110,7 +128,7 @@ suite.define(() => {
           animations: "disabled",
         });
         await gateway.setOnline(false);
-        await incident.getByText("Offline", { exact: true }).waitFor();
+        await incident.locator(".sidebar-outbox-row__offline").waitFor();
         await expectCompactRow(incident);
         await page.locator(".sidebar-footer-bar .gateway-status--reconnecting").waitFor();
         expect(
@@ -185,13 +203,28 @@ suite.define(() => {
           await composer.fill(`Review draft ${number}`);
           await page.getByRole("button", { name: "Send message", exact: true }).click();
           await gateway.waitForRequest("chat.send", { after });
-          await gateway.rejectDeferred("chat.send", {
-            code: "INVALID_REQUEST",
-            message: "Synthetic delivery rejection",
-          });
-          await expect
-            .poll(() => page.locator('.chat-send-status[data-send-state="failed"]').count())
-            .toBe(number);
+          if (number === 1) {
+            await gateway.rejectDeferred("chat.send", {
+              code: "INVALID_REQUEST",
+              message: "Synthetic delivery rejection",
+            });
+            await page.locator('.chat-send-status[data-send-state="failed"]').waitFor();
+          } else {
+            await gateway.setMethodResponse("chat.history", {
+              sessionId: `session:${sessionKey}`,
+              messages: [],
+              sessionInfo: {
+                key: sessionKey,
+                sessionId: `session:${sessionKey}`,
+                status: "done",
+                hasActiveRun: false,
+              },
+            });
+            await gateway.setOnline(false);
+            await page.locator('.chat-send-status[data-send-state="waiting-reconnect"]').waitFor();
+            await gateway.setOnline(true);
+            await page.locator('.chat-send-status[data-send-state="unconfirmed"]').waitFor();
+          }
         }
         await page.setViewportSize({ width, height: 900 });
         await page.getByRole("button", { name: "Expand sidebar", exact: true }).click();
@@ -199,8 +232,11 @@ suite.define(() => {
         await page.locator("#sidebar-issues-tab-system").click();
         const incidents = page.locator('[data-attention-kind="outbox"]');
         expect(await incidents.count()).toBe(2);
+        expect(await incidents.locator(".sidebar-issues-panel__entity").allTextContents()).toEqual([
+          "Your message wasn’t sent",
+          "Your message may not have arrived",
+        ]);
         for (const incident of await incidents.all()) {
-          await incident.getByText("Not sent", { exact: true }).waitFor();
           await expectCompactRow(incident);
           expect(
             await incident
@@ -214,6 +250,86 @@ suite.define(() => {
           animations: "disabled",
         });
         expect(await gateway.getRequests("chat.send")).toHaveLength(2);
+      },
+    );
+  });
+  it("clears the warning on authoritative pending custody and retires only after consumption", async () => {
+    await suite.withPage(
+      { viewport: { width: 1280, height: 900 }, locale: "en-US", serviceWorkers: "block" },
+      async ({ page }) => {
+        const sessionKey = "agent:main:late-custody";
+        const sessionId = `session:${sessionKey}`;
+        const prompt = "Keep this input until it is consumed";
+        const history = {
+          sessionId,
+          messages: [],
+          sessionInfo: { key: sessionKey, sessionId, hasActiveRun: false, status: "done" },
+        };
+        const gateway = await installMockGateway(page, {
+          sessionKey,
+          agentModel: "openai/demo-model",
+          models: [{ id: "demo-model", name: "Demo model", provider: "openai" }],
+          methodResponses: { "chat.history": history },
+        });
+        await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
+        await gateway.deferNext("chat.send");
+        await page.locator(".agent-chat__composer-combobox textarea").fill(prompt);
+        await page.getByRole("button", { name: "Send message", exact: true }).click();
+        const runId = requireString(
+          requireRecord((await gateway.waitForRequest("chat.send")).params).idempotencyKey,
+          "submission id",
+        );
+        const hasPayload = (sendState?: string) =>
+          page.evaluate(
+            ({ runId, sendState }) =>
+              Object.entries(sessionStorage).some(
+                ([key, value]) =>
+                  key.startsWith("openclaw.control.chatComposer.") &&
+                  value.includes(runId) &&
+                  (!sendState || value.includes(`"sendState":"${sendState}"`)),
+              ),
+            { runId, sendState },
+          );
+        await gateway.setOnline(false);
+        await page.locator('.chat-send-status[data-send-state="waiting-reconnect"]').waitFor();
+        await gateway.setOnline(true);
+        await page.locator('.chat-send-status[data-send-state="unconfirmed"]').waitFor();
+        await page.locator(".sidebar-issues-button").click();
+        await page.locator("#sidebar-issues-tab-system").click();
+        await page
+          .locator('[data-attention-kind="outbox"]')
+          .getByText("Your message may not have arrived", { exact: true })
+          .waitFor();
+        await gateway.setOnline(false);
+        await gateway.setMethodResponse("chat.history", {
+          ...history,
+          pendingInputs: {
+            total: 1,
+            items: [
+              {
+                id: "accepted-input",
+                runId,
+                state: "queued",
+                acceptedAt: 100,
+                message: { role: "user", content: prompt },
+              },
+            ],
+          },
+          inputReceipts: [{ runId, state: "pending" }],
+        });
+        await gateway.setOnline(true);
+        await expect.poll(() => hasPayload("waiting-idle")).toBe(true);
+        await expect.poll(() => page.locator('[data-attention-kind="outbox"]').count()).toBe(0);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(1);
+        await gateway.setOnline(false);
+        await gateway.setMethodResponse("chat.history", {
+          ...history,
+          pendingInputs: { items: [], total: 0 },
+          inputReceipts: [{ runId, state: "consumed", consumedByEventId: "canonical-input" }],
+        });
+        await gateway.setOnline(true);
+        await expect.poll(() => hasPayload()).toBe(false);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(1);
       },
     );
   });

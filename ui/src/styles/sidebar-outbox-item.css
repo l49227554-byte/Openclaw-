@@ -19,14 +19,23 @@
   gap: 6px;
 }
 
+.sidebar-outbox-row .sidebar-issues-panel__entity {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.sidebar-outbox-row__meta .sidebar-issues-panel__state {
+  flex: 0 1 auto;
+}
+
 .sidebar-outbox-row__offline {
   flex: none;
-  padding: 1px 5px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
   color: var(--muted);
   font-size: var(--control-ui-text-xs);
   line-height: 1.4;
+  white-space: nowrap;
 }
 
 .sidebar-outbox-row__review {

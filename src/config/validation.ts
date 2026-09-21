@@ -77,10 +77,7 @@ async function validateConfigObjectWithPluginsAsyncInternal(
       prepared.migrated,
       cloneConfigWithResolutionFacts(prepared.migrated),
     ),
-    parsedConfig: inheritLegacyDefaultAgentId(
-      prepared.parsedConfig,
-      cloneConfigWithResolutionFacts(prepared.parsedConfig),
-    ),
+    parsedConfig: prepared.parsedConfig,
   };
   const metadata = await loadPluginMetadataSnapshotAsync(pending.parsedConfig);
   const strictConfig = prepareStrictValidation
@@ -150,12 +147,17 @@ function prepareConfigObjectWithPlugins(
     env: params?.env,
     homedir: params?.homedir,
   }).config as OpenClawConfig;
-  const base = validateConfigObjectRaw(migrated, {
-    sourceRaw: params?.sourceRaw,
-    preservedLegacyRootKeys: params?.preservedLegacyRootKeys,
-    env: params?.env,
-    homedir: params?.homedir,
-  });
+  // Zod preserves nested z.unknown() references in plugin config. Isolate the
+  // input before validation creates non-serialized projections and runtime paths.
+  const base = validateConfigObjectRaw(
+    inheritLegacyDefaultAgentId(migrated, cloneConfigWithResolutionFacts(migrated)),
+    {
+      sourceRaw: params?.sourceRaw,
+      preservedLegacyRootKeys: params?.preservedLegacyRootKeys,
+      env: params?.env,
+      homedir: params?.homedir,
+    },
+  );
   if (!base.ok) {
     return { ok: false, result: { ok: false, issues: base.issues, warnings: [] } };
   }

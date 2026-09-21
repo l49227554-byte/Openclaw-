@@ -61,8 +61,8 @@ function observeArchiveReads(
   vi.spyOn(store, "readLibraryEntry").mockImplementation(async (params) =>
     readTranscriptLibraryEntry(database, params),
   );
-  vi.spyOn(store, "readSummarySnapshot").mockImplementation(async (session, maxUtterances) =>
-    readTranscriptSummarySnapshot(database, session, maxUtterances),
+  vi.spyOn(store, "readSummarySnapshot").mockImplementation(async (descriptor, maxUtterances) =>
+    readTranscriptSummarySnapshot(database, descriptor, maxUtterances),
   );
   clearNodeSqliteKyselyCacheForDatabase(database);
   const queries: Array<{

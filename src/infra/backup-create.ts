@@ -511,6 +511,9 @@ export async function createBackupArchive(
       ) {
         return false;
       }
+      if (!onlyConfig && inventory.isPackageContent(resolvedEntryPath)) {
+        return false;
+      }
       if (isPathWithin(resolvedEntryPath, gatewayLockDir)) {
         return false;
       }

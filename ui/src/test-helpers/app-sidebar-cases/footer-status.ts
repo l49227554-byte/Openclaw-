@@ -189,6 +189,13 @@ describe("AppSidebar gateway footer subtitle", () => {
     expect(sidebar.querySelector(".sidebar-identity-card__gateway")?.textContent).toContain(
       "Local Gateway",
     );
+    const connectedTooltip = sidebar.querySelector<HTMLElement & { content?: string }>(
+      ".gateway-status-tooltip",
+    );
+    expect(connectedTooltip).toBeNull();
+    sidebar.querySelector<HTMLButtonElement>(".sidebar-identity-card")?.click();
+    await sidebar.updateComplete;
+    expect(sidebar.querySelector(".sidebar-identity-menu__outbox")).toBeNull();
   });
 
   it("updates when the native gateway snapshot changes", async () => {

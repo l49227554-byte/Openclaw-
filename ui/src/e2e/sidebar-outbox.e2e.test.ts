@@ -281,12 +281,12 @@ suite.define(() => {
         );
         const hasPayload = (sendState?: string) =>
           page.evaluate(
-            ({ runId, sendState }) =>
+            (expected) =>
               Object.entries(sessionStorage).some(
                 ([key, value]) =>
                   key.startsWith("openclaw.control.chatComposer.") &&
-                  value.includes(runId) &&
-                  (!sendState || value.includes(`"sendState":"${sendState}"`)),
+                  value.includes(expected.runId) &&
+                  (!expected.sendState || value.includes(`"sendState":"${expected.sendState}"`)),
               ),
             { runId, sendState },
           );

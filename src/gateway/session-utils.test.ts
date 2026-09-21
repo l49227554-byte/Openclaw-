@@ -34,7 +34,6 @@ import {
   closeOpenClawAgentDatabasesForTest,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
-import { withStateDirEnv as withRawStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import { registerSessionAutomationSource } from "./session-automation-index.js";
@@ -63,7 +62,11 @@ import {
   resolveCanonicalGatewaySessionStoreKey,
   resolveDeletedAgentIdFromSessionKey,
 } from "./session-utils-store.js";
-import { closeSessionSqliteDatabasesForTest } from "./session-utils.test-support.js";
+import { withAgentPermissionState } from "./session-utils.permissions.test-support.js";
+import {
+  closeSessionSqliteDatabasesForTest,
+  withStateDirEnv,
+} from "./session-utils.test-support.js";
 import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
 
 const providerArtifactMocks = vi.hoisted(() => ({
@@ -172,19 +175,6 @@ test("projects a channel avatar route without exposing its media-store reference
   expect(replacedRow.channelAvatarUrl).toBeDefined();
   expect(replacedRow.channelAvatarUrl).not.toBe(row.channelAvatarUrl);
 });
-
-async function withStateDirEnv<T>(
-  prefix: string,
-  fn: (ctx: { tempRoot: string; stateDir: string }) => Promise<T>,
-): Promise<T> {
-  return withRawStateDirEnv(prefix, async (ctx) => {
-    try {
-      return await fn(ctx);
-    } finally {
-      await closeSessionSqliteDatabasesForTest();
-    }
-  });
-}
 
 async function seedSessionEntries(
   storePath: string,
@@ -397,7 +387,6 @@ describe("gateway session utils", () => {
     expect(row.model).toBe("gpt-5.4");
     expect(row.modelOverrideSource).toBeNull();
   });
-
   test("projects an inherited parent model as the child's effective selection", () => {
     const parentKey = "agent:main:dashboard:parent";
     const childKey = "agent:main:dashboard:child";
@@ -1487,68 +1476,6 @@ describe("gateway session utils", () => {
     const running = { ...settled, status: "running" as const, lastRunId: undefined };
     expect(buildGatewaySessionSnapshot({ sessionRow: running }).lastRunId).toBeNull();
   });
-
-  test.each([
-    ["absent", undefined, undefined, undefined],
-    ["null", null, undefined, undefined],
-    ["non-array", {}, undefined, undefined],
-    ["empty", [], 0, undefined],
-    ["all invalid", [null], 0, undefined],
-    [
-      "mixed validity and tied latest timestamps",
-      [
-        {
-          checkpointId: "checkpoint-older",
-          sessionKey: "agent:main:main",
-          sessionId: "session-1",
-          createdAt: 10,
-          reason: "manual",
-          preCompaction: { sessionId: "session-1" },
-          postCompaction: { sessionId: "session-1" },
-        },
-        null,
-        { checkpointId: "", createdAt: 30, reason: "manual" },
-        { checkpointId: "checkpoint-bad-reason", createdAt: 40, reason: "bogus" },
-        { checkpointId: "checkpoint-infinite", createdAt: Infinity, reason: "manual" },
-        { checkpointId: "checkpoint-nan", createdAt: Number.NaN, reason: "manual" },
-        { checkpointId: "checkpoint-auto", createdAt: 20, reason: "auto-threshold" },
-        {
-          checkpointId: "  checkpoint-newer  ",
-          sessionKey: "agent:main:main",
-          sessionId: "session-1",
-          createdAt: 50,
-          reason: "overflow-retry",
-          preCompaction: { sessionId: "session-1" },
-          postCompaction: { sessionId: "session-1" },
-        },
-        { checkpointId: "checkpoint-tied-later", createdAt: 50, reason: "timeout-retry" },
-      ],
-      4,
-      { checkpointId: "checkpoint-newer", createdAt: 50, reason: "overflow-retry" },
-    ],
-  ])(
-    "session rows ignore malformed compaction checkpoints (%s)",
-    (_name, compactionCheckpoints, expectedCount, expectedLatest) => {
-      const original = structuredClone(compactionCheckpoints);
-      const row = buildGatewaySessionRow({
-        cfg: createModelDefaultsConfig({ primary: "openai/gpt-5.4" }),
-        storePath: "",
-        store: {},
-        key: "agent:main:main",
-        lightweightListRow: true,
-        skipTranscriptUsageFallback: true,
-        entry: {
-          sessionId: "session-1",
-          updatedAt: 1,
-          compactionCheckpoints,
-        } as unknown as SessionEntry,
-      });
-
-      expect(row.compactionCheckpointCount).toBe(expectedCount);
-      expect(row.latestCompactionCheckpoint).toEqual(expectedLatest);
-      expect(compactionCheckpoints).toEqual(original);
-    },
-  );
 
   test("async session list reuses thinking metadata for lightweight rows", async () => {
     const resolveThinkingProfile = vi.fn(() => ({
@@ -3198,7 +3125,6 @@ describe("gateway session utils", () => {
       entry: channelEntry,
     });
     expect(channelRow.displayName).toBe("Acme #general");
-
     const labeled = { ...channelEntry, label: "Team room" } as SessionEntry;
     const labeledRow = buildGatewaySessionRow({
       cfg,
@@ -4397,7 +4323,6 @@ describe("gateway session utils", () => {
       resetConfigRuntimeState();
     }
   });
-
   test("loadSessionEntry keeps the configured canonical store authoritative", async () => {
     resetConfigRuntimeState();
     try {
@@ -4636,7 +4561,7 @@ describe("gateway session utils", () => {
   ] as const)(
     "listAgentsForGateway labels global %j plus agent %j as %s",
     async (globalExec, agentExec, expected) => {
-      await withStateDirEnv("openclaw-agent-permission-label-", async () => {
+      await withAgentPermissionState(async () => {
         const cfg: OpenClawConfig = {
           tools: { exec: globalExec },
           agents: { entries: { main: { tools: { exec: agentExec } } } },
@@ -4712,7 +4637,7 @@ describe("gateway session utils", () => {
       expected: "guarded",
     },
   ])("listAgentsForGateway never overstates $name", async ({ cfg, approvals, expected }) => {
-    await withStateDirEnv("openclaw-agent-permission-floor-", async () => {
+    await withAgentPermissionState(async () => {
       execApprovalsStore.saveExecApprovals(approvals);
       const agent = (await listAgentsForGateway(cfg)).agents.find((entry) => entry.id === "main");
       expect(agent).toBeDefined();
@@ -4731,7 +4656,7 @@ describe("gateway session utils", () => {
   });
 
   test("listAgentsForGateway shares one approvals read across agent permission labels", async () => {
-    await withStateDirEnv("openclaw-agent-permission-roster-", async () => {
+    await withAgentPermissionState(async () => {
       const cfg: OpenClawConfig = {
         tools: { exec: { mode: "ask" } },
         agents: {

@@ -144,15 +144,21 @@ if (plan.gate) {
   const controllers = new Set<AbortController>(),
     pending = new Set<Promise<unknown>>();
   let unjoined = false;
+  let nextCommandId = 0;
   const command = (
     binary: string,
     args: string[],
     override: NodeJS.ProcessEnv = {},
     timeoutMs = 30_000,
   ) => {
+    const commandId = ++nextCommandId;
+    const startedAt = performance.now();
     const controller = new AbortController();
     controllers.add(controller);
     const task = (async () => {
+      let childPid: number | undefined;
+      let exited = false;
+      let closed = false;
       let stdout = "",
         stderr = "",
         signal: NodeJS.Signals | null = null,
@@ -168,6 +174,7 @@ if (plan.gate) {
           requireProcessTreeExit: true,
           signal: controller.signal,
           onReady(child) {
+            childPid = child.pid;
             const capture = (chunk: Buffer, output: "stdout" | "stderr") => {
               if (tooLarge) {
                 return;
@@ -184,7 +191,11 @@ if (plan.gate) {
             child.stdout!.on("data", (chunk: Buffer) => capture(chunk, "stdout"));
             child.stderr!.on("data", (chunk: Buffer) => capture(chunk, "stderr"));
             child.once("exit", (_code, received) => {
+              exited = true;
               signal = received;
+            });
+            child.once("close", () => {
+              closed = true;
             });
           },
         });
@@ -192,6 +203,27 @@ if (plan.gate) {
         return { status, signal, stdout, stderr };
       } catch (error) {
         unjoined ||= hasUnjoinedWork(error);
+        console.error(
+          "[crabbox-staging-fixture] failed command",
+          JSON.stringify({
+            commandId,
+            binary: basename(binary),
+            args: args
+              .slice(0, 3)
+              .map((argument, index) =>
+                index > 0 && ["-e", "--eval"].includes(args[index - 1] ?? "")
+                  ? "<fixture source>"
+                  : argument.slice(0, 256),
+              ),
+            pid: childPid,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            exited,
+            closed,
+            signal,
+            stdoutTail: stdout.slice(-1024),
+            stderrTail: stderr.slice(-1024),
+          }),
+        );
         throw error;
       } finally {
         controllers.delete(controller);

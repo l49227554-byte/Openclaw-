@@ -17,6 +17,7 @@ import type {
   readTranscriptUtterances,
   readTranscriptSummarySnapshot,
 } from "./store-sqlite-read.js";
+import type { writeMeetingTranscriptSummaryInDatabase } from "./store-sqlite-write.js";
 import type {
   appendMeetingTranscriptUtterance,
   readRecentStoppedTranscriptSession,
@@ -37,7 +38,18 @@ export type TranscriptWriteOperations = {
     };
     output: void;
   };
+  "transcripts.writeSummary": {
+    input: {
+      session: SessionIdentity;
+      summaryValues: Parameters<typeof writeMeetingTranscriptSummaryInDatabase>[2];
+      guard?: Parameters<typeof writeMeetingTranscriptSummaryInDatabase>[3];
+      readOnly?: boolean;
+    };
+    output: { ok: true } | { ok: false; reason: "changed" };
+  };
 };
+
+export type TranscriptWriteCommand = SqliteWorkerCommand<TranscriptWriteOperations>;
 
 export type TranscriptReadRequests = {
   "transcripts.readEntries": {

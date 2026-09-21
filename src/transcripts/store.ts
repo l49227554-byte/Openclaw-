@@ -52,14 +52,11 @@ import {
   markMeetingTranscriptPendingExportsInDatabase,
   updateMeetingTranscriptExportManifestInDatabase,
   writeMeetingTranscriptSessionInDatabase,
-  writeMeetingTranscriptSummaryInDatabase,
 } from "./store-sqlite-write.js";
 import {
   meetingTranscriptDb,
   meetingTranscriptSessionQuery,
   sessionFromRow,
-  transcriptSummaryInputRevisionFromRow,
-  readStoredTranscriptSummaryRevision,
 } from "./store-sqlite.js";
 import type * as StoreTypes from "./store-types.js";
 import type {
@@ -354,30 +351,6 @@ export class TranscriptsStore {
     });
   }
 
-  assertSummarySnapshotCurrent(
-    session: TranscriptSessionDescriptor,
-    snapshot: StoreTypes.TranscriptSummarySnapshot,
-    allowAppends: boolean,
-  ): void {
-    const { db } = this.database();
-    const row = executeSqliteQueryTakeFirstSync(
-      db,
-      meetingTranscriptSessionQuery(db, session).selectAll(),
-    );
-    if (
-      !row ||
-      (allowAppends && row.stopped_at !== null) ||
-      row.next_utterance_seq < snapshot.nextSequence ||
-      transcriptSummaryInputRevisionFromRow({
-        ...row,
-        ...(allowAppends ? { next_utterance_seq: snapshot.nextSequence } : {}),
-      }) !== snapshot.inputRevision ||
-      (readStoredTranscriptSummaryRevision(db, session) ?? "") !== snapshot.summaryRevision
-    ) {
-      throw new TranscriptsSummaryChangedError();
-    }
-  }
-
   async listReadEntries(options: read.TranscriptReadOptions) {
     return this.readWorker("transcripts.readEntries", { params: options });
   }
@@ -542,28 +515,54 @@ export class TranscriptsStore {
   async writeSummary(
     summary: TranscriptsSummary,
     session: TranscriptSessionDescriptor,
-    expectedInputRevision?: string,
-    assertCurrent?: () => void,
+    condition?: {
+      guard: StoreTypes.TranscriptSummaryWriteGuard;
+      assertCurrent?: () => void;
+    },
   ): Promise<string> {
+    const context = captureOpenClawStateWorkerContext(this.databaseOptions);
+    const identity = { sessionId: session.sessionId, startedAt: session.startedAt };
+    const intendedSummaryPath = path.join(this.sessionDir(session), "summary.md");
+    const assertOwner = condition?.assertCurrent;
+    const guard = condition
+      ? {
+          inputRevision: condition.guard.inputRevision,
+          nextSequence: condition.guard.nextSequence,
+          summaryRevision: condition.guard.summaryRevision,
+          allowAppends: condition.guard.allowAppends,
+        }
+      : undefined;
     const summaryJson = JSON.stringify(summary);
     const markdown = renderTranscriptsMarkdown(summary);
-    const summaryValues = {
-      generated_at: summary.generatedAt,
-      summary_json: summaryJson,
-      markdown,
-      utterance_count: summary.utteranceCount,
+    const input: TranscriptWriteOperations["transcripts.writeSummary"]["input"] = {
+      session: identity,
+      summaryValues: {
+        generated_at: summary.generatedAt,
+        summary_json: summaryJson,
+        markdown,
+        utterance_count: summary.utteranceCount,
+      },
+      guard,
+      readOnly: this.databaseOptions.readOnly,
     };
-    ensureMeetingTranscriptsSchema(this.databaseOptions);
-    this.transaction("meeting-transcripts.summary.write", ({ db: database }) => {
-      assertCurrent?.();
-      writeMeetingTranscriptSummaryInDatabase(
-        database,
-        session,
-        summaryValues,
-        expectedInputRevision,
-      );
-    });
-    return path.join(this.sessionDir(session), "summary.md");
+    const assertCurrent = () => {
+      context.admission.assertCurrent();
+      assertOwner?.();
+    };
+    const result = await runOpenClawStateWorkerOperation(
+      context,
+      (scope) => scope.execute({ type: "transcripts.writeSummary", input }),
+      {
+        assertCurrent,
+        createAdmission: createSqliteWorkerWriteAdmission(assertCurrent, [
+          context.admission.databasePath,
+        ]),
+      },
+    );
+    if (!result.ok) {
+      throw new TranscriptsSummaryChangedError();
+    }
+    return intendedSummaryPath;
   }
 
   async readSummary(

@@ -8,7 +8,7 @@ const service = {
 const runServiceRestart = vi.fn();
 const runServiceStop = vi.fn();
 const readActiveGatewayLockIdentity = vi.fn();
-const findVerifiedGatewayListenerPidsOnPortSync = vi.fn(() => [] as number[]);
+const findVerifiedGatewayListenerPidsOnPortSync = vi.fn((_port: number) => [] as number[]);
 const signalVerifiedGatewayPidSync = vi.fn();
 const resolveGatewayPort = vi.fn(() => 18_789);
 const readBestEffortConfig = vi.fn(async () => ({}));

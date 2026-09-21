@@ -1833,9 +1833,9 @@ function createInfraSplitShards(): NodeTestSplitShard[] {
     const shardName = resolveInfraShardName(file);
     groups.set(shardName, [...(groups.get(shardName) ?? []), file]);
   }
+  const storageStateInfraFiles = groups.get("core-runtime-infra-storage-state") ?? [];
   groups.set("core-runtime-infra-storage-state", [
-    ...(groups.get("core-runtime-infra-storage-state") ?? []),
-    ...databaseWorkerCoreTestFiles,
+    ...new Set([...storageStateInfraFiles, ...databaseWorkerCoreTestFiles]),
   ]);
 
   return [

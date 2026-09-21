@@ -27,7 +27,7 @@ export function probeScheduledTaskState(
     "$ErrorActionPreference='Stop'",
     `$taskName=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedTaskName}'))`,
     "$lookup=$false",
-    "try { $service=New-Object -ComObject 'Schedule.Service'; $service.Connect(); $lookup=$true; $task=$service.GetFolder('\\').GetTask($taskName); $lookup=$false } catch { $exception=$_.Exception; while($null -ne $exception.InnerException){$exception=$exception.InnerException}; Write-Output $exception.HResult; if($lookup){exit 1}; exit 2 }",
+    "try { $service=New-Object -ComObject 'Schedule.Service'; $service.Connect(); $lookup=$true; $folder=$service.GetFolder('\\'); $task=$folder.GetTask($taskName); $lookup=$false } catch { $exception=$_.Exception; while($null -ne $exception.InnerException){$exception=$exception.InnerException}; Write-Output $exception.HResult; if($lookup){exit 1}; exit 2 }",
     // A registered task stays found even when state or optional history cannot be read.
     "$result=@{state=$null}",
     "try { $result.state=[int]$task.State } catch {}",
@@ -36,7 +36,13 @@ export function probeScheduledTaskState(
     "try { $enabled=$task.Enabled; if($enabled -is [bool]) { $result.enabled=$enabled } } catch {}",
     "try { $result.lastRunResult=[int]$task.LastTaskResult } catch {}",
     "try { $result.lastRunTime=$task.LastRunTime.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) } catch {}",
-    "$result | ConvertTo-Json -Compress; exit 0",
+    "$json=$result | ConvertTo-Json -Compress",
+    // Windows PowerShell 5.1 can remain alive while registered-task COM wrappers are
+    // still referenced. Release them before emitting the completed probe result.
+    "try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($task) } catch {}",
+    "try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($folder) } catch {}",
+    "try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($service) } catch {}",
+    "Write-Output $json; exit 0",
   ].join("; ");
   const probe = spawnSync(
     getWindowsPowerShellExePath(),

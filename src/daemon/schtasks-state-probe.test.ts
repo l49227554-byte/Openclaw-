@@ -28,6 +28,28 @@ it("reads task state when PowerShell rejects a no-console launch", () => {
   expect(spawnSync).toHaveBeenCalledTimes(1);
 });
 
+it("releases registered-task COM wrappers before returning the probe result", () => {
+  vi.mocked(spawnSync).mockReturnValue({
+    pid: 0,
+    output: [null, JSON.stringify({ state: 3, enabled: true }), ""],
+    stdout: JSON.stringify({ state: 3, enabled: true }),
+    stderr: "",
+    status: 0,
+    signal: null,
+  });
+
+  expect(probeScheduledTaskState("OpenClaw Gateway")).toMatchObject({ status: "found" });
+  const encoded = vi.mocked(spawnSync).mock.calls[0]?.[1]?.at(-1);
+  expect(typeof encoded).toBe("string");
+  const script = Buffer.from(encoded as string, "base64").toString("utf16le");
+  const outputIndex = script.indexOf("Write-Output $json");
+  for (const name of ["$task", "$folder", "$service"]) {
+    const releaseIndex = script.indexOf(`FinalReleaseComObject(${name})`);
+    expect(releaseIndex).toBeGreaterThan(-1);
+    expect(releaseIndex).toBeLessThan(outputIndex);
+  }
+});
+
 it.each(["", " \r\n"])("explains an empty exit-2 result: %j", (output) => {
   vi.mocked(spawnSync).mockReturnValue({
     pid: 0,

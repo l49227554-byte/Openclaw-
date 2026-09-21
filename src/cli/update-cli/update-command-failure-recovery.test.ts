@@ -49,6 +49,30 @@ afterEach(() => {
 });
 
 describe("post-update failure recovery observation", () => {
+  it("does not probe an unowned Gateway after an initial no-restart failure", async () => {
+    const root = dirs.make("no-restart-initial-failure-");
+    await fs.writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({ name: "openclaw", version: "2026.9.5" }),
+    );
+    await expect(
+      finishSuccessfulPackageSwitch(
+        { packageRoot: root, json: true, restartEnvironment: undefined },
+        {
+          result: {
+            status: "error",
+            mode: "npm",
+            root,
+            reason: "doctor-failed",
+            steps: [],
+            durationMs: 0,
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ result: { status: "error", reason: "doctor-failed" } });
+    expect(verifyUpdatedGateway).not.toHaveBeenCalled();
+  });
+
   it.each(["observation", "terminal", "standalone"] as const)(
     "keeps pending recovery facts coherent at %s publication after a transient write failure",
     async (publication) => {

@@ -357,7 +357,16 @@ export async function finishUpdate(
     assertCurrent();
     finalResult = cleanupFailure?.result ?? finalResult;
     // Compensation of the original service is not proof of the requested installation.
-    if ((finalResult.status === "error" || cleanupFailure) && !originalServiceRecoveryHandled) {
+    // An update that entered finalization already failed and never owned a service has no
+    // Gateway generation to observe. Probing a configured-but-unused port would only consume
+    // the full startup allowance before publishing the existing failure.
+    const gatewayObservationRelevant =
+      params.result.status !== "error" || params.shouldRestart || currentServiceStop()?.stopped;
+    if (
+      (finalResult.status === "error" || cleanupFailure) &&
+      !originalServiceRecoveryHandled &&
+      gatewayObservationRelevant
+    ) {
       finalResult = await verifyUpdateFailureRecovery({
         result: finalResult,
         root,

@@ -191,7 +191,9 @@ describe("native Codex tool response fidelity", () => {
       const threadId = started.thread.id;
       const notifications: CodexServerNotification[] = [];
       const completed = createDeferred<unknown>();
+      const commandCompleted = createDeferred<unknown>();
       void completed.promise.catch(() => undefined);
+      void commandCompleted.promise.catch(() => undefined);
       const removeHandler = client.addNotificationHandler((notification) => {
         if (!isJsonObject(notification.params) || notification.params.threadId !== threadId) {
           return;
@@ -200,20 +202,46 @@ describe("native Codex tool response fidelity", () => {
         if (notification.method === "turn/completed") {
           completed.resolve(notification.params.turn);
         }
+        const item = notification.params.item;
+        if (
+          notification.method === "item/completed" &&
+          isJsonObject(item) &&
+          item.type === "commandExecution" &&
+          item.id === callId
+        ) {
+          commandCompleted.resolve(item);
+        }
       });
       context.onTestFinished(removeHandler);
-      const timer = setTimeout(
-        () => completed.reject(new Error("Native output fidelity turn timed out")),
-        30_000,
-      );
+      const timer = setTimeout(() => {
+        const completedItems = notifications
+          .filter((notification) => notification.method === "item/completed")
+          .map((notification) => notification.params.item)
+          .filter(isJsonObject)
+          .map((item) => {
+            const type = typeof item.type === "string" ? item.type : "unknown-type";
+            const id = typeof item.id === "string" ? item.id : "unknown-id";
+            return `${type}:${id}`;
+          })
+          .join(", ");
+        const error = new Error(
+          `Native output fidelity completion timed out; completed items: ${completedItems || "none"}`,
+        );
+        completed.reject(error);
+        commandCompleted.reject(error);
+      }, 30_000);
       timer.unref();
       context.onTestFinished(() => clearTimeout(timer));
       const turn = await client.request("turn/start", {
         threadId,
         input: [{ type: "text", text: "Read source.txt.", text_elements: [] }],
       });
-      await expect(completed.promise).resolves.toMatchObject({ status: "completed" });
+      const [completedTurn, completedCommand] = await Promise.all([
+        completed.promise,
+        commandCompleted.promise,
+      ]);
       clearTimeout(timer);
+      expect(completedTurn).toMatchObject({ status: "completed" });
       expect(failures).toEqual([]);
       expect(requests).toHaveLength(2);
 
@@ -235,18 +263,7 @@ describe("native Codex tool response fidelity", () => {
       if (typeof output !== "string") {
         throw new Error("Expected native exec response text");
       }
-      const command = requireRecord(
-        notifications
-          .filter((notification) => notification.method === "item/completed")
-          .map((notification) =>
-            requireRecord(
-              requireRecord(notification.params, "item notification").item,
-              "completed item",
-            ),
-          )
-          .find((item) => item.type === "commandExecution" && item.id === callId),
-        "native command execution",
-      );
+      const command = requireRecord(completedCommand, "native command execution");
       expect(command).toMatchObject({ status: "completed", exitCode: 0, aggregatedOutput: source });
       expect(output).not.toBe(command.aggregatedOutput);
       expect(output).toContain("Process exited with code 0\n");

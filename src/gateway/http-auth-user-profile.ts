@@ -4,6 +4,7 @@ import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveHostAccountName } from "../infra/host-account-name.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import {
   ensureGatewayOwnerProfile,
   ensureProfileForEmail,
@@ -62,7 +63,6 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
       authResult: params.authResult,
       authConfig: params.cfg.gateway?.auth,
       requestHeaders: params.req.headers,
-      preferCachedIdentity: !rolesConfigured,
     });
     const profile = syncGitHubIdentity
       ? await syncGitHubIdentity()
@@ -94,4 +94,16 @@ export function resolveHttpProfile(profileId: string, updatedAt: number, cfg?: O
     },
     ...(operatorRolePolicy ? { operatorRolePolicy } : {}),
   };
+}
+
+export function applyHttpOperatorRoleScopeCeiling<Scope extends string>(
+  scopes: Scope[],
+  auth: Pick<AuthenticatedHttpUserProfile, "operatorRolePolicy"> | undefined,
+): Scope[] {
+  const allowedScopes = auth?.operatorRolePolicy?.scopes;
+  return allowedScopes
+    ? scopes.filter((scope) =>
+        roleScopesAllow({ role: "operator", requestedScopes: [scope], allowedScopes }),
+      )
+    : scopes;
 }

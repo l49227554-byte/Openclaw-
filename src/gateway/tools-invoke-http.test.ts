@@ -77,6 +77,11 @@ vi.mock("../config/sessions/session-accessor.js", async (importOriginal) => {
       const entry = sessionEntries.get(params.sessionKey);
       return entry ? { sessionKey: params.sessionKey, entry } : undefined;
     },
+    loadExactSessionEntryCandidates: (params: { sessionKeys: readonly string[] }) =>
+      params.sessionKeys.flatMap((sessionKey) => {
+        const entry = sessionEntries.get(sessionKey);
+        return entry ? [{ sessionKey, entry }] : [];
+      }),
     resolveSessionEntryAccessTarget: (params: { sessionKey: string }) => ({
       entry: sessionEntries.get(params.sessionKey),
     }),
@@ -531,7 +536,7 @@ describe("POST /tools/invoke", () => {
             definitions: {
               guest: {
                 sessions: { others: "view" },
-                agents: ["guest-agent"],
+                agents: ["main", "guest-agent"],
                 scopes: ["operator.write"],
               },
             },

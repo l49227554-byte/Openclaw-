@@ -1,9 +1,53 @@
 // Memory Core tests cover manager status state plugin behavior.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { collectMemoryStatusAggregate, resolveStatusProviderInfo } from "./manager-status-state.js";
+import {
+  collectMemoryStatusAggregate,
+  collectMemoryStorageStatus,
+  resolveStatusProviderInfo,
+} from "./manager-status-state.js";
 
 describe("memory manager status state", () => {
+  it("distinguishes retained cache payload, WAL, and reusable space without changing the database", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memory-storage-status-"));
+    const databasePath = path.join(root, "agent.sqlite");
+    const db = new DatabaseSync(databasePath);
+    try {
+      db.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA wal_autocheckpoint = 0;
+        CREATE TABLE memory_embedding_cache (embedding TEXT);
+        INSERT INTO memory_embedding_cache VALUES ('[1,2]'), ('🦞');
+        CREATE TABLE other_owner (payload BLOB);
+        INSERT INTO other_owner VALUES (zeroblob(1048576));
+        DELETE FROM other_owner;
+      `);
+      const before = db.prepare("SELECT total_changes() AS changes").get();
+      const storage = collectMemoryStorageStatus(db, databasePath);
+      expect(storage.embeddingCacheEntries).toBe(2);
+      expect(storage.embeddingCacheBytes).toBe(9);
+      expect(storage.databaseBytes).toBe(fs.statSync(databasePath).size);
+      expect(storage.walBytes).toBe(fs.statSync(`${databasePath}-wal`).size);
+      expect(storage.walBytes).toBeGreaterThan(1048576);
+      expect(storage.reusableBytes).toBeGreaterThanOrEqual(1048576);
+      expect(db.prepare("SELECT total_changes() AS changes").get()).toEqual(before);
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      expect(collectMemoryStorageStatus(db, databasePath).walBytes).toBe(0);
+      db.exec("VACUUM");
+      expect(collectMemoryStorageStatus(db, databasePath)).toMatchObject({
+        reusableBytes: 0,
+        embeddingCacheEntries: 2,
+        embeddingCacheBytes: 9,
+      });
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     {
       name: "requested provider before initialization",
@@ -11,7 +55,7 @@ describe("memory manager status state", () => {
         provider: null,
         providerInitialized: false,
         requestedProvider: "openai",
-        configuredModel: "mock-embed",
+        resolveConfiguredModel: () => "mock-embed",
       },
       expected: {
         provider: "openai",
@@ -25,12 +69,30 @@ describe("memory manager status state", () => {
         provider: null,
         providerInitialized: true,
         requestedProvider: "openai",
-        configuredModel: "mock-embed",
+        resolveConfiguredModel: () => {
+          throw new Error("Configured model must not resolve after provider initialization");
+        },
       },
       expected: {
         provider: "none",
         model: undefined,
         searchMode: "fts-only" as const,
+      },
+    },
+    {
+      name: "effective fallback provider without resolving the configured model",
+      params: {
+        provider: { id: "local", model: "fallback-model" },
+        providerInitialized: true,
+        requestedProvider: "openai",
+        resolveConfiguredModel: () => {
+          throw new Error("Configured model must not override an effective provider");
+        },
+      },
+      expected: {
+        provider: "local",
+        model: "fallback-model",
+        searchMode: "hybrid" as const,
       },
     },
   ])("reports $name", ({ params, expected }) => {

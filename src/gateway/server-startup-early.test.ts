@@ -1,9 +1,21 @@
 /**
  * Early gateway startup helper tests.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as gatewayWork from "../process/gateway-work-admission.js";
+import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
+import { getDetachedTaskLifecycleRuntime } from "../tasks/detached-task-runtime.js";
+import { getTaskById } from "../tasks/task-registry.js";
+import { createTaskFixture } from "../tasks/task-registry.test-support.js";
+import {
+  resetDetachedTaskLifecycleRuntimeForTests,
+  resetTaskFlowRegistryForTests,
+  resetTaskRegistryForTests,
+  setDetachedTaskLifecycleRuntime,
+} from "../tasks/task-runtime.test-helpers.js";
+import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { createGatewayPluginRuntimeGeneration } from "./server-plugin-runtime-generation.js";
-import { runGatewayShutdownSteps } from "./server-shutdown.js";
+import { runGatewayCloseSteps } from "./server-shutdown.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 
 type StartGatewayDiscovery = typeof import("./server-discovery-runtime.js").startGatewayDiscovery;
@@ -50,11 +62,13 @@ vi.mock("../agents/context.js", () => ({
   ensureContextWindowCacheLoaded: mocks.ensureContextWindowCacheLoaded,
 }));
 
-vi.mock("../tasks/runtime-internal.js", () => ({
+vi.mock("../tasks/runtime-internal.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../tasks/runtime-internal.js")>()),
   ensureTaskRuntimeStateReady: mocks.ensureTaskRuntimeStateReady,
 }));
 
-vi.mock("../tasks/task-registry.maintenance.js", () => ({
+vi.mock("../tasks/task-registry.maintenance.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../tasks/task-registry.maintenance.js")>()),
   configureTaskRegistryMaintenance: mocks.configureTaskRegistryMaintenance,
   startTaskRegistryMaintenance: mocks.startTaskRegistryMaintenance,
   getInspectableActiveTaskRestartBlockers: mocks.getInspectableActiveTaskRestartBlockers,
@@ -190,17 +204,29 @@ describe("startGatewayEarlyRuntime", () => {
       const startup = startGatewayEarlyRuntime(
         earlyRuntimeInput({ minimalTestGateway: false, swapDiscovery }),
       ).catch(async (error: unknown) => {
-        await runGatewayShutdownSteps({
-          steps: [
-            { name: "discovery resident", run: async () => await swapDiscovery(null)?.stop() },
-            { name: "gateway close", run: async () => await swapDiscovery(null)?.stop() },
-          ],
+        await runGatewayCloseSteps({
+          owner: {
+            connectionWork: { drain: async () => {} },
+            stopConnectionDependentSidecars: () => {},
+            stopRegisteredGatewayLifetimeSidecars: async () => await swapDiscovery(null)?.stop(),
+            stopRegisteredPostReadySidecars: () => {},
+            runClosePrelude: () => {},
+            sealAndJoinRegisteredSidecarStops: () => {},
+          },
+          close: async () => await swapDiscovery(null)?.stop(),
           onError: onCleanupError,
         });
         throw error;
       });
 
-      await expect(startup).rejects.toBe(startupError);
+      if (cleanupRejects) {
+        await expect(startup).rejects.toMatchObject({
+          name: "AggregateError",
+          errors: [expect.objectContaining({ cause: cleanupError })],
+        });
+      } else {
+        await expect(startup).rejects.toBe(startupError);
+      }
       expect(stopDiscovery).toHaveBeenCalledOnce();
       expect(owner.current).toBeNull();
       expect(onCleanupError).toHaveBeenCalledTimes(cleanupRejects ? 1 : 0);
@@ -272,7 +298,7 @@ describe("startGatewayEarlyRuntime", () => {
     const stopDiscovery = vi.fn(async () => {});
     const swapDiscovery = vi.fn(() => null);
     mocks.startGatewayDiscovery.mockResolvedValue({ update: async () => {}, stop: stopDiscovery });
-    mocks.ensureTaskRuntimeStateReady.mockImplementationOnce(() => {
+    mocks.ensureTaskRuntimeStateReady.mockImplementationOnce(async () => {
       throw new Error("task-flow registry restore failed");
     });
 
@@ -334,4 +360,117 @@ describe("startGatewayEarlyRuntime", () => {
     expect(discoveryParams.gatewayDiscoveryServices).toEqual([service]);
     expect(discoveryParams.pluginRuntimeClaim).toBe(input.pluginRuntimeClaim);
   });
+});
+
+describe("early startup task maintenance", () => {
+  let maintenance: typeof import("../tasks/task-registry.maintenance.js");
+
+  beforeEach(async () => {
+    const tasks = await vi.importActual<typeof import("../tasks/runtime-internal.js")>(
+      "../tasks/runtime-internal.js",
+    );
+    maintenance = await vi.importActual<typeof import("../tasks/task-registry.maintenance.js")>(
+      "../tasks/task-registry.maintenance.js",
+    );
+    mocks.ensureTaskRuntimeStateReady.mockImplementation(tasks.ensureTaskRuntimeStateReady);
+    mocks.configureTaskRegistryMaintenance.mockImplementation(
+      maintenance.configureTaskRegistryMaintenance,
+    );
+    mocks.startTaskRegistryMaintenance.mockImplementation(maintenance.startTaskRegistryMaintenance);
+    mocks.setSkillsRemoteRegistry.mockReset();
+    mocks.registerSkillsChangeListener.mockReturnValue(() => {});
+  });
+
+  afterEach(async () => {
+    maintenance.stopTaskRegistryMaintenance();
+    vi.useRealTimers();
+    resetDetachedTaskLifecycleRuntimeForTests();
+    maintenance.resetTaskRegistryMaintenanceRuntimeForTests();
+    resetTaskRegistryForTests({ persist: false });
+    resetTaskFlowRegistryForTests({ persist: false });
+    await drainGlobalSingletonLifecycleState("close");
+  });
+  it.each([false, true])(
+    "preserves copied tasks only in an update canary (updateCanary: %s)",
+    async (updateCanary) => {
+      await withStateDirEnv("openclaw-canary-tasks-", async () => {
+        resetTaskRegistryForTests({ persist: false });
+        resetTaskFlowRegistryForTests({ persist: false });
+        vi.useFakeTimers();
+        const recoverTask = vi.fn(async () => ({ recovered: false }));
+        setDetachedTaskLifecycleRuntime({
+          ...getDetachedTaskLifecycleRuntime(),
+          tryRecoverTaskBeforeMarkLost: recoverTask,
+        });
+        const staleAt = Date.now() - 45 * 60_000;
+        const copiedTask = createTaskFixture("cli", {
+          task: "Synthetic copied task",
+          runId: "canary-copied-run",
+          lastEventAt: staleAt,
+          notifyPolicy: "silent",
+        });
+        const expiredTask = createTaskFixture("cli", {
+          task: "Synthetic expired task",
+          status: "succeeded",
+          lastEventAt: staleAt,
+          cleanupAfter: staleAt,
+          notifyPolicy: "silent",
+        });
+        const recentTask = createTaskFixture("cli", {
+          task: "Synthetic task within recovery grace",
+          runId: "canary-recent-run",
+          lastEventAt: Date.now() - 4 * 60_000,
+          notifyPolicy: "silent",
+        });
+        const earlyRuntime = await startGatewayEarlyRuntime(
+          earlyRuntimeInput({ minimalTestGateway: false, updateCanary }),
+        );
+        const scheduledSweeps: Promise<unknown>[] = [];
+        const runRootWork = gatewayWork.runWithGatewayIndependentRootWorkAdmission;
+        const rootWork = vi
+          .spyOn(gatewayWork, "runWithGatewayIndependentRootWorkAdmission")
+          .mockImplementation((run, origin, signal) => {
+            const pending = runRootWork(run, origin, signal);
+            if (origin === "tasks:maintenance") {
+              scheduledSweeps.push(pending);
+            }
+            return pending;
+          });
+        try {
+          // Exercise both the startup sweep and the recurring maintenance sweep.
+          let expectedSweeps = 0;
+          for (const elapsedMs of [5_000, 60_000]) {
+            await vi.advanceTimersByTimeAsync(elapsedMs);
+            if (!updateCanary) {
+              expectedSweeps += 1;
+            }
+            expect(scheduledSweeps).toHaveLength(expectedSweeps);
+            await Promise.all(scheduledSweeps);
+            if (updateCanary) {
+              expect(getTaskById(copiedTask.taskId)).toEqual(copiedTask);
+              expect(getTaskById(expiredTask.taskId)).toEqual(expiredTask);
+              expect(getTaskById(recentTask.taskId)).toEqual(recentTask);
+              expect(recoverTask).not.toHaveBeenCalled();
+            } else {
+              expect(getTaskById(copiedTask.taskId)?.status).toBe("lost");
+              expect(getTaskById(expiredTask.taskId)).toBeUndefined();
+              expect(getTaskById(recentTask.taskId)?.status).toBe(
+                elapsedMs === 5_000 ? "running" : "lost",
+              );
+              expect(recoverTask).toHaveBeenCalledTimes(elapsedMs === 5_000 ? 1 : 2);
+            }
+          }
+        } finally {
+          maintenance.stopTaskRegistryMaintenance();
+          try {
+            await Promise.allSettled(scheduledSweeps);
+            await earlyRuntime.skillsChangeUnsub();
+          } finally {
+            rootWork.mockRestore();
+            vi.useRealTimers();
+          }
+        }
+      });
+    },
+  );
 });

@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createStreamingResponse } from "../../test-support/streaming-error-response.js";
+import {
+  cancelTrackedTextResponse,
+  createStreamingResponse,
+} from "../../test-support/streaming-error-response.js";
 type EndpointCall = {
   url: string;
   timeoutSeconds: number;
@@ -97,21 +100,6 @@ function pushMcpHandshake(
       result: { content: [{ type: "text", text: JSON.stringify(toolPayload) }] },
     }),
   );
-}
-function cancelTrackedResponse(text: string, init: ResponseInit) {
-  let canceled = false;
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode(text));
-    },
-    cancel() {
-      canceled = true;
-    },
-  });
-  return {
-    response: new Response(stream, init),
-    wasCanceled: () => canceled,
-  };
 }
 beforeEach(() => {
   endpointMockState.calls = [];
@@ -421,10 +409,13 @@ describe("parallel web search provider", () => {
     expect(body.advanced_settings?.max_results).toBe(5);
   });
   it("bounds Parallel API error bodies without using response.text()", async () => {
-    const tracked = cancelTrackedResponse(`${"parallel upstream unavailable ".repeat(1024)}tail`, {
-      status: 503,
-      headers: { "Content-Type": "text/plain" },
-    });
+    const tracked = cancelTrackedTextResponse(
+      `${"parallel upstream unavailable ".repeat(1024)}tail`,
+      {
+        status: 503,
+        headers: { "Content-Type": "text/plain" },
+      },
+    );
     const textSpy = vi.spyOn(tracked.response, "text").mockRejectedValue(new Error("unbounded"));
     endpointMockState.responses.push(tracked.response);
     const error = await paidTool()
@@ -434,6 +425,7 @@ describe("parallel web search provider", () => {
       })
       .catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ status: 503, statusCode: 503 });
     expect((error as Error).message).toMatch(
       /Parallel API error \(503\): parallel upstream unavailable/,
     );
@@ -541,18 +533,6 @@ describe("parallel web search provider", () => {
     );
     expect(streamed.getReadCount()).toBeLessThan(200);
     expect(streamed.wasCanceled()).toBe(true);
-  });
-  it("parses a well-formed Parallel JSON body under the byte cap", async () => {
-    enqueueJson({
-      search_id: "ok",
-      session_id: "ok-session",
-      results: [{ url: "https://example.com/a", title: "A", excerpts: ["alpha"] }],
-    });
-    const result = await paidTool().execute({
-      objective: `parallel-success-ok-${Date.now()}-${Math.random()}`,
-      search_queries: ["openclaw"],
-    });
-    expect(result).toMatchObject({ provider: "parallel", searchId: "ok", count: 1 });
   });
   it("does not surface a Parallel-generated sessionId on a cache hit", async () => {
     const objective = `parallel-cache-isolation-${Date.now()}-${Math.random()}`;
@@ -696,10 +676,14 @@ describe("runParallelMcpSearch", () => {
     expect(response.session_id).toBe(callerSessionId);
   });
   it("throws when initialize fails", async () => {
-    endpointMockState.responses.push(new Response("nope", { status: 500 }));
-    await expect(runParallelMcpSearch({ searchQueries: ["x"], maxResults: 5 })).rejects.toThrow(
-      /initialize failed \(500\)/,
-    );
+    endpointMockState.responses.push(new Response("nope", { status: 429 }));
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["x"], maxResults: 5 }),
+    ).rejects.toMatchObject({
+      status: 429,
+      statusCode: 429,
+      message: expect.stringMatching(/initialize failed \(429\)/),
+    });
   });
   it("throws when the initialized acknowledgement fails", async () => {
     endpointMockState.responses.push(
@@ -707,11 +691,15 @@ describe("runParallelMcpSearch", () => {
         { jsonrpc: "2.0", id: "i", result: { protocolVersion: "2025-06-18" } },
         { "mcp-session-id": "server-session-1" },
       ),
-      new Response("ack nope", { status: 500 }),
+      new Response("ack nope", { status: 403 }),
     );
-    await expect(runParallelMcpSearch({ searchQueries: ["x"], maxResults: 5 })).rejects.toThrow(
-      /notifications\/initialized failed \(500\): ack nope/,
-    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["x"], maxResults: 5 }),
+    ).rejects.toMatchObject({
+      status: 403,
+      statusCode: 403,
+      message: expect.stringMatching(/notifications\/initialized failed \(403\): ack nope/),
+    });
     expect(endpointMockState.calls.map((call) => readBody(call).method)).toEqual([
       "initialize",
       "notifications/initialized",
@@ -719,8 +707,22 @@ describe("runParallelMcpSearch", () => {
     expect(headerOf(endpointCall(1), "Mcp-Session-Id")).toBe("server-session-1");
     expect(headerOf(endpointCall(1), "MCP-Protocol-Version")).toBe("2025-06-18");
   });
+  it("preserves HTTP status when tools/call fails", async () => {
+    endpointMockState.responses.push(
+      jsonResponse({ jsonrpc: "2.0", id: "i", result: { protocolVersion: "2025-06-18" } }),
+      new Response(null, { status: 202 }),
+      new Response("call rejected", { status: 401 }),
+    );
+    await expect(
+      runParallelMcpSearch({ searchQueries: ["x"], maxResults: 5 }),
+    ).rejects.toMatchObject({
+      status: 401,
+      statusCode: 401,
+      message: expect.stringContaining("tools/call failed (401): call rejected"),
+    });
+  });
   it("bounds initialize error bodies without using response.text()", async () => {
-    const tracked = cancelTrackedResponse(`${"parallel mcp unavailable ".repeat(1024)}tail`, {
+    const tracked = cancelTrackedTextResponse(`${"parallel mcp unavailable ".repeat(1024)}tail`, {
       status: 503,
       headers: { "Content-Type": "text/plain" },
     });

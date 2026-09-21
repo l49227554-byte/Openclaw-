@@ -1,19 +1,20 @@
-import type { CronJob, ModelAuthStatusResult } from "../api/types.ts";
+import type { CronCompactJob, ModelAuthStatusResult } from "../api/types.ts";
 import { createMentionsCapability, type MentionsCapability } from "../app/mentions.ts";
 import type {
   SidebarAttentionStoreController as StoreController,
   SidebarAttentionStoreSources,
 } from "../app/sidebar-attention-store.ts";
 import { normalizeAgentLabel } from "../lib/agents/display.ts";
-import { createInitialCronState, loadCronJobsPage, loadCronStatus } from "../lib/cron/index.ts";
-import { loadModelAuthStatus } from "../lib/model-auth.ts";
+import { createInitialCronState, loadCronStatus } from "../lib/cron/index.ts";
+import { loadCompactCronJobsPage } from "../lib/cron/jobs.ts";
+import { loadModelAuthStatus, nextModelAuthStatusRefreshAt } from "../lib/model-auth.ts";
 import { normalizeAgentId } from "../lib/sessions/session-key.ts";
 import {
   dismissSidebarAttention,
-  dismissalStoreKey,
   isSidebarAttentionDismissed,
   loadDismissals,
   reconcileSidebarAttentionDismissals,
+  resolveSidebarAttentionKey,
   type SidebarAttentionDismissals,
   type SidebarAttentionDismissal,
 } from "./sidebar-attention-dismissals.ts";
@@ -24,6 +25,7 @@ import {
   type SidebarInboxEntry,
 } from "./sidebar-attention-entries.ts";
 import {
+  type CronAttentionJob,
   buildSidebarAttentionEntries,
   compareSidebarAttentionEntries,
 } from "./sidebar-attention-items.ts";
@@ -31,7 +33,7 @@ import { resolveSidebarUpdateAttention } from "./sidebar-attention-update.ts";
 
 type SidebarAttentionOwner = {
   connectionRevision: number;
-  profileId: string | null;
+  dismissalKey: string | null;
 };
 
 const VISIBILITY_REFRESH_MIN_AGE_MS = 60_000;
@@ -39,19 +41,21 @@ const IDLE_REFRESH_INTERVAL_MS = 10 * 60_000;
 
 export class SidebarAttentionStoreController implements StoreController {
   readonly mentions: MentionsCapability;
-  private cronJobs: CronJob[] = [];
+  private cronJobs: CronAttentionJob[] = [];
   private cronSchedulerEnabled: boolean | null = null;
   private modelAuthStatus: ModelAuthStatusResult | null = null;
   private modelAuthAgentId: string | null = null;
+  private modelAuthRefreshAt?: number;
+  private modelAuthRefreshTimer?: ReturnType<typeof globalThis.setTimeout>;
   private loadedOwner: SidebarAttentionOwner | null = null;
   private loadedClient = this.sources.gateway.snapshot.client;
   private loadedAgentScope = { ...this.sources.agentSelection.state };
   private cronLoadedAtMs = 0;
-  private modelAuthLoadedAtMs = 0;
-  private dismissedScope: string | null = null;
+  private dismissalKey: string | null = null;
   private dismissed: SidebarAttentionDismissals = {};
   private loadGeneration = 0;
   private cronRefresh: { generation: number; requested: boolean } | null = null;
+  private cronRefreshNeeded = false;
   private modelAuthRefresh: { generation: number; requested: boolean } | null = null;
   private readonly stopGateway: () => void;
   private readonly stopEvents: () => void;
@@ -74,6 +78,8 @@ export class SidebarAttentionStoreController implements StoreController {
     this.stopEvents = sources.gateway.subscribeEvents((event) => {
       if (event.event === "cron") {
         this.load(false);
+      } else if (event.event === "config.changed" || event.event === "chat.metadata.changed") {
+        this.load(true, false);
       }
     });
     this.stopSelection = sources.agentSelection.subscribe(() => this.synchronizeGateway());
@@ -95,13 +101,14 @@ export class SidebarAttentionStoreController implements StoreController {
   private owner(): SidebarAttentionOwner {
     return {
       connectionRevision: this.sources.gateway.connectionRevision,
-      profileId: this.sources.gateway.snapshot.selfUser?.id ?? null,
+      dismissalKey: resolveSidebarAttentionKey(this.sources.gateway),
     };
   }
 
   private ownerEquals(left: SidebarAttentionOwner, right: SidebarAttentionOwner): boolean {
     return (
-      left.connectionRevision === right.connectionRevision && left.profileId === right.profileId
+      left.connectionRevision === right.connectionRevision &&
+      left.dismissalKey === right.dismissalKey
     );
   }
 
@@ -110,6 +117,26 @@ export class SidebarAttentionStoreController implements StoreController {
     this.cronSchedulerEnabled = null;
     this.modelAuthStatus = null;
     this.modelAuthAgentId = null;
+    this.modelAuthRefreshAt = undefined;
+    this.scheduleModelAuthRefresh();
+  }
+
+  private scheduleModelAuthRefresh(): void {
+    globalThis.clearTimeout(this.modelAuthRefreshTimer);
+    this.modelAuthRefreshTimer = undefined;
+    if (this.modelAuthRefreshAt === undefined || document.visibilityState === "hidden") {
+      return;
+    }
+    const delay = this.modelAuthRefreshAt - Date.now();
+    if (delay <= 0) {
+      this.modelAuthRefreshAt = undefined;
+      this.load(true, false);
+      return;
+    }
+    this.modelAuthRefreshTimer = globalThis.setTimeout(
+      () => this.scheduleModelAuthRefresh(),
+      Math.min(2_147_483_647, delay),
+    );
   }
 
   private cronOwnerByJobId(): ReadonlyMap<string, string> | undefined {
@@ -170,17 +197,17 @@ export class SidebarAttentionStoreController implements StoreController {
     cronInventoryComplete: boolean;
     modelAuthAgentId: string | null;
   }): void {
-    if (!this.dismissedScope) {
+    if (!this.dismissalKey) {
       return;
     }
     this.dismissed = reconcileSidebarAttentionDismissals({
       active: this.buildEntries().flatMap((entry) => (entry.dismissal ? [entry.dismissal] : [])),
-      gatewayUrl: this.dismissedScope,
+      key: this.dismissalKey,
       scope,
     });
   }
 
-  private load(refreshModelAuth = true): void {
+  private load(refreshModelAuth = true, refreshCron = true): void {
     const gateway = this.sources.gateway.snapshot;
     const client = gateway.client;
     if (gateway.phase !== "connected" || !client) {
@@ -206,31 +233,62 @@ export class SidebarAttentionStoreController implements StoreController {
       if (!current()) {
         return;
       }
-      if (scope.modelAuthAgentId) {
-        this.modelAuthLoadedAtMs = Date.now();
-      } else {
+      if (!scope.modelAuthAgentId) {
         this.cronLoadedAtMs = Date.now();
       }
       this.reconcileDismissals(scope);
       this.onChange();
     };
-    if (this.cronRefresh?.generation === generation) {
+    // Deferring dispatch still invalidates the pending inventory: its stale
+    // response must not retire dismissals saved since the request began.
+    if (refreshCron && this.cronRefresh?.generation === generation) {
       this.cronRefresh.requested = true;
-    } else {
+    }
+    if (refreshCron) {
+      this.cronRefreshNeeded = document.visibilityState === "hidden";
+    }
+    if (refreshCron && !this.cronRefreshNeeded && this.cronRefresh?.generation !== generation) {
       const refresh = { generation, requested: true };
       this.cronRefresh = refresh;
-      void (async () => {
+      const canRefreshCron = () => current() && document.visibilityState !== "hidden";
+      const run = async () => {
         try {
           // One scope owns both reads. Events during either read request one
           // trailing inventory; retired scopes never drain queued network work.
           while (refresh.requested && current()) {
+            if (!canRefreshCron()) {
+              this.cronRefreshNeeded = true;
+              break;
+            }
             refresh.requested = false;
-            const cron = createInitialCronState({ client, connected: true });
+            const cron = createInitialCronState<CronCompactJob>({ client, connected: true });
+            cron.canRefresh = canRefreshCron;
             cron.cronAgentId = agentScope.scopeId;
-            await Promise.all([loadCronJobsPage(cron), loadCronStatus(cron)]);
+            await Promise.all([loadCompactCronJobsPage(cron), loadCronStatus(cron)]);
+            while (
+              canRefreshCron() &&
+              cron.cronJobsHasMore &&
+              !cron.cronJobsError &&
+              !refresh.requested
+            ) {
+              await loadCompactCronJobsPage(cron, { append: true });
+            }
             if (current()) {
-              if (!cron.cronJobsError) {
-                this.cronJobs = cron.cronJobs;
+              if (!cron.cronJobsError && !cron.cronJobsHasMore) {
+                this.cronJobs = cron.cronJobs.map((job) => ({
+                  id: job.id,
+                  name: job.name,
+                  agentId: job.agentId,
+                  enabled: job.enabled,
+                  updatedAtMs: job.updatedAtMs,
+                  state: {
+                    nextRunAtMs: job.nextRunAtMs ?? undefined,
+                    lastRunAtMs: job.lastRunAtMs ?? undefined,
+                    lastRunStatus: job.lastRunStatus ?? undefined,
+                    runningAtMs: job.runningAtMs,
+                    autoDisabled: job.autoDisabled,
+                  },
+                }));
               }
               if (!cron.cronError) {
                 this.cronSchedulerEnabled = cron.cronStatus?.enabled ?? null;
@@ -246,6 +304,9 @@ export class SidebarAttentionStoreController implements StoreController {
                   !cron.cronError,
                 modelAuthAgentId: null,
               });
+              if (cron.cronJobsHasMore && !canRefreshCron()) {
+                this.cronRefreshNeeded = true;
+              }
             }
           }
         } finally {
@@ -253,12 +314,15 @@ export class SidebarAttentionStoreController implements StoreController {
             this.cronRefresh = null;
           }
         }
-      })();
+      };
+      void (this.sources.connectionBootstrap?.run(refresh, run, { background: true }) ?? run());
     }
     if (
       (refreshModelAuth || agentScope.selectedId !== this.modelAuthAgentId) &&
       agentScope.selectedId
     ) {
+      this.modelAuthRefreshAt = undefined;
+      this.scheduleModelAuthRefresh();
       if (this.modelAuthRefresh?.generation === generation) {
         // Only explicit freshness loads queue auth work; cron events cannot
         // invalidate a pending auth response or schedule another auth request.
@@ -275,6 +339,8 @@ export class SidebarAttentionStoreController implements StoreController {
               if (current()) {
                 this.modelAuthStatus = status;
                 this.modelAuthAgentId = agentId;
+                this.modelAuthRefreshAt = status ? nextModelAuthStatusRefreshAt(status) : undefined;
+                this.scheduleModelAuthRefresh();
                 publishSource({ cronInventoryComplete: false, modelAuthAgentId: agentId });
               }
             }
@@ -293,10 +359,10 @@ export class SidebarAttentionStoreController implements StoreController {
 
   private synchronizeGateway(): void {
     const snapshot = this.sources.gateway.snapshot;
-    const gatewayUrl = this.sources.gateway.connection.gatewayUrl;
-    if (gatewayUrl && gatewayUrl !== this.dismissedScope) {
-      this.dismissedScope = gatewayUrl;
-      this.dismissed = loadDismissals(gatewayUrl);
+    const key = resolveSidebarAttentionKey(this.sources.gateway);
+    if (key !== this.dismissalKey) {
+      this.dismissalKey = key;
+      this.dismissed = loadDismissals(key);
     }
     if (snapshot.phase !== "connected" || !snapshot.client) {
       this.loadGeneration += 1;
@@ -335,47 +401,56 @@ export class SidebarAttentionStoreController implements StoreController {
       this.onChange();
     }
     this.loadGeneration += 1;
+    this.modelAuthRefreshAt = undefined;
+    this.scheduleModelAuthRefresh();
     this.load();
   }
 
   private readonly refreshIfStale = () => {
-    // Recent cron events cannot postpone an overdue auth refresh.
-    const loadedAtMs = this.sources.agentSelection.state.selectedId
-      ? Math.min(this.cronLoadedAtMs, this.modelAuthLoadedAtMs)
-      : this.cronLoadedAtMs;
-    if (
-      document.visibilityState === "visible" &&
-      Date.now() - loadedAtMs >= VISIBILITY_REFRESH_MIN_AGE_MS
-    ) {
-      this.load();
+    this.scheduleModelAuthRefresh();
+    const stale = Date.now() - this.cronLoadedAtMs >= VISIBILITY_REFRESH_MIN_AGE_MS;
+    if (document.visibilityState === "visible" && (this.cronRefreshNeeded || stale)) {
+      // Hidden cron events need an immediate catch-up even inside the freshness
+      // window, without refreshing independently current model authentication.
+      this.load(false);
     }
   };
 
   private readonly syncDismissalsFromStorage = (event: StorageEvent) => {
-    if (
-      this.dismissedScope &&
-      (event.key === null || event.key === dismissalStoreKey(this.dismissedScope))
-    ) {
+    if (this.dismissalKey && (event.key === null || event.key === this.dismissalKey)) {
       this.syncDismissals();
     }
   };
 
   syncDismissals(): void {
-    if (this.dismissedScope) {
-      this.dismissed = loadDismissals(this.dismissedScope);
-      this.onChange();
-    }
+    // The eager facade can run before this controller's Gateway subscription.
+    // Retire old-account health and dismissal state before publishing its storage refresh.
+    this.synchronizeGateway();
+    this.dismissed = loadDismissals(this.dismissalKey);
+    this.onChange();
   }
 
   dismiss(dismissal: SidebarAttentionDismissal): void {
-    if (this.dismissedScope) {
-      this.dismissed = dismissSidebarAttention(this.dismissedScope, dismissal);
+    const run = this.sources.overlays.snapshot.updateRun;
+    if (
+      dismissal.kind === "updateAvailable" &&
+      run &&
+      run.status !== "running" &&
+      dismissal.signature === JSON.stringify(["run", run.runId])
+    ) {
+      this.sources.overlays.acknowledgeUpdateRun();
+      return;
+    }
+    if (this.dismissalKey) {
+      this.dismissed = dismissSidebarAttention(this.dismissalKey, dismissal);
       this.onChange();
     }
   }
 
   dispose(): void {
     this.loadGeneration += 1;
+    this.modelAuthRefreshAt = undefined;
+    this.scheduleModelAuthRefresh();
     this.stopGateway();
     this.stopEvents();
     this.stopSelection();

@@ -277,6 +277,32 @@ suite.define(() => {
         await card.getByRole("button", { name: "Next", exact: true }).click();
         const freeText = card.getByRole("textbox", { name: "Answer", exact: true });
         await freeText.fill("Include one practical example.");
+        await expect
+          .poll(() => freeText.evaluate((element) => getComputedStyle(element).overflowY))
+          .toBe("hidden");
+        const initialAnswerHeight = (await freeText.boundingBox())!.height;
+        await freeText.press("End");
+        await freeText.press("Enter");
+        await freeText.pressSequentially("Keep the next steps separate.");
+        await expectBrowser(freeText).toHaveValue(
+          "Include one practical example.\nKeep the next steps separate.",
+        );
+        await expect
+          .poll(async () => (await freeText.boundingBox())!.height)
+          .toBeGreaterThan(initialAnswerHeight);
+        const multilineAnswerHeight = (await freeText.boundingBox())!.height;
+        await freeText.fill(
+          Array.from({ length: 30 }, (_, index) => `Detail ${index + 1}`).join("\n"),
+        );
+        await expect.poll(async () => (await freeText.boundingBox())!.height).toBe(160);
+        await expect
+          .poll(() => freeText.evaluate((element) => element.scrollHeight > element.clientHeight))
+          .toBe(true);
+        await freeText.fill("Include one practical example.\nKeep the next steps separate.");
+        await expect
+          .poll(async () => (await freeText.boundingBox())!.height)
+          .toBe(multilineAnswerHeight);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(0);
         await card.getByRole("button", { name: "Collapse question", exact: true }).click();
         const expand = card.getByRole("button", { name: "Expand question", exact: true });
         await expand.waitFor();
@@ -318,7 +344,9 @@ suite.define(() => {
           animations: "disabled",
         });
         await expand.click();
-        expect(await freeText.inputValue()).toBe("Include one practical example.");
+        expect(await freeText.inputValue()).toBe(
+          "Include one practical example.\nKeep the next steps separate.",
+        );
         await card.getByRole("button", { name: "Back", exact: true }).click();
         expect(await custom.inputValue()).toBe("/stop is an example for the whole team");
         await card.getByRole("button", { name: "Next", exact: true }).click();
@@ -330,7 +358,7 @@ suite.define(() => {
         const request = await gateway.waitForRequest("chat.send");
         const params = requireRecord(request.params);
         expect(params.message).toBe(
-          `> ${title}\n\n/stop is an example for the whole team\n\n> ${followUpTitle}\n\nInclude one practical example.`,
+          `> ${title}\n\n/stop is an example for the whole team\n\n> ${followUpTitle}\n\nInclude one practical example.\nKeep the next steps separate.`,
         );
         expect(params.queueMode).toBe(active ? "steer" : undefined);
         expect(params).not.toHaveProperty("replyToId");

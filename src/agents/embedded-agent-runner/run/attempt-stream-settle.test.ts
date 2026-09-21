@@ -62,6 +62,9 @@ const MP4 = Buffer.from("0000001c6674797069736f6d0000000069736f6d000000000000000
 const admittedRunContext = {
   operationalRunInstance: createOperationalRunInstanceRef("test-run"),
 };
+const requestAuthModelRegistry = {
+  getApiKeyAndHeaders: async () => ({ ok: true as const }),
+};
 
 function createSettleFixture(overrides?: Partial<SettleInput>): SettleInput {
   const sessionManager = SessionManager.inMemory();
@@ -515,6 +518,7 @@ function createTransportFixture(testCase: {
       promptCacheKey: undefined,
       resolvedApiKey: undefined,
       authStorage: { getApiKey: async () => testCase.apiKey },
+      modelRegistry: requestAuthModelRegistry,
       runId: "run-transport-1",
       admittedRunContext,
       runtimePlan: {
@@ -706,6 +710,7 @@ describe("prepareEmbeddedAttemptTransport", () => {
           model,
           modelId: model.id,
           provider: model.provider,
+          modelRegistry: requestAuthModelRegistry,
           runId: "run-native-video",
           admittedRunContext,
           runtimePlan: {
@@ -769,6 +774,7 @@ describe("prepareEmbeddedAttemptTransport", () => {
         model,
         modelId: model.id,
         provider: model.provider,
+        modelRegistry: requestAuthModelRegistry,
         runId: "run-native-image-failure",
         admittedRunContext,
         runtimePlan: {

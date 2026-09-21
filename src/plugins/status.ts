@@ -204,7 +204,7 @@ type PluginReportParams = {
   metadataSnapshot?: PluginMetadataSnapshot;
 };
 
-function preparePluginReport(params: PluginReportParams | undefined) {
+function preparePluginReport(params: PluginReportParams | undefined, loadMode?: "validate") {
   const rawConfig = params?.config ?? getRuntimeConfig();
   const workspace = resolvePluginControlPlaneWorkspace({
     config: rawConfig,
@@ -279,6 +279,7 @@ function preparePluginReport(params: PluginReportParams | undefined) {
       env: params?.env,
       loadModules: true,
       cache: true,
+      mode: loadMode,
       onlyPluginIds,
       toolDiscovery: params?.runtimeInspection,
     }),
@@ -288,8 +289,9 @@ function preparePluginReport(params: PluginReportParams | undefined) {
 function buildPluginReport(
   params: PluginReportParams | undefined,
   loadModules: boolean,
+  loadMode?: "validate",
 ): PluginStatusReport {
-  const prepared = preparePluginReport(params);
+  const prepared = preparePluginReport(params, loadMode);
   const { rawConfig, workspaceDir, metadataSnapshot, context, runtimeCompatConfig, onlyPluginIds } =
     prepared;
   const registry = loadModules
@@ -362,9 +364,12 @@ export function buildPluginSnapshotReport(params?: PluginReportParams): PluginSt
 export async function withPluginDiagnosticsReport<T>(
   params: PluginReportParams | undefined,
   consume: (report: PluginStatusReport) => T | Promise<T>,
+  options?: { loadMode?: "validate" },
 ): Promise<T> {
   await using cache = createPluginCache();
-  return await withPluginCache(cache, () => consume(buildPluginReport(params, true)));
+  return await withPluginCache(cache, () =>
+    consume(buildPluginReport(params, true, options?.loadMode)),
+  );
 }
 
 /** Serializes an owned inspection before disposing its registration resources. */

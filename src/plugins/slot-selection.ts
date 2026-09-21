@@ -77,6 +77,7 @@ export async function applySlotSelectionForPlugin(
         });
         return { config: result.config, warnings: result.warnings };
       },
+      { loadMode: "validate" },
     );
   }
 

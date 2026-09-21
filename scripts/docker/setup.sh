@@ -17,6 +17,8 @@ HOME_VOLUME_NAME="${OPENCLAW_HOME_VOLUME:-}"
 RAW_SANDBOX_SETTING="${OPENCLAW_SANDBOX:-}"
 SANDBOX_ENABLED=""
 DOCKER_SOCKET_PATH="${OPENCLAW_DOCKER_SOCKET:-}"
+RUNTIME_UID="${OPENCLAW_PUID:-}"
+RUNTIME_GID="${OPENCLAW_PGID:-}"
 TIMEZONE="${OPENCLAW_TZ:-}"
 RAW_SKIP_ONBOARDING="${OPENCLAW_SKIP_ONBOARDING:-}"
 SKIP_ONBOARDING=""
@@ -443,6 +445,24 @@ validate_named_volume() {
   fi
 }
 
+# Container runtime identity (OPENCLAW_PUID/OPENCLAW_PGID). Unset keeps the image
+# default of 1000, which is what every existing deployment already runs as.
+# Reject 0: a root gateway would defeat the image's non-root guarantee.
+# Compare with 10# so a zero-padded value is not read as octal.
+validate_runtime_id() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    fail "$name must be a decimal integer. Run 'id' on the host to find yours."
+  fi
+  if ((10#$value == 0)); then
+    fail "$name must not be 0; the container must not run as root."
+  fi
+  if ((10#$value > 65533)); then
+    fail "$name must be 65533 or lower."
+  fi
+}
+
 validate_mount_spec() {
   local mount="$1"
   if contains_disallowed_chars "$mount"; then
@@ -501,6 +521,12 @@ fi
 if [[ -n "$SANDBOX_ENABLED" ]]; then
   validate_mount_path_value "OPENCLAW_DOCKER_SOCKET" "$DOCKER_SOCKET_PATH"
 fi
+if [[ -n "$RUNTIME_UID" ]]; then
+  validate_runtime_id "OPENCLAW_PUID" "$RUNTIME_UID"
+fi
+if [[ -n "$RUNTIME_GID" ]]; then
+  validate_runtime_id "OPENCLAW_PGID" "$RUNTIME_GID"
+fi
 if [[ -n "$TIMEZONE" ]]; then
   if contains_disallowed_chars "$TIMEZONE"; then
     fail "OPENCLAW_TZ contains unsupported control characters."
@@ -540,6 +566,8 @@ export OPENCLAW_ALLOW_INSECURE_PRIVATE_WS="${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:
 export OPENCLAW_SANDBOX="$SANDBOX_ENABLED"
 export OPENCLAW_DOCKER_SOCKET="$DOCKER_SOCKET_PATH"
 export OPENCLAW_DOCKER_SETUP=1
+export OPENCLAW_PUID="$RUNTIME_UID"
+export OPENCLAW_PGID="$RUNTIME_GID"
 export OPENCLAW_TZ="$TIMEZONE"
 export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}"
@@ -750,6 +778,8 @@ upsert_env "$ENV_FILE" \
   DOCKER_GID \
   OPENCLAW_INSTALL_DOCKER_CLI \
   OPENCLAW_ALLOW_INSECURE_PRIVATE_WS \
+  OPENCLAW_PUID \
+  OPENCLAW_PGID \
   OPENCLAW_TZ \
   OTEL_EXPORTER_OTLP_ENDPOINT \
   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
@@ -800,8 +830,9 @@ if [[ -n "$TIMEZONE" ]] && ! is_valid_timezone_in_image "$TIMEZONE"; then
   fail "OPENCLAW_TZ must be supported by $IMAGE_NAME (e.g. Asia/Shanghai)."
 fi
 
-# Ensure bind-mounted data directories are writable by the container's `node`
-# user (uid 1000). Host-created dirs inherit the host user's uid which may
+# Ensure bind-mounted data directories are writable by the container's runtime
+# user (OPENCLAW_PUID/OPENCLAW_PGID, default 1000:1000 -- the image's `node`).
+# Host-created dirs inherit the host user's uid which may
 # differ, causing EACCES when the container tries to mkdir/write.
 # Running a brief root container to chown is the portable Docker idiom --
 # it works regardless of the host uid and doesn't require host-side root.
@@ -815,14 +846,17 @@ echo "==> Fixing data-directory permissions"
 # redirecting the root operation outside the mounted tree.
 # After fixing the config dir, only the OpenClaw metadata subdirectory
 # (.openclaw/) inside the workspace gets chowned, not the user's project files.
+# The owner is passed as a positional argument, never interpolated into the root
+# command string, so an operator-supplied value cannot become shell syntax.
 run_prestart_gateway --user root --entrypoint sh openclaw-gateway -c \
   'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; \
-   /usr/bin/find -P /home/node/.openclaw -xdev \( ! -path /home/node/.openclaw/workspace -o -prune \) -execdir /usr/bin/chown -h node:node {} +; \
-   /usr/bin/chown -h node:node /home/node/.config; \
-   /usr/bin/find -P /home/node/.config/openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
+   /usr/bin/find -P /home/node/.openclaw -xdev \( ! -path /home/node/.openclaw/workspace -o -prune \) -execdir /usr/bin/chown -h "$1" {} +; \
+   /usr/bin/chown -h "$1" /home/node/.config; \
+   /usr/bin/find -P /home/node/.config/openclaw -xdev -execdir /usr/bin/chown -h "$1" {} +; \
    if [ -d /home/node/.openclaw/workspace/.openclaw ] && [ ! -L /home/node/.openclaw/workspace/.openclaw ]; then \
-     /usr/bin/find -P /home/node/.openclaw/workspace/.openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
-   fi || true'
+     /usr/bin/find -P /home/node/.openclaw/workspace/.openclaw -xdev -execdir /usr/bin/chown -h "$1" {} +; \
+   fi || true' \
+  openclaw-docker-setup "${OPENCLAW_PUID:-1000}:${OPENCLAW_PGID:-1000}"
 
 echo ""
 if [[ -n "$SKIP_ONBOARDING" ]]; then

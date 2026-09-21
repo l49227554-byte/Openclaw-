@@ -202,6 +202,7 @@ This also deletes unrelated workloads and the PVC.
 - The gateway binds to loopback inside the pod by default, so the included setup is for `kubectl port-forward`.
 - No cluster-scoped resources; everything lives in a single namespace.
 - Security hardening: `readOnlyRootFilesystem`, `drop: ALL` capabilities, non-root user (UID 1000).
+- The pod's uid/gid is pinned via `runAsUser`/`runAsGroup` in `deployment.yaml`; the Docker Compose-only `OPENCLAW_PUID`/`OPENCLAW_PGID` environment variables are inert here — edit the manifest directly to change it.
 - The default config keeps the Control UI on the safer local-access path: loopback bind plus `kubectl port-forward` to `http://127.0.0.1:18789`.
 - If you move beyond localhost access, use the supported remote model: HTTPS/Tailscale plus the appropriate gateway bind and Control UI origin settings.
 - Secrets are generated in a temp directory and applied directly to the cluster; no secret material is written to the repo checkout.

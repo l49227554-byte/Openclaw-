@@ -3363,9 +3363,13 @@ function resolveToolingTestTargets(changedPath: string, cwd = process.cwd()) {
           "src/dockerfile.test.ts",
           "test/scripts/test-install-sh-docker.test.ts",
         ]
-      : changedPath === ".crabbox.yaml"
-        ? ["test/scripts/package-acceptance-workflow.test.ts"]
-        : null) ??
+      : // Compose carries the container runtime identity (`user:`) and the cache
+        // redirection the image relies on, so it needs the same coverage as the image.
+        changedPath === "docker-compose.yml"
+        ? ["src/docker-setup.e2e.test.ts", "src/dockerfile.test.ts"]
+        : changedPath === ".crabbox.yaml"
+          ? ["test/scripts/package-acceptance-workflow.test.ts"]
+          : null) ??
     crossOsReleaseTargets ??
     resolveUpgradeSurvivorConfigRecipeTargets(implementationPath) ??
     resolveDocsI18nBehaviorTargets(implementationPath) ??

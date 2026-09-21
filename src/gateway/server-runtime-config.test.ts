@@ -2,7 +2,10 @@
 // container defaults, and invalid config rejection before server startup.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetContainerEnvironmentCacheForTest } from "../infra/container-environment.js";
-import { resolveGatewayRuntimeConfig } from "./server-runtime-config.js";
+import {
+  assertGatewayRuntimeSecurityConfig,
+  resolveGatewayRuntimeConfig,
+} from "./server-runtime-config.js";
 
 const TRUSTED_PROXY_AUTH = {
   mode: "trusted-proxy" as const,
@@ -15,6 +18,75 @@ const TOKEN_AUTH = {
   mode: "token" as const,
   token: "test-token-123",
 };
+
+describe("container runtime identity", () => {
+  // A loopback bind with no auth passes every other gate in this function, so any
+  // throw here comes from the runtime-identity check itself.
+  const SAFE_LISTENER = {
+    cfg: {},
+    port: 18789,
+    bindHost: "127.0.0.1",
+    controlUiEnabled: false,
+    resolvedAuth: { mode: "none" as const, allowTailscale: false },
+    tailscaleMode: "off" as const,
+  };
+
+  function withUid(uid: number | undefined) {
+    vi.spyOn(process, "getuid").mockReturnValue(uid as number);
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  // Compose accepts user names as well as numeric ids, so every spelling that lands
+  // on uid 0 must be refused, not just the ones that parse to the number zero.
+  it.each(["0", "00", "root", "0:0"])(
+    "refuses to start when OPENCLAW_PUID=%s resolves to root",
+    (requested) => {
+      vi.stubEnv("OPENCLAW_PUID", requested);
+      withUid(0);
+      expect(() => assertGatewayRuntimeSecurityConfig(SAFE_LISTENER)).toThrow(
+        /refusing to run the gateway as root/u,
+      );
+    },
+  );
+
+  it("names the offending value so the operator can find it", () => {
+    vi.stubEnv("OPENCLAW_PUID", "root");
+    withUid(0);
+    expect(() => assertGatewayRuntimeSecurityConfig(SAFE_LISTENER)).toThrow(
+      /OPENCLAW_PUID=root resolved to uid 0/u,
+    );
+  });
+
+  it("allows uid 0 when the operator did not request it", () => {
+    // Fleet cells run `--user 0:0` on a rootless daemon, where uid 0 inside the
+    // container is an unprivileged host uid. They never set OPENCLAW_PUID.
+    vi.stubEnv("OPENCLAW_PUID", "");
+    withUid(0);
+    expect(() => assertGatewayRuntimeSecurityConfig(SAFE_LISTENER)).not.toThrow();
+  });
+
+  it("allows a non-root OPENCLAW_PUID", () => {
+    vi.stubEnv("OPENCLAW_PUID", "1026");
+    withUid(1026);
+    expect(() => assertGatewayRuntimeSecurityConfig(SAFE_LISTENER)).not.toThrow();
+  });
+
+  it("ignores OPENCLAW_PUID=0 when the process is not actually root", () => {
+    vi.stubEnv("OPENCLAW_PUID", "0");
+    withUid(1000);
+    expect(() => assertGatewayRuntimeSecurityConfig(SAFE_LISTENER)).not.toThrow();
+  });
+
+  it("ignores the check on platforms without uids", () => {
+    vi.stubEnv("OPENCLAW_PUID", "0");
+    withUid(undefined);
+    expect(() => assertGatewayRuntimeSecurityConfig(SAFE_LISTENER)).not.toThrow();
+  });
+});
 
 describe("resolveGatewayRuntimeConfig", () => {
   describe("trusted-proxy auth mode", () => {

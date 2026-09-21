@@ -2,6 +2,7 @@
 import { AsyncLocalStorage, createHook } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
+import { statSync } from "node:fs";
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import net, { type Socket } from "node:net";
@@ -16,6 +17,7 @@ import {
   terminateManagedChild,
 } from "../../scripts/lib/managed-child-process.mts";
 import { hasErrnoCode } from "../../src/infra/errno.js";
+import { createFileLockManager } from "../../src/infra/file-lock-manager.js";
 import {
   drainFileLockStateForTest,
   FILE_LOCK_TIMEOUT_ERROR_CODE,
@@ -495,25 +497,50 @@ describe("openclaw test instance", () => {
     expect(
       attempts.filter((attempt) => attempt.argv[0] === "gateway").map((attempt) => attempt.port),
     ).toEqual([instance.port, instance.port, instance.port]);
-    await instance.cleanup();
-    await instance.cleanup();
-    await instance.stopGateway();
-    await expect(isPortReserved(instance.port)).resolves.toBe(false);
+    const child = instance.child;
+    expect(child).toBeDefined();
+    const serverSpy = vi.spyOn(net, "createServer");
+    try {
+      await instance.cleanup();
+      expect(child?.exitCode !== null || child?.signalCode !== null).toBe(true);
+      expect(child?.stdout.closed).toBe(true);
+      expect(child?.stderr.closed).toBe(true);
+      await instance.cleanup();
+      await instance.stopGateway();
+      // Terminal calls must not leave a new idle reservation behind.
+      for (const result of serverSpy.mock.results) {
+        if (result.type === "return") {
+          expect(result.value.listening).toBe(false);
+        }
+      }
+    } finally {
+      serverSpy.mockRestore();
+    }
     await expectPathMissing(instance.state.root);
     expect(reserved).toEqual({ created: true, refused: true, stopped: true });
   });
 
   it("releases reservation probe connections before startup and terminal cleanup", async () => {
     const { instance } = await createFakeGateway("ready");
+    const serverSpy = vi.spyOn(net, "createServer");
     const probe = net.connect(instance.port, "127.0.0.1");
     try {
       await withTestTimeout(once(probe, "close"), 1_000, "reservation retained a probe connection");
       await instance.startGateway();
       await instance.stopGateway();
+      const reservation = serverSpy.mock.results.find(
+        (result) => result.type === "return" && result.value.listening,
+      )?.value;
+      expect(reservation?.listening).toBe(true);
+      const closed = vi.fn();
+      reservation?.once("close", closed);
       await instance.cleanup();
-      await expect(isPortReserved(instance.port)).resolves.toBe(false);
+      expect(closed).toHaveBeenCalledOnce();
+      expect(reservation?.listening).toBe(false);
+      expect(reservation?.address()).toBeNull();
     } finally {
       probe.destroy();
+      serverSpy.mockRestore();
     }
   });
 
@@ -847,7 +874,31 @@ describe("openclaw test instance", () => {
         console.log(JSON.stringify({ reserved: false, code: error.code, causeCode: error.cause?.code }));
       }
     `);
+      const claimHandles: {
+        handle: Awaited<ReturnType<typeof fs.open>>;
+        lockPath: string;
+        dev: bigint;
+        ino: bigint;
+      }[] = [];
       try {
+        const claims = createFileLockManager("openclaw.test-gateway-ports")
+          .heldEntries()
+          .filter((claim) =>
+            [instance.port, instance.port + 1].some(
+              (port) => path.basename(claim.normalizedTargetPath) === `openclaw-test-port-${port}`,
+            ),
+          );
+        expect(claims).toHaveLength(2);
+        for (const claim of claims) {
+          const handle = await fs.open(claim.lockPath, "r");
+          const identity = await handle.stat({ bigint: true });
+          claimHandles.push({
+            handle,
+            lockPath: claim.lockPath,
+            dev: identity.dev,
+            ino: identity.ino,
+          });
+        }
         expect(await reserveInProcessPort()).toEqual({
           reserved: false,
           code: "EADDRINUSE",
@@ -864,13 +915,24 @@ describe("openclaw test instance", () => {
         control.unblock();
         await Promise.allSettled([starting]);
         await instance.cleanup();
-        expect(await reserveInProcessPort()).toEqual({ reserved: true });
-        const released = await allocateContender();
-        expect(released.port).toBe(instance.port + offset);
-        expect(released.attempted).toEqual([instance.port + offset]);
+        for (const claim of claimHandles) {
+          // Pin the old inode while checking release: another fixture may already
+          // own the same port and lock pathname, but cannot own this claim file.
+          let retained = false;
+          try {
+            const current = statSync(claim.lockPath, { bigint: true });
+            retained = current.dev === claim.dev && current.ino === claim.ino;
+          } catch (error) {
+            if (!hasErrnoCode(error, "ENOENT")) {
+              throw error;
+            }
+          }
+          expect(retained).toBe(false);
+        }
       } finally {
         control.unblock();
         await Promise.allSettled([starting]);
+        await Promise.all(claimHandles.map((claim) => claim.handle.close()));
       }
     },
   );

@@ -8,8 +8,8 @@ permissions:
 jobs:
   windows:
     if: github.repository == 'openclaw/openclaw' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'ci-burden/w1-windows-workers' && github.run_attempt == 1
-    name: windows-16-workers-4-part-${{ matrix.part }}
-    runs-on: blacksmith-16vcpu-windows-2025
+    name: windows-32-workers-8-part-${{ matrix.part }}
+    runs-on: blacksmith-32vcpu-windows-2025
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -21,7 +21,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       NODE_VERSION: "24.x"
       NODE_OPTIONS: --max-old-space-size=8192
-      OPENCLAW_VITEST_MAX_WORKERS: 4
+      OPENCLAW_VITEST_MAX_WORKERS: 8
       OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD: 1
     defaults:
       run:
@@ -39,7 +39,7 @@ jobs:
             totalMemoryBytes = [long]$machine.TotalPhysicalMemory
             freeMemoryBytes = [long]$os.FreePhysicalMemory * 1024
             runnerName = $env:RUNNER_NAME
-            requestedClass = "blacksmith-16vcpu-windows-2025"
+            requestedClass = "blacksmith-32vcpu-windows-2025"
             vitestWorkerCeiling = $env:OPENCLAW_VITEST_MAX_WORKERS
           } | ConvertTo-Json -Compress | Write-Output
       - name: Checkout

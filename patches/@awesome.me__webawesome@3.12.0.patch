@@ -1,6 +1,7 @@
 # Dropdown focus: upstream 3.12.0 focuses the first root item after its opening
 # animation, stealing focus from an already focused search editor or submenu row.
-# Move initial autofocus before the animation, after popup anchor initialization.
+# Move initial autofocus before the animation, after popup anchor initialization,
+# and preserve focus already chosen while the popup was becoming usable.
 # Remove this hunk when upstream passes the opening-focus and initially-open
 # regressions in ui/src/components/web-awesome-dropdown.browser.test.ts.
 
@@ -729,7 +730,7 @@ index 593bac0b7708fc0e908f9f8de650e45f8b3610ec..66e09365025b0e593e38d8410c8019d6
    }
  };
 diff --git a/dist/chunks/chunk.KZJTFPDQ.js b/dist/chunks/chunk.KZJTFPDQ.js
-index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..61e4cdf51693399fd489b0f3e891bd35de773058 100644
+index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..8c13bb4a100c02097b5bf117c255f28d2b051539 100644
 --- a/dist/chunks/chunk.KZJTFPDQ.js
 +++ b/dist/chunks/chunk.KZJTFPDQ.js
 @@ -58,17 +58,16 @@ var openDropdowns = /* @__PURE__ */ new Set();
@@ -1039,7 +1040,7 @@ index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..61e4cdf51693399fd489b0f3e891bd35
 +    if (!isCurrent()) return;
 +    // Focus when opening becomes usable; animation completion must not steal
 +    // focus from an embedded editor or a submenu the operator has entered.
-+    if (open) {
++    if (open && !this.menu.matches(":focus-within")) {
 +      const items = this.getItems();
        items.forEach((item, index) => item.active = index === 0);
 -      items[0].focus({ preventScroll: true });

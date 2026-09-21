@@ -208,7 +208,7 @@ overrides:
 packageExtensionsChecksum: sha256-zZ8fyodhMTumshonC7kktCqTPsiHL3UAyS9vltFAlMo=
 
 patchedDependencies:
-  '@awesome.me/webawesome@3.12.0': f23415ee54d1c84aedef0409e14ff773b11a00575a4008969efdef85e9ccac43
+  '@awesome.me/webawesome@3.12.0': cbd13e538d4903adcbef2b62a6be56093c0c3568961c203f6e593bd8337ec5fa
   '@novnc/novnc@1.7.0': bfde0e1bda172da3525f9f5014d85ad28073325b74f09609084598a65d2f412d
   matrix-js-sdk@42.3.0: 79bea7a0ca1c3c98635b2da6957539ab04386a2fe0ffec5498b5e9abc18b8b97
   vitest@5.0.0: 5e7c1655044613ad5d71751e82ea0e6448f7bf5a7445b86114f495866c9a3bcf
@@ -2734,7 +2734,7 @@ importers:
     dependencies:
       '@awesome.me/webawesome':
         specifier: 3.12.0
-        version: 3.12.0(patch_hash=f23415ee54d1c84aedef0409e14ff773b11a00575a4008969efdef85e9ccac43)(@floating-ui/utils@0.2.12)(@types/node@26.5.1)(@types/react@19.2.18)
+        version: 3.12.0(patch_hash=cbd13e538d4903adcbef2b62a6be56093c0c3568961c203f6e593bd8337ec5fa)(@floating-ui/utils@0.2.12)(@types/node@26.5.1)(@types/react@19.2.18)
       '@codemirror/commands':
         specifier: 6.11.0
         version: 6.11.0
@@ -10185,7 +10185,7 @@ snapshots:
       is-potential-custom-element-name: 1.0.1
       lru-cache: 11.5.2
 
-  '@awesome.me/webawesome@3.12.0(patch_hash=f23415ee54d1c84aedef0409e14ff773b11a00575a4008969efdef85e9ccac43)(@floating-ui/utils@0.2.12)(@types/node@26.5.1)(@types/react@19.2.18)':
+  '@awesome.me/webawesome@3.12.0(patch_hash=cbd13e538d4903adcbef2b62a6be56093c0c3568961c203f6e593bd8337ec5fa)(@floating-ui/utils@0.2.12)(@types/node@26.5.1)(@types/react@19.2.18)':
     dependencies:
       '@ctrl/tinycolor': 4.1.0
       '@floating-ui/dom': 1.8.0

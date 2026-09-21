@@ -253,7 +253,7 @@ export function addOwnerKeyIndex(taskId: string, task: Pick<TaskRecord, "ownerKe
   addIndexedKey(indexState.taskIdsByOwnerKey, key, taskId);
 }
 
-export function deleteOwnerKeyIndex(taskId: string, task: Pick<TaskRecord, "ownerKey">) {
+function deleteOwnerKeyIndex(taskId: string, task: Pick<TaskRecord, "ownerKey">) {
   const key = normalizeOptionalString(task.ownerKey);
   if (!key) {
     return;
@@ -269,7 +269,7 @@ export function addParentFlowIdIndex(taskId: string, task: Pick<TaskRecord, "par
   addIndexedKey(indexState.taskIdsByParentFlowId, key, taskId);
 }
 
-export function deleteParentFlowIdIndex(taskId: string, task: Pick<TaskRecord, "parentFlowId">) {
+function deleteParentFlowIdIndex(taskId: string, task: Pick<TaskRecord, "parentFlowId">) {
   const key = task.parentFlowId?.trim();
   if (!key) {
     return;
@@ -283,14 +283,14 @@ export function addRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys)
   }
 }
 
-export function deleteRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys) {
+function deleteRelatedSessionKeyIndex(taskId: string, task: TaskSessionKeys) {
   for (const sessionKey of getTaskRelatedSessionIndexKeys(task)) {
     deleteIndexedKey(indexState.taskIdsByRelatedSessionKey, sessionKey, taskId);
   }
 }
 
 /** Update after installing next; previous is the row replaced at that write. */
-export function updateRunIdIndex(
+function updateRunIdIndex(
   previous: Pick<TaskRecord, "taskId" | "runId"> | undefined,
   next: Pick<TaskRecord, "taskId" | "runId">,
 ): void {

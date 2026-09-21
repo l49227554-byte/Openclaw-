@@ -36,7 +36,8 @@ export function publishTaskRecordAfterAtomicStore(
   if (becomesTerminal) {
     clearTaskActivity(next.taskId);
   }
-  updateTaskIndexes(indexedCurrent, next);
+  // Atomic publication has historically made the committed row the equal-time winner.
+  updateTaskIndexes(indexedCurrent, next, { reinsertUnchanged: true });
   const emit = () =>
     emitTaskRegistryObserverEvent(() => ({
       kind: "upserted",

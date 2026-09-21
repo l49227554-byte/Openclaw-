@@ -9,6 +9,7 @@ import {
 } from "./native-hook-relay-events.js";
 import {
   NATIVE_HOOK_RELAY_EVENTS,
+  type NativeHookRelayEvent,
   type NativeHookRelayRegistrationHandle,
   type RegisterNativeHookRelayParams,
 } from "./native-hook-relay-types.js";
@@ -18,12 +19,23 @@ export type NativeHookRelayCommandPlan = Pick<
   "shouldRelayEvent" | "toolMatcherForEvent" | "commandForEvent"
 >;
 
+export function normalizeNativeHookRelayEvents(
+  events: readonly NativeHookRelayEvent[] | undefined,
+): readonly NativeHookRelayEvent[] {
+  return events?.length ? [...new Set(events)] : NATIVE_HOOK_RELAY_EVENTS;
+}
+
 /** Snapshot static policy and commands without registering a bridge, TTL, or live callbacks. */
 export function buildNativeHookRelayCommandPlan(
   params: Pick<
     RegisterNativeHookRelayParams,
     "provider" | "agentId" | "sessionKey" | "config" | "preToolUseLoopDetection" | "command"
-  > & { relayId: string; generation: string },
+  > & {
+    relayId: string;
+    generation: string;
+    /** Canonical tool names requiring bundled execution custody. */
+    executionAdmissionToolNames?: readonly string[];
+  },
 ): NativeHookRelayCommandPlan {
   const stateDbPath = resolveOpenClawStateSqlitePath();
   const policy = { ...params, preToolUseLoopDetection: params.preToolUseLoopDetection !== false };

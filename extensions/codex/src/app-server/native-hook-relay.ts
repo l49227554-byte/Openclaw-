@@ -23,6 +23,7 @@ import type { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerRuntimeOptions } from "./config.js";
 import { resolveCodexToolAbortTerminalReason } from "./dynamic-tool-execution.js";
 import { nativeHookRelayUnregisterQueue } from "./native-hook-relay-state.js";
+import type { CodexNativeProcessAuthority } from "./native-process-authority.js";
 import { isJsonObject, type JsonObject, type JsonValue } from "./protocol.js";
 
 /** Codex hook events that can be registered through OpenClaw's native relay. */
@@ -211,6 +212,10 @@ export function createCodexNativeHookRelay(params: {
   loopDetectionPreToolUseRelay: boolean;
   signal: AbortSignal;
   hostCapabilities: EmbeddedRunAttemptParams["hostCapabilities"];
+  nativeProcessAuthority?: {
+    owner: CodexNativeProcessAuthority;
+    client: () => CodexAppServerClient;
+  };
   assertCurrent?: () => void;
   onPreToolUseFailure: (failure: CodexNativePreToolUseFailure) => void | Promise<void>;
 }): CodexNativeHookRelay | undefined {
@@ -237,6 +242,8 @@ export function createCodexNativeHookRelay(params: {
     }
     pendingDirectChildAdmissions.clear();
   };
+  let releaseProcessAdmission: (() => void) | undefined;
+  let processAdmissionDisposed = false;
   const relay = registerNativeHookRelayForBundledRuntime({
     provider: "codex",
     relayId: buildCodexNativeHookRelayId({
@@ -268,6 +275,31 @@ export function createCodexNativeHookRelay(params: {
     }),
     signal: params.signal,
     runBeforeToolCall: params.hostCapabilities.runBeforeToolCall,
+    executionAdmission: params.nativeProcessAuthority
+      ? {
+          toolNames: ["exec"],
+          admit: (invocation, assertAdmissionCurrent) => {
+            const payload = invocation.rawPayload;
+            const rootThreadId =
+              isJsonObject(payload) && typeof payload.session_id === "string"
+                ? payload.session_id.trim()
+                : undefined;
+            const childThreadId = readCodexNativeChildThreadId(payload);
+            const threadId = childThreadId ?? rootThreadId;
+            if (!threadId || !invocation.turnId || !invocation.toolUseId) {
+              throw new Error(
+                "Codex native process admission requires exact thread, turn, and tool identities",
+              );
+            }
+            params.nativeProcessAuthority!.owner.admit(
+              params.nativeProcessAuthority!.client(),
+              { threadId, turnId: invocation.turnId, itemId: invocation.toolUseId },
+              assertAdmissionCurrent,
+              childThreadId ? rootThreadId : undefined,
+            );
+          },
+        }
+      : undefined,
     approvalHost: params.hostCapabilities,
     assertActive: () => {
       params.hostCapabilities.assertActive();
@@ -330,6 +362,8 @@ export function createCodexNativeHookRelay(params: {
       onDispose: () => {
         foregroundClosed = true;
         rejectPendingAdmissions("native hook relay registration closed");
+        processAdmissionDisposed = true;
+        releaseProcessAdmission?.();
       },
     },
     onPreToolUseFailure: params.onPreToolUseFailure,
@@ -340,6 +374,14 @@ export function createCodexNativeHookRelay(params: {
       timeoutMs: params.options?.gatewayTimeoutMs,
     },
   });
+  if (!processAdmissionDisposed) {
+    try {
+      releaseProcessAdmission = params.nativeProcessAuthority?.owner.retainAdmission();
+    } catch (error) {
+      relay.unregister();
+      throw error;
+    }
+  }
   const unregister = () => {
     foregroundClosed = true;
     rejectPendingAdmissions("native hook relay foreground closed");

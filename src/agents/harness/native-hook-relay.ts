@@ -26,7 +26,10 @@ import {
   normalizeNativeHookToolName,
   readNativeHookRelayApprovalMode,
 } from "./native-hook-relay-codec.js";
-import { processNativeHookRelayInvocation } from "./native-hook-relay-events.js";
+import {
+  processNativeHookRelayInvocation,
+  snapshotNativeHookRelayExecutionAdmission,
+} from "./native-hook-relay-events.js";
 import {
   clearNativeHookRelayPermissionsForTests,
   permissionRequestContentFingerprintForTests as permissionRequestContentFingerprintForTestsImpl,
@@ -38,7 +41,10 @@ import {
   setNativeHookRelayPermissionApprovalRequesterForTests as setNativeHookRelayPermissionApprovalRequesterForTestsImpl,
 } from "./native-hook-relay-permissions.js";
 import type { NativeHookRelayDeferredToolApprovalRequester } from "./native-hook-relay-permissions.js";
-import { buildNativeHookRelayCommandPlan } from "./native-hook-relay-plan.js";
+import {
+  buildNativeHookRelayCommandPlan,
+  normalizeNativeHookRelayEvents,
+} from "./native-hook-relay-plan.js";
 import {
   MAX_NATIVE_HOOK_RELAY_INVOCATIONS,
   nativeHookRelayState,
@@ -49,15 +55,15 @@ import type {
   InvokeNativeHookRelayParams,
   NativeHookRelayEvent,
   NativeHookRelayInvocation,
+  NativeHookRelayOwnerOptions,
   NativeHookRelayPermissionApprovalRequester,
   NativeHookRelayProcessResponse,
   NativeHookRelayRegistration,
-  NativeHookRelayRetention,
+  OwnedNativeHookRelayParams,
   OwnedNativeHookRelayRegistrationHandle,
   RegisterNativeHookRelayParams,
   RelayLifetime,
 } from "./native-hook-relay-types.js";
-import { NATIVE_HOOK_RELAY_EVENTS } from "./native-hook-relay-types.js";
 import {
   isJsonValue,
   normalizePositiveInteger,
@@ -85,11 +91,6 @@ const log = createSubsystemLogger("agents/harness/native-hook-relay");
 
 const { relays, relayBridges, invocations } = nativeHookRelayState;
 const RELAY_LIFETIME = "__openclawNativeHookRelayLifetimeV1";
-
-type OwnedNativeHookRelayParams = RegisterNativeHookRelayParams & {
-  retention?: NativeHookRelayRetention;
-  approvalHost?: NativeHookRelayRegistration["approvalHost"];
-};
 
 type RelayLifetimeRegistration = ActiveNativeHookRelayRegistration & {
   [RELAY_LIFETIME]?: RelayLifetime;
@@ -145,22 +146,27 @@ function resolveNativeHookRelayExpiresAtMs(ttlMs: number | undefined): number | 
 export function registerNativeHookRelay(
   params: RegisterNativeHookRelayParams,
 ): ActiveNativeHookRelayRegistrationHandle {
-  return registerNativeHookRelayInternal(params, undefined);
+  return registerNativeHookRelayInternal(params);
 }
 
 /** Private-local bundled runtime entrypoint; not exported through the public SDK. */
 export function registerOwnedNativeHookRelay(
   params: OwnedNativeHookRelayParams,
 ): OwnedNativeHookRelayRegistrationHandle {
-  const { retention, approvalHost, ...registrationParams } = params;
-  return registerNativeHookRelayInternal(registrationParams, retention, approvalHost);
+  const { retention, approvalHost, executionAdmission, ...registrationParams } = params;
+  return registerNativeHookRelayInternal(registrationParams, {
+    retention,
+    approvalHost,
+    executionAdmission,
+  });
 }
 
 function registerNativeHookRelayInternal(
   params: RegisterNativeHookRelayParams,
-  retention: NativeHookRelayRetention | undefined,
-  approvalHost?: NativeHookRelayRegistration["approvalHost"],
+  owner?: NativeHookRelayOwnerOptions,
 ): OwnedNativeHookRelayRegistrationHandle {
+  const { retention, approvalHost } = owner ?? {};
+  const executionAdmission = snapshotNativeHookRelayExecutionAdmission(owner?.executionAdmission);
   pruneExpiredNativeHookRelays();
   pruneNativeHookRelayPermissionAllowAlways();
   const relayId = normalizeRelayKey(params.relayId, "id") ?? randomUUID();
@@ -171,7 +177,7 @@ function registerNativeHookRelayInternal(
   if (expiresAtMs === undefined) {
     throw new Error("Native hook relay expiry is outside the supported Date range");
   }
-  const allowedEvents = normalizeAllowedEvents(params.allowedEvents);
+  const allowedEvents = normalizeNativeHookRelayEvents(params.allowedEvents);
   const stateDbPath = resolveOpenClawStateSqlitePath();
   let partialRegistration: ActiveNativeHookRelayRegistration | undefined;
   const policy = prepareNativeHookRelayMcpPolicy(
@@ -230,6 +236,7 @@ function registerNativeHookRelayInternal(
       policyReady,
       ...(retained ? { retained } : {}),
       ...(retention ? { retention } : {}),
+      ...(executionAdmission ? { executionAdmission } : {}),
     });
     if (params.signal) {
       const abort = () => unregisterNativeHookRelay(relayId, registration);
@@ -249,7 +256,12 @@ function registerNativeHookRelayInternal(
     void ready.catch(() => undefined);
     const handle: OwnedNativeHookRelayRegistrationHandle = {
       ...registration,
-      ...buildNativeHookRelayCommandPlan({ ...params, relayId, generation }),
+      ...buildNativeHookRelayCommandPlan({
+        ...params,
+        relayId,
+        generation,
+        executionAdmissionToolNames: executionAdmission?.toolNames,
+      }),
       get deferMcpToolApprovals() {
         return deferMcpToolApprovals;
       },
@@ -557,6 +569,7 @@ export async function invokeNativeHookRelay(
       registration: effectiveRegistration,
       invocation: normalized,
       adapter: getNativeHookRelayProviderAdapter(provider),
+      executionAdmission: readRelayLifetime(registration)?.executionAdmission,
     }),
     signal,
   );
@@ -680,15 +693,6 @@ function pruneExpiredNativeHookRelays(now = Date.now()): void {
       unregisterNativeHookRelay(relayId, registration);
     }
   }
-}
-
-function normalizeAllowedEvents(
-  events: readonly NativeHookRelayEvent[] | undefined,
-): readonly NativeHookRelayEvent[] {
-  if (!events?.length) {
-    return NATIVE_HOOK_RELAY_EVENTS;
-  }
-  return [...new Set(events)];
 }
 
 export const testing = {

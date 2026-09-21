@@ -357,9 +357,18 @@ to the Gateway host and follows OpenClaw exec policy. `gateway_process` uses the
 existing per-session OpenClaw process scope for background follow-up. Prefer
 Codex native shell for ordinary local work.
 
-Stopping an active Codex run interrupts its turn, then stops the native background
-terminals listed on that Codex thread before releasing the run. Other Codex
-threads and deliberately backgrounded `gateway_process` jobs are unaffected.
+Stopping an active Codex run interrupts its turn. With the OpenClaw sandbox
+exec-server, cleanup stops the concrete processes admitted by that turn and
+preserves independent background work in the same reused thread. Each process
+retains its original source until settlement, including after foreground
+completion. Visitor Access expiry and revocation stop the guest's retained
+processes without interrupting a later maintainer turn. Native command admission and subsequent
+process input recheck the original source; cleanup remains available after
+revocation.
+
+Other native execution modes retain thread-wide background-terminal cleanup.
+Other Codex threads and deliberately backgrounded `gateway_process` jobs are
+unaffected.
 If native terminal cleanup fails, the run reports an error instead of silently
 claiming cleanup succeeded. Inspect that thread's running terminals before
 starting more work. This uses Codex's terminal ownership. It does not guarantee

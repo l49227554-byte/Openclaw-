@@ -208,10 +208,7 @@ describe("native Codex tool response fidelity", () => {
         const item = isJsonObject(notification.params.item) ? notification.params.item : undefined;
         if (notification.method === "turn/completed") {
           completed.resolve(notification.params.turn);
-        } else if (
-          notification.method === "item/completed" &&
-          item?.type === "commandExecution"
-        ) {
+        } else if (notification.method === "item/completed" && item?.type === "commandExecution") {
           commandCompleted.resolve(item);
         } else if (
           notification.method === "rawResponseItem/completed" &&

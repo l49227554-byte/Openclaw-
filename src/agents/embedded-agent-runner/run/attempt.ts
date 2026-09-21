@@ -61,14 +61,16 @@ export async function runEmbeddedAttempt(
   input: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
   const parentSignal = getAsyncWorkSignal();
-  const abortSignal = parentSignal
+  const resourceAbortSignal = parentSignal
     ? input.abortSignal
       ? AbortSignal.any([input.abortSignal, parentSignal])
       : parentSignal
     : input.abortSignal;
   return await runWithAsyncWorkResources((onAcquired) =>
-    runEmbeddedAttemptOwned({ ...input, abortSignal }, (release) =>
-      onAcquired({ release, releaseBeforeResultWhenIdle: true }),
+    runEmbeddedAttemptOwned(
+      input,
+      (release) => onAcquired({ release, releaseBeforeResultWhenIdle: true }),
+      resourceAbortSignal,
     ),
   );
 }
@@ -76,6 +78,7 @@ export async function runEmbeddedAttempt(
 async function runEmbeddedAttemptOwned(
   input: EmbeddedRunAttemptParams,
   retainToolCleanup: (release: () => Promise<void>) => void,
+  resourceAbortSignal: AbortSignal | undefined,
 ): Promise<EmbeddedRunAttemptResult> {
   let params = input;
   const runAbortController = new AbortController();
@@ -142,7 +145,9 @@ async function runEmbeddedAttemptOwned(
     }
   };
   const externalAbortController = createEmbeddedAttemptExternalAbortController({
-    abortSignal: params.abortSignal,
+    // Resource draining can end the tool generation without cancelling the
+    // logical transcript authority used by later terminal-error persistence.
+    abortSignal: resourceAbortSignal,
     cleanupAfterEarlyAbort: cleanupEmbeddedPrepResourcesAfterEarlyExit,
     runAbortController,
     runId: params.runId,

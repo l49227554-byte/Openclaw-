@@ -3,7 +3,12 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { GATEWAY_LIFECYCLE_LOCK_TIMEOUT_MS } from "../infra/gateway-lock.js";
+import { TICK_INTERVAL_MS } from "../gateway/server-constants.js";
+import {
+  GATEWAY_SERVICE_STOP_TIMEOUT_MS,
+  GATEWAY_SHUTDOWN_TIMEOUT_MS,
+} from "../infra/gateway-shutdown-budget.js";
+import { resolveGatewayRestartDeferralTimeoutMs } from "../infra/restart.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "../infra/sqlite-coordinator.js";
 import { acquireGatewayLifecycleCoordinator } from "../infra/state-database-coordinator.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
@@ -60,7 +65,7 @@ function fixture(mode: "foreground" | "supervised" = "foreground") {
   return { databasePath, predecessor };
 }
 
-it.each(["released", "owner-changed", "authority-lost", "deadline"] as const)(
+it.each(["released", "slow-released", "owner-changed", "authority-lost", "deadline"] as const)(
   "settles the foreground state owner before update Doctor admission: %s",
   async (outcome) => {
     const { databasePath, predecessor } = fixture();
@@ -96,7 +101,17 @@ it.each(["released", "owner-changed", "authority-lost", "deadline"] as const)(
       await waiting.promise;
       expect(settled).toBe(false);
       expect(fs.readFileSync(databasePath)).toEqual(before);
-      if (outcome === "released") {
+      if (outcome === "slow-released") {
+        monotonicMs =
+          TICK_INTERVAL_MS +
+          resolveGatewayRestartDeferralTimeoutMs() +
+          GATEWAY_SHUTDOWN_TIMEOUT_MS -
+          1;
+        await vi.advanceTimersToNextTimerAsync();
+        expect(settled).toBe(false);
+        expect(fs.readFileSync(databasePath)).toEqual(before);
+      }
+      if (outcome === "released" || outcome === "slow-released") {
         predecessor?.release();
       } else if (outcome === "owner-changed") {
         withOpenClawStateStartupMigrationCheckpointDatabase((db) => {
@@ -106,12 +121,15 @@ it.each(["released", "owner-changed", "authority-lost", "deadline"] as const)(
         authorized = false;
         predecessor?.release();
       } else {
-        monotonicMs = GATEWAY_LIFECYCLE_LOCK_TIMEOUT_MS;
+        monotonicMs =
+          TICK_INTERVAL_MS +
+          resolveGatewayRestartDeferralTimeoutMs() +
+          GATEWAY_SERVICE_STOP_TIMEOUT_MS;
       }
       await vi.advanceTimersToNextTimerAsync();
       const completed = await result;
       maintenance = "maintenance" in completed ? completed.maintenance : undefined;
-      if (outcome === "released") {
+      if (outcome === "released" || outcome === "slow-released") {
         expect(maintenance).toBeDefined();
         await maintenance?.finish({});
       } else {

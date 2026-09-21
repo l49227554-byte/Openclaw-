@@ -1,6 +1,8 @@
+import { TICK_INTERVAL_MS } from "../gateway/server-constants.js";
 import { acquireWithWait } from "../infra/acquire-with-wait.js";
-import { GATEWAY_LIFECYCLE_LOCK_TIMEOUT_MS } from "../infra/gateway-lock.js";
 import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
+import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
+import { resolveGatewayRestartDeferralTimeoutMs } from "../infra/restart.js";
 import {
   acquireGatewayMaintenanceCoordinator,
   StateDatabaseCoordinatorContentionError,
@@ -61,7 +63,13 @@ export async function acquireDoctorGatewayMaintenanceCoordinator(
       // A dead predecessor cannot explain a lock still held by another process.
       return readStateLeaseProcessOwnerStatus(foreground) === "live";
     },
-    deadlineMs: performance.now() + GATEWAY_LIFECYCLE_LOCK_TIMEOUT_MS,
+    // Installation replacement is an unsupervised restart: detection, drain,
+    // then server close and process exit each retain their owner's allowance.
+    deadlineMs:
+      performance.now() +
+      TICK_INTERVAL_MS +
+      resolveGatewayRestartDeferralTimeoutMs() +
+      GATEWAY_SERVICE_STOP_TIMEOUT_MS,
     pollIntervalMs: 100,
     maxPollIntervalMs: 1_000,
     sleep,

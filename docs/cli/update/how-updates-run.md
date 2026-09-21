@@ -584,7 +584,8 @@ service or foreground process owner afterward.
 
 When updater-owned Doctor reaches maintenance before that foreground Gateway
 finishes shutting down, it waits for the same process to release state, up to
-the existing five-minute lifecycle allowance. Doctor retains the updater's live
+the installation-check interval plus the existing restart-drain and service-stop
+allowances. Doctor retains the updater's live
 authority and still acquires its normal maintenance locks before repairing state.
 A different Gateway owner, lost update authority, or unresolved contention stops
 maintenance with recovery guidance. Ordinary Doctor commands and older update

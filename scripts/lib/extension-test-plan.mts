@@ -291,15 +291,15 @@ function splitTargetsByFileLimit(targets: string[], maxFilesPerChunk: number) {
   return chunks;
 }
 
-const DATABASE_WORKER_CONFIG = "test/vitest/vitest.extension-database-workers.config.ts";
+export const DATABASE_WORKER_CONFIG = "test/vitest/vitest.extension-database-workers.config.ts";
 // The 185-file native worker envelope was still running after 58 minutes in
-// run 35176277297. Bound jobs separately from the existing process lifetimes.
-export const NATIVE_DATABASE_WORKER_TEST_JOB_FILE_LIMIT = 20;
+// run 35176277297. Include migrated files too: run 35477485803 packed 149
+// database-worker files into one serial job that took 27 minutes.
+export const DATABASE_WORKER_TEST_JOB_FILE_LIMIT = 20;
 
 function splitWorkerTargetsByOriginalConfig(
   targets: string[],
   split: (config: string, files: string[]) => string[][],
-  nativeFileLimit?: number,
 ) {
   const groups = new Map<string, string[]>();
   for (const target of uniqueSortedTargets(targets)) {
@@ -309,11 +309,7 @@ function splitWorkerTargetsByOriginalConfig(
     groups.set(config, group);
   }
   return [...groups].flatMap(([config, files]) =>
-    config === DATABASE_WORKER_CONFIG
-      ? nativeFileLimit
-        ? splitTargetsByFileLimit(files, nativeFileLimit)
-        : [files]
-      : split(config, files),
+    config === DATABASE_WORKER_CONFIG ? [files] : split(config, files),
   );
 }
 
@@ -337,10 +333,8 @@ export function splitExtensionTestProcessTargets(config: string, targets: string
 /** Split an extension config's test files into CI envelopes without changing process lifetime. */
 export function splitExtensionTestJobTargets(config: string, targets: string[]) {
   if (config === DATABASE_WORKER_CONFIG) {
-    return splitWorkerTargetsByOriginalConfig(
-      targets,
-      splitExtensionTestJobTargets,
-      NATIVE_DATABASE_WORKER_TEST_JOB_FILE_LIMIT,
+    return splitWorkerTargetsByOriginalConfig(targets, splitExtensionTestJobTargets).flatMap(
+      (files) => splitTargetsByFileLimit(files, DATABASE_WORKER_TEST_JOB_FILE_LIMIT),
     );
   }
   const maxFilesPerJob = resolveExtensionTestJobFileLimit(config);

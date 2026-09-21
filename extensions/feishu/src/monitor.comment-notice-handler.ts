@@ -71,7 +71,11 @@ export function createFeishuDriveCommentNoticeHandler(params: {
     );
     await enqueue(buildCommentNoticeQueueKey(event), async () => {
       if (turnAdoptionLifecycle?.abortSignal.aborted) {
-        await turnAdoptionLifecycle.onAbandoned();
+        if (turnAdoptionLifecycle.onCancelled) {
+          await turnAdoptionLifecycle.onCancelled();
+        } else {
+          await turnAdoptionLifecycle.onAbandoned();
+        }
         return;
       }
       await handleFeishuCommentEvent({

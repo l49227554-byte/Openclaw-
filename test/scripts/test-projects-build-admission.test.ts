@@ -107,10 +107,13 @@ describe("CLI runtime admission", () => {
       [
         "--config",
         "test/vitest/vitest.gateway-server.config.ts",
-        "--exclude",
-        "server-sidecar-retention.test.ts",
-        "--exclude",
-        "server.config-patch.test.ts",
+        // Derive the exclusions so this case keeps meaning "every gateway-server
+        // runtime consumer is excluded" as that set changes. These consumers are
+        // scoped to `src/gateway`, so their CLI exclusions are basenames; a
+        // repo-relative path would resolve under the scope and match nothing.
+        ...listVitestRuntimeConsumerFiles(["test/vitest/vitest.gateway-server.config.ts"]).flatMap(
+          (file) => ["--exclude", path.basename(file)],
+        ),
       ],
     ],
     [

@@ -85,6 +85,7 @@ export async function resolveHeartbeatPreflight(params: {
   agentId: string;
   heartbeat?: HeartbeatConfig;
   sessionKey?: string;
+  trustedTargetSessionKey?: string;
   reason?: string;
   source?: HeartbeatWakeSource;
   scheduledEveryMs?: number;
@@ -98,7 +99,9 @@ export async function resolveHeartbeatPreflight(params: {
     params.cfg,
     params.agentId,
     params.heartbeat,
-    params.sessionKey,
+    params.trustedTargetSessionKey ?? params.sessionKey,
+    process.env,
+    { allowSubagentSession: Boolean(params.trustedTargetSessionKey) },
   );
   const pendingEventEntries = peekSystemEventEntries(
     resolveSystemEventQueueKey(session.sessionKey, params.agentId),

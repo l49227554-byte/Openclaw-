@@ -3860,6 +3860,34 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(assistantEntries).toStrictEqual([]);
   });
 
+  it("does not duplicate status notices after lifecycle broadcasts the terminal", async () => {
+    await createTranscriptFixture("openclaw-chat-send-agent-settled-status-notice-");
+    const runId = "idem-agent-settled-status-notice";
+    setAgentRunReplies([
+      {
+        kind: "final",
+        payload: {
+          text: "⚙️ Codex compaction started • Context 2k/200k",
+          isStatusNotice: true,
+        },
+      },
+    ]);
+    const { context, send } = createChatRequestFixture();
+    mockState.onAfterAgentRunStart = () => {
+      const entry = expectDefined(context.chatAbortControllers.get(runId), "active chat run");
+      entry.chatTerminalBroadcasted = true;
+    };
+
+    await send({
+      idempotencyKey: runId,
+      message: "/compact",
+      expectBroadcast: false,
+    });
+
+    expect(context.broadcast).not.toHaveBeenCalled();
+    expect(context.nodeSendToSession).not.toHaveBeenCalled();
+  });
+
   it("broadcasts a block status once while ignoring an ordinary agent final", async () => {
     await createTranscriptFixture("openclaw-chat-send-agent-block-status-notice-");
     setAgentRunReplies([

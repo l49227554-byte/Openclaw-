@@ -9,6 +9,7 @@ import {
   getGatewayContextResolver,
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { runWithGatewayDetachedWorkContinuation } from "../../../process/gateway-work-admission.js";
+import { finalizeTaskRunByRunId } from "../../../tasks/detached-task-runtime.js";
 import { prepareCanonicalTaskActivation } from "../../../tasks/task-backing-authority-write.js";
 import { createSubagentTaskBackingDetail } from "../../../tasks/task-backing-authority.js";
 import { removeInternalSessionEffectsSession } from "../../internal-session-effects.js";
@@ -19,12 +20,21 @@ import {
   ensureCompletionState,
   normalizeSubagentRunState,
 } from "./subagent-delivery-state.js";
+import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
+import { resolveFinalizedSubagentTaskState } from "./subagent-registry-completion.js";
 import { safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { commitSubagentTaskReplacement } from "./subagent-registry-replacement-store.js";
 import { SubagentWaitManager } from "./subagent-registry-run-wait.js";
-import type { RequesterSettleWakeState, SubagentRunRecord } from "./subagent-registry.types.js";
-import { nextSubagentRunGeneration } from "./subagent-run-generation.js";
+import type {
+  RequesterSettleWakeState,
+  SubagentAcceptedSteerDispatch,
+  SubagentRunRecord,
+} from "./subagent-registry.types.js";
+import {
+  compareSubagentRunGeneration,
+  nextSubagentRunGeneration,
+} from "./subagent-run-generation.js";
 import {
   getSubagentSessionRuntimeMs,
   getSubagentSessionStartedAt,
@@ -33,6 +43,188 @@ import {
 const log = createSubsystemLogger("agents/subagent-registry");
 
 export class SubagentRecoveryManager extends SubagentWaitManager {
+  readonly markSubagentRunForSteerRestart = (
+    runId: string,
+    expected?: SubagentRunRecord,
+  ): boolean => {
+    const key = runId.trim();
+    if (!key) {
+      return false;
+    }
+    const entry = this.options.runs.get(key);
+    if (
+      !entry ||
+      (expected && entry !== expected) ||
+      entry.execution.restartRecovery ||
+      entry.killIntent ||
+      entry.killReconciliation
+    ) {
+      return false;
+    }
+    if (entry.suppressAnnounceReason === "steer-restart") {
+      return false;
+    }
+    entry.suppressAnnounceReason = "steer-restart";
+    try {
+      this.options.persistOrThrow(entry.runId);
+    } catch (error) {
+      entry.suppressAnnounceReason = undefined;
+      throw error;
+    }
+    return true;
+  };
+
+  readonly clearSubagentRunSteerRestart = (
+    runId: string,
+    expected?: SubagentRunRecord,
+    acceptedDispatch?: SubagentAcceptedSteerDispatch,
+    requirePersistence = false,
+  ): boolean => {
+    const key = runId.trim();
+    if (!key) {
+      return false;
+    }
+    const entry = this.options.runs.get(key);
+    if (!entry || (expected && entry !== expected)) {
+      return false;
+    }
+    if (acceptedDispatch && entry.acceptedSteerDispatch !== acceptedDispatch) {
+      return false;
+    }
+    const previousSuppressAnnounceReason = entry.suppressAnnounceReason;
+    const previousAcceptedSteerDispatch = entry.acceptedSteerDispatch;
+    const persistClear = () => {
+      try {
+        if (requirePersistence) {
+          this.options.persistOrThrow(entry.runId);
+        } else {
+          this.options.persist(entry.runId);
+        }
+        return true;
+      } catch (error) {
+        entry.suppressAnnounceReason = previousSuppressAnnounceReason;
+        entry.acceptedSteerDispatch = previousAcceptedSteerDispatch;
+        log.warn("failed to persist steer dispatch ownership cleanup", {
+          error,
+          runId: entry.runId,
+        });
+        this.options.startSweeper();
+        this.options.scheduleSweep({ delayMs: 1_000 });
+        return false;
+      }
+    };
+    if (entry.suppressAnnounceReason !== "steer-restart") {
+      if (acceptedDispatch) {
+        entry.acceptedSteerDispatch = undefined;
+        return persistClear();
+      }
+      return true;
+    }
+    if (typeof entry.execution.endedAt === "number") {
+      const taskResolution = this.options.resolveSubagentTask(entry);
+      const task = taskResolution.lookup === "available" ? taskResolution.task : undefined;
+      const terminal =
+        entry.endedReason === SUBAGENT_ENDED_REASON_KILLED
+          ? {
+              status: "cancelled" as const,
+              endedAt: entry.execution.endedAt,
+              lastEventAt: entry.execution.endedAt,
+              error: "Subagent restart failed after the prior run was interrupted.",
+            }
+          : resolveFinalizedSubagentTaskState(entry);
+      if (terminal) {
+        const targetRunId = task?.runId ?? entry.taskRunId ?? entry.runId;
+        const targetSessionKey = task?.childSessionKey ?? entry.childSessionKey;
+        try {
+          finalizeTaskRunByRunId({
+            runId: targetRunId,
+            runtime: "subagent",
+            sessionKey: targetSessionKey,
+            ...terminal,
+            suppressDelivery: true,
+          });
+        } catch (err) {
+          log.warn("failed to finalize abandoned steer-restart task run", {
+            err,
+            runId: targetRunId,
+            childSessionKey: targetSessionKey,
+          });
+        }
+      }
+    }
+    entry.suppressAnnounceReason = undefined;
+    entry.acceptedSteerDispatch = undefined;
+    if (!persistClear()) {
+      return false;
+    }
+    this.options.resumedRuns.delete(key);
+    if (typeof entry.execution.endedAt === "number" && !entry.cleanupCompletedAt) {
+      this.options.resumeSubagentRun(key);
+    }
+    return true;
+  };
+
+  readonly recordAcceptedSubagentSteerDispatch = (recordParams: {
+    runId: string;
+    expected: SubagentRunRecord;
+    gatewayRunId: string;
+    phase?: SubagentAcceptedSteerDispatch["phase"];
+    lifecycleGeneration?: string;
+    expectedSessionId?: string;
+    expectedLifecycleRevision?: string;
+  }):
+    | {
+        status: "persisted" | "pending-persistence";
+        ownerRunId: string;
+        owner: SubagentRunRecord;
+        dispatch: SubagentAcceptedSteerDispatch;
+      }
+    | { status: "rejected" } => {
+    const runId = recordParams.runId.trim();
+    const gatewayRunId = recordParams.gatewayRunId.trim();
+    if (!runId || !gatewayRunId) {
+      return { status: "rejected" };
+    }
+    const exactEntry = this.options.runs.get(runId);
+    const entry =
+      exactEntry === recordParams.expected
+        ? exactEntry
+        : [...this.options.getRunsForChildSession(recordParams.expected.childSessionKey)]
+            .toSorted(compareSubagentRunGeneration)
+            .at(-1);
+    const owner = entry ?? recordParams.expected;
+    if (!entry && !this.options.runs.has(owner.runId)) {
+      this.options.runs.set(owner.runId, owner);
+    }
+    const acceptedSteerDispatch = {
+      gatewayRunId,
+      phase: recordParams.phase,
+      lifecycleGeneration: recordParams.lifecycleGeneration?.trim() || undefined,
+      expectedSessionId: recordParams.expectedSessionId?.trim() || undefined,
+      expectedLifecycleRevision: recordParams.expectedLifecycleRevision?.trim() || undefined,
+    };
+    owner.acceptedSteerDispatch = acceptedSteerDispatch;
+    let result: "persisted" | "pending-persistence" = "persisted";
+    try {
+      this.options.persistOrThrow(owner.runId);
+    } catch (error) {
+      result = "pending-persistence";
+      log.warn("failed to persist accepted steer dispatch; retaining live owner", {
+        error,
+        runId: owner.runId,
+        gatewayRunId,
+      });
+    }
+    this.options.startSweeper();
+    this.options.scheduleSweep({ delayMs: 1_000 });
+    return {
+      status: result,
+      ownerRunId: owner.runId,
+      owner,
+      dispatch: acceptedSteerDispatch,
+    };
+  };
+
   readonly replaceSubagentRunAfterSteer = (replaceParams: {
     previousRunId: string;
     nextRunId: string;

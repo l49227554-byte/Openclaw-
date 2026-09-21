@@ -95,6 +95,7 @@ export const forcedUnitFastTestFiles = [
   "src/acp/translator.session-setup.test.ts",
   "src/acp/translator.session-snapshot.test.ts",
   "src/acp/translator.tool-streaming.test.ts",
+  "src/auto-reply/reply/reply-turn-admission.module-identity.test.ts",
   "src/browser-lifecycle-cleanup.test.ts",
   "src/system-agent/audit.test.ts",
   "src/system-agent/assistant.configured.test.ts",

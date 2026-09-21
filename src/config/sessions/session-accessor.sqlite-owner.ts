@@ -10,12 +10,15 @@ import {
   publishSessionEntryCacheInvalidation,
   trackSessionEntryCacheWrite,
 } from "./session-accessor.sqlite-entry-cache.js";
+import { readExactSessionEntryRawRow } from "./session-accessor.sqlite-entry-read.js";
 import { hasSqliteSessionOwnerColumns } from "./session-accessor.sqlite-owner-projection.js";
+import { advanceSessionRecipientAuthorityInTransaction } from "./session-accessor.sqlite-recipient-authority.js";
 import {
   getSessionKysely,
   resolveSqliteScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
+import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
 import type { SessionActor, SessionOwnerAssignment } from "./session-entry-provenance.js";
 
 export function replaceSessionOwnerInTransaction(
@@ -74,7 +77,20 @@ export function assignSessionOwner(
   const updated = runOpenClawAgentWriteTransaction(
     (database) => {
       params.assertCurrent?.();
-      return replaceSessionOwnerInTransaction(database, resolved.sessionKey, owner);
+      // Decode the row's own owner and creator only. Resolving the full entry
+      // projects participant rows, and a corrupt participant identity there must
+      // not roll back a recorded owner assignment; the read projection still
+      // surfaces that corruption to its own callers.
+      const currentRow = readExactSessionEntryRawRow(database, resolved.sessionKey);
+      const currentEntry = currentRow ? parseSessionEntryJson(currentRow, "list") : null;
+      const previousOwner = currentEntry?.owner?.actor ?? currentEntry?.createdActor;
+      const ownerChanged =
+        previousOwner?.type !== owner.actor.type || previousOwner?.id !== owner.actor.id;
+      const replaced = replaceSessionOwnerInTransaction(database, resolved.sessionKey, owner);
+      if (replaced && ownerChanged) {
+        advanceSessionRecipientAuthorityInTransaction(database, resolved.sessionKey);
+      }
+      return replaced;
     },
     options,
     { operationLabel: "sessions.assign-owner" },

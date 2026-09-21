@@ -195,7 +195,10 @@ function resolveExternalCliProviderIdForCompatibleAuthProfile(params: {
     ...authAliasParams,
     storedCredential: true,
   });
-  if (!providerAuthKey || profileAuthKey !== providerAuthKey) {
+  const isBuiltInClaudeCliProfile =
+    normalizeProviderId(profileProvider) === CLAUDE_CLI_PROVIDER_ID &&
+    normalizeProviderId(providerAuthKey) === "anthropic";
+  if (!providerAuthKey || (!isBuiltInClaudeCliProfile && profileAuthKey !== providerAuthKey)) {
     return { compatible: false };
   }
   return {

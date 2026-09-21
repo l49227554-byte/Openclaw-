@@ -141,7 +141,8 @@ export function createMessageEndContext(
     params.finalizeAssistantTexts ?? vi.fn(delivery.finalizeAssistantTexts);
   const rendering = createStreamRendering({
     ...ctx,
-    pendingBlockReplyTasks: delivery.pendingBlockReplyTasks,
+    currentPendingBlockReplyTasks: delivery.currentPendingBlockReplyTasks,
+    settleBlockReplyDeliveries: delivery.settleBlockReplyDeliveries,
     pushAssistantText: delivery.pushAssistantText,
     shouldSkipAssistantText: delivery.shouldSkipAssistantText,
   });

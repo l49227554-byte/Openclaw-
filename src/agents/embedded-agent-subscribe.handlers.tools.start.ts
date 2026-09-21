@@ -333,7 +333,14 @@ export function handleToolExecutionStart(
     lifecycleProvenance?: "nested";
     parentToolCallId?: string;
   },
+  options?: { deliveryGeneration?: number },
 ): void | Promise<void> {
+  const isCurrentDeliveryGeneration = () =>
+    options?.deliveryGeneration === undefined ||
+    options.deliveryGeneration === ctx.getBlockReplyDeliveryGeneration();
+  if (!isCurrentDeliveryGeneration()) {
+    return;
+  }
   const startToolName = normalizeToolPolicyName(evt.toolName);
   ctx.state.liveEditDiffStateById.delete(evt.toolCallId);
   const isQuestionTool =

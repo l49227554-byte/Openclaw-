@@ -715,7 +715,7 @@ export function prepareMediaCapabilityProviders(params: {
     }
     return Object.freeze(
       availableEntries.map((entry) => entry.provider),
-    ) as readonly CapabilityProviderFor<K>[];
+    ) as readonly CapabilityProviderFor<K>[]; // SAFETY: entries come from the registry keyed by K.
   };
   return Object.freeze({
     mediaUnderstandingProviders: providers("mediaUnderstandingProviders"),

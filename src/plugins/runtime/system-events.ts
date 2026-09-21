@@ -23,12 +23,38 @@ function resolveSystemEventSessionKey(sessionKey: string, agentId?: string): str
   );
 }
 
+type SdkSystemEventOptions = Parameters<typeof events.enqueueSystemEvent>[1];
+
+/**
+ * SDK consumers are untrusted by construction: force `trusted: false` so a plugin
+ * cannot attach trusted-only session or delegate-artifact provenance, and strip
+ * caller-supplied trace ancestry plus the session-delivery ack fields
+ * (`sessionDeliveryAckId` / `sessionDeliveryAckStateDir`), which on drain trigger a
+ * blind `deleteDeliveryQueueEntry` at the caller-supplied state dir. Trusted internal
+ * producers (continuation returns, post-compaction) enqueue through the direct
+ * `infra/system-events` import, never this facade.
+ */
+function sanitizeSdkSystemEventOptions<T extends SdkSystemEventOptions>(
+  options: T,
+): Omit<T, "sessionDeliveryAckId" | "sessionDeliveryAckStateDir" | "traceparent" | "trusted"> & {
+  trusted: false;
+} {
+  const {
+    sessionDeliveryAckId: _ackId,
+    sessionDeliveryAckStateDir: _ackStateDir,
+    traceparent: _traceparent,
+    trusted: _trusted,
+    ...rest
+  } = options;
+  return { ...rest, trusted: false };
+}
+
 export const enqueueSystemEventFromSdk = (
   text: string,
-  { agentId, ...options }: Parameters<typeof events.enqueueSystemEvent>[1] & { agentId?: string },
+  { agentId, ...options }: SdkSystemEventOptions & { agentId?: string },
 ) =>
   events.enqueueSystemEvent(text, {
-    ...options,
+    ...sanitizeSdkSystemEventOptions(options),
     sessionKey: resolveSystemEventSessionKey(options.sessionKey, agentId),
   });
 
@@ -37,7 +63,7 @@ export const enqueueSystemEventEntryFromSdk: typeof events.enqueueSystemEventEnt
   options,
 ) =>
   events.enqueueSystemEventEntry(text, {
-    ...options,
+    ...sanitizeSdkSystemEventOptions(options),
     sessionKey: resolveSystemEventSessionKey(options.sessionKey),
   });
 

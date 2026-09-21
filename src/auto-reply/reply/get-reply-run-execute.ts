@@ -48,6 +48,7 @@ import { hasInboundAudio } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveReplyToMode } from "./reply-threading.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
+import { settleManagedSystemEventsAfterTurnAdoption } from "./session-system-event-adoption.js";
 import {
   bindSourceReplyDeliveryRuntime,
   createSourceReplyDeliveryRuntime,
@@ -67,13 +68,8 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     thinkLevelOverride,
     thinkingCatalog,
     skillsSnapshot,
-    prefixedCommandBody,
-    queuedBody,
-    transcriptBody,
-    transcriptCommandBody,
     promptMedia,
     inboundMediaIndexes,
-    currentInboundContext,
     isRoomEvent,
     providedReplyOperation,
     preparedSessionState,
@@ -89,11 +85,13 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     isActive,
     authProfileId,
     authProfileIdSource,
+    refreshSystemEventPromptBodies,
   } = state;
   const {
     params,
     runtimePolicySessionKey,
     isHeartbeat,
+    isContinuationWake,
     traceRunPhase,
     promptSessionCtx,
     inboundEventKind,
@@ -217,6 +215,14 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       extractedFileImages: opts?.extractedFileImages,
     }),
   );
+  const {
+    prefixedCommandBody,
+    queuedBody,
+    transcriptBody,
+    transcriptCommandBody,
+    currentInboundContext,
+    managedSystemEventDeliveries,
+  } = await refreshSystemEventPromptBodies();
   const sourceMessageId =
     normalizeOptionalString(sessionCtx.MessageSidFull) ??
     normalizeOptionalString(sessionCtx.MessageSid);
@@ -315,6 +321,9 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
           text: userTurnTranscriptText,
           senderIsOwner: command.senderIsOwner,
           ...(sourceTurnId ? { idempotencyKey: sourceTurnId } : {}),
+          ...(managedSystemEventDeliveries.size > 0
+            ? { sessionDeliveryAckIds: [...managedSystemEventDeliveries.keys()] }
+            : {}),
           ...(inputProvenance && !isHeartbeat ? { provenance: inputProvenance } : {}),
           ...(isHeartbeat
             ? {
@@ -376,6 +385,20 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
   }
   const admittedSessionSettings = opts?.admittedSessionSettings;
   const groupTurn = getGroupThreadTurn();
+  const originalTurnAdoptionLifecycle = opts?.turnAdoptionLifecycle;
+  const effectiveTurnAdoptionLifecycle =
+    managedSystemEventDeliveries.size > 0
+      ? {
+          ...originalTurnAdoptionLifecycle,
+          onAdopted: async () => {
+            await settleManagedSystemEventsAfterTurnAdoption({
+              deliveries: managedSystemEventDeliveries.values(),
+              persistedMessage: userTurnTranscriptRecorder?.getPersistedMessage?.(),
+              onTurnAdopted: originalTurnAdoptionLifecycle?.onAdopted,
+            });
+          },
+        }
+      : originalTurnAdoptionLifecycle;
   const followupRun = {
     prompt: queuedBody,
     transcriptPrompt: transcriptCommandBody,
@@ -388,7 +411,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     explicitSkillSelections: params.explicitSkillSelections,
     ...(queuedFollowupAbortSignal ? { abortSignal: queuedFollowupAbortSignal } : {}),
     deliveryCorrelations: opts?.queuedDeliveryCorrelations,
-    turnAdoptionLifecycle: opts?.turnAdoptionLifecycle,
+    turnAdoptionLifecycle: effectiveTurnAdoptionLifecycle,
     ...(opts?.onFollowupQueueDisposition
       ? { onQueueDisposition: opts.onFollowupQueueDisposition }
       : {}),
@@ -654,6 +677,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       typingMode,
       resetTriggered: effectiveResetTriggered,
       replyThreadingOverride,
+      isContinuationWake,
       replyOperation: providedReplyOperation,
     });
   // The scope surrounds the whole immediate turn, including provider fallbacks.

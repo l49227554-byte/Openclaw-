@@ -8,6 +8,7 @@ import { FailoverError } from "../../agents/failover-error.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import type { AgentWaitResult } from "../../agents/run-wait.types.js";
 import type { SubagentRegistryDeps } from "../../agents/subagents/registry/subagent-registry-deps.js";
+import { writeSubagentSessionEntry } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import {
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
@@ -687,6 +688,14 @@ describe("gateway agent handler", () => {
           canonicalKey: childSessionKey,
         });
         mocks.updateSessionStore.mockResolvedValue(undefined);
+        await writeSubagentSessionEntry({
+          stateDir: root,
+          agentId: "work",
+          sessionKey: childSessionKey,
+          sessionId: "spawned-child-session",
+          updatedAt: Date.now(),
+          defaultSessionId: "spawned-child-session",
+        });
         const result = "The separately requested follow-up is complete.";
         const completion = createDeferred<AgentWaitResult>();
         const announce = vi.fn<SubagentRegistryDeps["runSubagentAnnounceFlow"]>(

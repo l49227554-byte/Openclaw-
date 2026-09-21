@@ -1,7 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { safeParseJsonRecord } from "@openclaw/normalization-core";
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
-import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeNullableString as migratedText } from "@openclaw/normalization-core/string-coerce";
 import type { SessionRunStatus } from "../../packages/gateway-protocol/src/schema/sessions-row.js";
 import {
@@ -34,6 +33,8 @@ import {
 } from "./openclaw-agent-canonical-validation-schema.js";
 import {
   AGENT_MEDIA_SCHEMA_VERSION,
+  AGENT_PARTICIPANT_IDENTITY_SCHEMA_VERSION,
+  AGENT_RECIPIENT_AUTHORITY_SCHEMA_VERSION,
   CANONICAL_SESSION_VALIDATION_SCHEMA_VERSION,
   OPENCLAW_AGENT_SCHEMA_VERSION,
   type OpenClawAgentDatabaseOptions,
@@ -51,6 +52,9 @@ import {
   hasPendingMemoryChunkMetadataMigration,
   migrateRetiredAgentStateLeaseSchema,
   migratedSessionColumn,
+  migratedEntryAccountId,
+  migratedEntryChannel,
+  migratedEntryDisplayName,
   ensureSessionKeyContractSchemaInTransaction,
   readExistingAgentSchemaMeta,
   repairAndAssertOpenClawAgentV14SchemaForMigration,
@@ -64,6 +68,7 @@ import {
   migrateConversationDeliveryTargetColumn,
   migrateSessionCreatorNamespaces,
   migrateSessionEntryStatusProjection,
+  migrateSessionRecipientAuthority,
   migrateSessionTranscriptActiveProjection,
   migrateSessionTranscriptGenerations,
   readSqliteTableColumns,
@@ -289,40 +294,6 @@ function migratedSessionScope(
     return chatType;
   }
   return "conversation";
-}
-
-function migratedEntryChannel(entry: MigratedSessionEntry): string | null {
-  const delivery = asNullableRecord(entry.delivery);
-  const deliveryContext =
-    asNullableRecord(delivery?.context) ?? asNullableRecord(entry.deliveryContext);
-  const origin = asNullableRecord(delivery?.origin) ?? asNullableRecord(entry.origin);
-  return (
-    migratedText(entry.channel) ??
-    migratedText(deliveryContext?.channel) ??
-    migratedText(entry.lastChannel) ??
-    migratedText(origin?.provider)
-  );
-}
-
-function migratedEntryAccountId(entry: MigratedSessionEntry): string | null {
-  const delivery = asNullableRecord(entry.delivery);
-  const deliveryContext =
-    asNullableRecord(delivery?.context) ?? asNullableRecord(entry.deliveryContext);
-  const origin = asNullableRecord(delivery?.origin) ?? asNullableRecord(entry.origin);
-  return (
-    migratedText(deliveryContext?.accountId) ??
-    migratedText(entry.lastAccountId) ??
-    migratedText(origin?.accountId)
-  );
-}
-
-function migratedEntryDisplayName(entry: MigratedSessionEntry): string | null {
-  return (
-    migratedText(entry.displayName) ??
-    migratedText(entry.label) ??
-    migratedText(entry.subject) ??
-    migratedText(entry.groupId)
-  );
 }
 
 function backfillOpenClawAgentSchema(db: DatabaseSync, previousVersion: number): void {
@@ -616,7 +587,7 @@ function ensureAgentSchema(
       maintenanceAuthority.renewAgentDatabaseMaintenanceAuthorityIfPresent();
       ensureSessionAdditiveColumns(db);
       ensureSessionEntryValidityProjection(db);
-      if (targetVersion >= 18 && previousVersion < 18) {
+      if (targetVersion >= AGENT_PARTICIPANT_IDENTITY_SCHEMA_VERSION) {
         migrateSessionParticipantsSchema(db, pathname);
       }
       if (targetVersion >= 19) {
@@ -624,6 +595,12 @@ function ensureAgentSchema(
       }
       maintenanceAuthority.renewAgentDatabaseMaintenanceAuthorityIfPresent();
       db.exec(schemaSql);
+      if (targetVersion >= AGENT_RECIPIENT_AUTHORITY_SCHEMA_VERSION) {
+        migrateSessionRecipientAuthority(db);
+        // Removing a legacy field fires the canonical entry-update trigger.
+        // Settle valid rows again while malformed Doctor-owned rows remain rejected.
+        ensureSessionEntryValidityProjection(db);
+      }
       migrateMemoryChunkMetadataSchema(db);
       if (previousVersion < targetVersion) {
         ensureOpenClawAgentBoardSchemaInTransaction(db);

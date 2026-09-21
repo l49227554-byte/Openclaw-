@@ -33,6 +33,7 @@ import { captureQueuedSubagentTaskOwner } from "./subagent-registry-task-owner.j
 import type {
   RegisterSubagentRunOptions,
   RegisterSubagentRunParams,
+  SubagentRegistrationOwnership,
   SubagentRunRecord,
 } from "./subagent-registry.types.js";
 import {
@@ -64,7 +65,26 @@ function resolveSwarmWaitOwnerSessionKeys(
   return ownerSessionKeys;
 }
 
-export type { RegisterSubagentRunParams } from "./subagent-registry.types.js";
+export type {
+  RegisterSubagentRunParams,
+  SubagentRegistrationIdentity,
+  SubagentRegistrationOwnership,
+} from "./subagent-registry.types.js";
+
+class SubagentRegistrationError extends AggregateError {
+  constructor(
+    errors: unknown[],
+    message: string,
+    readonly registrationOwnership: Exclude<
+      SubagentRegistrationOwnership,
+      { status: "new-row-committed" }
+    >,
+  ) {
+    super(errors, message);
+    this.name = "SubagentRegistrationError";
+    this.cause = errors[0];
+  }
+}
 
 export class SubagentLaunchManager extends SubagentRecoveryManager {
   private findRunByIdentity(runId: string): SubagentRunRecord | undefined {
@@ -77,14 +97,17 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
   readonly registerSubagentRun = (
     registerParams: RegisterSubagentRunParams,
     options: RegisterSubagentRunOptions = {},
-  ): void | Promise<void> => {
+  ): SubagentRegistrationOwnership | Promise<SubagentRegistrationOwnership> => {
     const runId = registerParams.runId.trim();
     const childSessionKey = registerParams.childSessionKey.trim();
     const requesterSessionKey = registerParams.requesterSessionKey.trim();
-    if (!runId || !childSessionKey || !requesterSessionKey) {
-      return;
-    }
     const now = Date.now();
+    if (!runId || !childSessionKey || !requesterSessionKey) {
+      return {
+        status: "unknown",
+        attempted: { runId, childSessionKey, generation: 0, createdAt: now },
+      };
+    }
     const generation = nextSubagentRunGeneration(
       this.options.getRunsForChildSession(childSessionKey),
       childSessionKey,
@@ -112,15 +135,32 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
             )
           : undefined,
     });
-    const previous = this.options.runs.get(runId);
-    entry.requesterStorePath = previous
-      ? previous.requesterStorePath
+    const previousEntry = this.options.runs.get(runId);
+    const attempted = { runId, childSessionKey, generation, createdAt: now };
+    const failedOwnership = (): Exclude<
+      SubagentRegistrationOwnership,
+      { status: "new-row-committed" | "new-row-survived" | "unknown" }
+    > =>
+      previousEntry
+        ? {
+            status: "predecessor-restored",
+            attempted,
+            predecessor: {
+              runId: previousEntry.runId,
+              childSessionKey: previousEntry.childSessionKey,
+              generation: previousEntry.generation,
+              createdAt: previousEntry.createdAt,
+            },
+          }
+        : { status: "no-new-row", attempted };
+    entry.requesterStorePath = previousEntry
+      ? previousEntry.requesterStorePath
       : resolvePhysicalSessionStorePath(
           { sessionKey: requesterSessionKey, agentId: entry.requesterAgentId },
           cfg,
         );
-    entry.controllerStorePath = previous
-      ? previous.controllerStorePath
+    entry.controllerStorePath = previousEntry
+      ? previousEntry.controllerStorePath
       : resolvePhysicalSessionStorePath(
           {
             sessionKey: entry.controllerSessionKey,
@@ -145,7 +185,11 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       ...[...killReconciliationSnapshots.keys()].map((candidate) => candidate.runId),
     ];
     const rollbackRegistration = () => {
-      this.options.runs.delete(runId);
+      if (previousEntry) {
+        this.options.runs.set(runId, previousEntry);
+      } else {
+        this.options.runs.delete(runId);
+      }
       this.restoreKillReconciliationSnapshots(killReconciliationSnapshots);
     };
     const restoreDurableRegistration = () => {
@@ -198,13 +242,19 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
         bindReservation: bindRegistrationReservation,
         activate: activateRegistrationLifecycle,
         ...options,
-      });
+      }).then(() => ({ status: "new-row-committed" as const, attempted }));
     }
     try {
       this.options.persistOrThrow(...registeredRunIds);
     } catch (error) {
       rollbackRegistration();
-      throw error;
+      throw new SubagentRegistrationError(
+        [error],
+        error instanceof Error
+          ? error.message
+          : `Subagent registration persistence failed: ${runId}`,
+        failedOwnership(),
+      );
     }
     if (registerParams.taskRowOwnership !== "gateway_best_effort") {
       try {
@@ -223,10 +273,10 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
         }
       } catch (error) {
         if (registerParams.taskRowOwnership !== "required") {
+          // ACP/default: keep the durable registry row. Secondary task-runtime
+          // faults must not unwind an already-persisted registration.
           log.warn("Failed to create background task for subagent run", { runId, error });
         } else {
-          // Direct dispatch suppressed Gateway's CLI fallback. Persist the rollback before
-          // asking the caller to abort; if that write fails, memory must match durable state.
           rollbackRegistration();
           try {
             this.options.persistOrThrow(...registeredRunIds);
@@ -235,14 +285,25 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
             // Durable state still owns this registration. Keep reconciliation active so
             // caller cleanup can terminalize it instead of leaving a phantom run.
             activateRegistrationLifecycle();
-            throw rollbackError;
+            throw new SubagentRegistrationError(
+              [error, rollbackError],
+              rollbackError instanceof Error
+                ? `Subagent task registration and rollback persistence both failed: ${runId}: ${rollbackError.message}`
+                : `Subagent task registration and rollback persistence both failed: ${runId}`,
+              { status: "new-row-survived", attempted },
+            );
           }
-          throw error;
+          throw new SubagentRegistrationError(
+            [error],
+            error instanceof Error ? error.message : `Subagent task registration failed: ${runId}`,
+            failedOwnership(),
+          );
         }
       }
     }
     // Wait through Gateway RPC; the in-process lifecycle listener is the embedded fallback.
     activateRegistrationLifecycle();
+    return { status: "new-row-committed", attempted };
   };
 
   readonly startQueuedSubagentRun = (

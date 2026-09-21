@@ -2863,7 +2863,9 @@ describe("subagent registry lifecycle hardening", () => {
       resolveSubagentTask: () => ({ lookup: "unavailable" }),
     });
 
-    await completeRun(controller, entry, { endedAt: 4_001, triggerCleanup: true });
+    await expect(
+      completeRun(controller, entry, { endedAt: 4_001, triggerCleanup: true }),
+    ).rejects.toThrow("subagent task projection did not finalize");
 
     expect(entry).toMatchObject({
       endedReason: SUBAGENT_ENDED_REASON_KILLED,
@@ -2874,6 +2876,21 @@ describe("subagent registry lifecycle hardening", () => {
       suppressAnnounceReason: "killed",
     });
     expect(taskExecutorMocks.completeTaskRunByRunId).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves completion ownership when opaque task finalization has no receipt", async () => {
+    taskExecutorMocks.completeTaskRunByRunId.mockReturnValueOnce([]);
+    const entry = createRunEntry({ taskRunId: "opaque-task-owner" });
+    const controller = createLifecycleController({
+      entry,
+      resolveSubagentTask: () => ({ lookup: "unavailable" }),
+    });
+
+    await expect(completeRun(controller, entry, { triggerCleanup: true })).rejects.toThrow(
+      "subagent task projection did not finalize",
+    );
+
+    expect(entry.cleanupCompletedAt).toBeUndefined();
   });
 
   it("accepts provider completion when an opaque custom runtime finalizes it", async () => {

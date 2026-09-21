@@ -2,7 +2,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
-  assignSessionOwner,
   loadExactSessionEntryReadOnly,
   loadTranscriptEvents,
 } from "../config/sessions/session-accessor.js";
@@ -43,7 +42,317 @@ function insertEmptyAlias(params: {
   return database;
 }
 
+function assignLegacySessionOwner(params: {
+  agentId: string;
+  assignedAt: number;
+  assignedBy: { type: "agent" | "human"; id: string };
+  env: NodeJS.ProcessEnv;
+  owner: { type: "agent" | "human"; id: string };
+  sessionKey: string;
+  storePath: string;
+}) {
+  const database = openOpenClawAgentDatabase({
+    agentId: params.agentId,
+    env: params.env,
+    path: resolveSqliteTargetFromSessionStorePath(params.storePath, {
+      agentId: params.agentId,
+      env: params.env,
+    }).path,
+  });
+  database.db
+    .prepare(
+      `UPDATE session_nodes
+          SET owner_actor_type = ?,
+              owner_actor_id = ?,
+              owner_assigned_by_type = ?,
+              owner_assigned_by_id = ?,
+              owner_assigned_at = ?
+        WHERE session_key = ?`,
+    )
+    .run(
+      params.owner.type,
+      params.owner.id,
+      params.assignedBy.type,
+      params.assignedBy.id,
+      params.assignedAt,
+      params.sessionKey,
+    );
+  return {
+    actor: params.owner,
+    assignedBy: params.assignedBy,
+    assignedAt: params.assignedAt,
+  };
+}
+
 describe("doctor transcript owner repair", () => {
+  it.each([
+    { label: "same database orphan", sourceAgentId: "main", sourceEpoch: undefined },
+    { label: "cross database orphan", sourceAgentId: "ops", sourceEpoch: undefined },
+    {
+      label: "cross database foreign carry",
+      sourceAgentId: "ops",
+      sourceEpoch: "22222222-2222-4222-8222-222222222222",
+    },
+  ])("rotates recipient authority for $label", async ({ sourceAgentId, sourceEpoch }) => {
+    await withStateDirEnv("openclaw-doctor-orphan-authority-", async ({ stateDir }) => {
+      const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+      const storeTemplate = path.join(stateDir, "agents", "{agentId}", "sessions.json");
+      const destinationStore = resolveSessionStorePathCore(storeTemplate, {
+        agentId: "main",
+        env,
+      });
+      const sourceStore = resolveSessionStorePathCore(storeTemplate, {
+        agentId: sourceAgentId,
+        env,
+      });
+      const canonicalKey = "agent:main:work";
+      const aliasKey = "agent:main:main";
+      const orphanEpoch = "11111111-1111-4111-8111-111111111111";
+      const cfg = {
+        agents: {
+          list: [
+            { id: "main", default: true },
+            ...(sourceAgentId === "ops" ? [{ id: "ops" }] : []),
+          ],
+        },
+        session: { mainKey: "work", store: storeTemplate },
+      } as OpenClawConfig;
+      insertLegacySession({
+        agentId: sourceAgentId,
+        entry: { sessionId: "alias-session", updatedAt: 20 },
+        env,
+        sessionKey: aliasKey,
+        storePath: sourceStore,
+      });
+      const destinationDatabase = openOpenClawAgentDatabase({
+        agentId: "main",
+        env,
+        path: resolveSqliteTargetFromSessionStorePath(destinationStore, {
+          agentId: "main",
+          env,
+        }).path,
+      });
+      const sourceDatabase = openOpenClawAgentDatabase({
+        agentId: sourceAgentId,
+        env,
+        path: resolveSqliteTargetFromSessionStorePath(sourceStore, {
+          agentId: sourceAgentId,
+          env,
+        }).path,
+      });
+      destinationDatabase.db
+        .prepare(
+          "INSERT INTO session_recipient_authority (session_key, epoch, created_at, updated_at) VALUES (?, ?, 1, 1)",
+        )
+        .run(canonicalKey, orphanEpoch);
+      if (sourceEpoch) {
+        sourceDatabase.db
+          .prepare(
+            "INSERT INTO session_recipient_authority (session_key, epoch, created_at, updated_at) VALUES (?, ?, 1, 1)",
+          )
+          .run(aliasKey, sourceEpoch);
+      }
+
+      expect(await repairCanonicalSessionKeys({ apply: true, cfg, env })).toMatchObject({
+        foundGroups: 1,
+        repairedGroups: 1,
+      });
+      const repaired = destinationDatabase.db
+        .prepare("SELECT epoch FROM session_recipient_authority WHERE session_key = ?")
+        .get(canonicalKey) as { epoch: string };
+      expect(repaired.epoch).not.toBe(orphanEpoch);
+      if (sourceEpoch) {
+        expect(repaired.epoch).not.toBe(sourceEpoch);
+      }
+      expect(repaired.epoch).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(
+        sourceDatabase.db
+          .prepare("SELECT session_key FROM session_recipient_authority WHERE session_key = ?")
+          .get(aliasKey),
+      ).toBeUndefined();
+    });
+  });
+
+  it("compares authority ownership against the selected occupant before stamp preservation", async () => {
+    await withStateDirEnv("openclaw-doctor-stamped-authority-", async ({ stateDir }) => {
+      const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+      const storeTemplate = path.join(stateDir, "agents", "{agentId}", "sessions.json");
+      const storePath = resolveSessionStorePathCore(storeTemplate, { agentId: "main", env });
+      const canonicalKey = "agent:main:work";
+      const aliasKey = "agent:main:main";
+      const epoch = "11111111-1111-4111-8111-111111111111";
+      const cfg = {
+        agents: { list: [{ id: "main", default: true }] },
+        session: { mainKey: "work", store: storeTemplate },
+      } as OpenClawConfig;
+      insertLegacySession({
+        agentId: "main",
+        entry: {
+          createdActor: { type: "human", source: "unknown", id: "canonical-owner" },
+          sandbox: "required",
+          sessionId: "canonical-session",
+          updatedAt: 10,
+        },
+        env,
+        sessionKey: canonicalKey,
+        storePath,
+      });
+      insertLegacySession({
+        agentId: "main",
+        entry: {
+          createdActor: { type: "human", source: "unknown", id: "winner-owner" },
+          sessionId: "winner-session",
+          updatedAt: 20,
+        },
+        env,
+        sessionKey: aliasKey,
+        storePath,
+      });
+      const database = openOpenClawAgentDatabase({
+        agentId: "main",
+        env,
+        path: resolveSqliteTargetFromSessionStorePath(storePath, {
+          agentId: "main",
+          env,
+        }).path,
+      });
+      const insertAuthority = database.db.prepare(
+        "INSERT INTO session_recipient_authority (session_key, epoch, created_at, updated_at) VALUES (?, ?, 1, 1)",
+      );
+      insertAuthority.run(canonicalKey, epoch);
+      insertAuthority.run(aliasKey, epoch);
+
+      expect(await repairCanonicalSessionKeys({ apply: true, cfg, env })).toMatchObject({
+        foundGroups: 1,
+        repairedGroups: 1,
+      });
+      expect(
+        loadExactSessionEntryReadOnly({
+          agentId: "main",
+          env,
+          sessionKey: canonicalKey,
+          storePath,
+        })?.entry,
+      ).toMatchObject({
+        createdActor: { type: "human", id: "canonical-owner" },
+        sessionId: "winner-session",
+      });
+      const repaired = database.db
+        .prepare("SELECT epoch FROM session_recipient_authority WHERE session_key = ?")
+        .get(canonicalKey) as { epoch: string };
+      expect(repaired.epoch).not.toBe(epoch);
+    });
+  });
+
+  it.each([
+    { label: "same database", sourceAgentId: "main" },
+    { label: "cross database", sourceAgentId: "ops" },
+  ])(
+    "rotates competing recipient authority during $label owner replacement",
+    async ({ sourceAgentId }) => {
+      await withStateDirEnv("openclaw-doctor-recipient-authority-", async ({ stateDir }) => {
+        const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+        const storeTemplate = path.join(stateDir, "agents", "{agentId}", "sessions.json");
+        const destinationStore = resolveSessionStorePathCore(storeTemplate, {
+          agentId: "main",
+          env,
+        });
+        const sourceStore = resolveSessionStorePathCore(storeTemplate, {
+          agentId: sourceAgentId,
+          env,
+        });
+        const canonicalKey = "agent:main:work";
+        const aliasKey = "agent:main:main";
+        const canonicalEpoch = "11111111-1111-4111-8111-111111111111";
+        const aliasEpoch = "22222222-2222-4222-8222-222222222222";
+        const cfg = {
+          agents: {
+            list: [
+              { id: "main", default: true },
+              ...(sourceAgentId === "ops" ? [{ id: "ops" }] : []),
+            ],
+          },
+          session: { mainKey: "work", store: storeTemplate },
+        } as OpenClawConfig;
+        insertLegacySession({
+          agentId: "main",
+          entry: {
+            createdActor: { type: "human", source: "unknown", id: "owner-before" },
+            sessionId: "canonical-session",
+            updatedAt: 10,
+          },
+          env,
+          sessionKey: canonicalKey,
+          storePath: destinationStore,
+        });
+        insertLegacySession({
+          agentId: sourceAgentId,
+          entry: {
+            createdActor: { type: "human", source: "unknown", id: "owner-after" },
+            sessionId: "alias-session",
+            updatedAt: 20,
+          },
+          env,
+          sessionKey: aliasKey,
+          storePath: sourceStore,
+        });
+        const destinationDatabase = openOpenClawAgentDatabase({
+          agentId: "main",
+          env,
+          path: resolveSqliteTargetFromSessionStorePath(destinationStore, {
+            agentId: "main",
+            env,
+          }).path,
+        });
+        const sourceDatabase = openOpenClawAgentDatabase({
+          agentId: sourceAgentId,
+          env,
+          path: resolveSqliteTargetFromSessionStorePath(sourceStore, {
+            agentId: sourceAgentId,
+            env,
+          }).path,
+        });
+        destinationDatabase.db
+          .prepare(
+            "INSERT INTO session_recipient_authority (session_key, epoch, created_at, updated_at) VALUES (?, ?, 1, 1)",
+          )
+          .run(canonicalKey, canonicalEpoch);
+        sourceDatabase.db
+          .prepare(
+            "INSERT INTO session_recipient_authority (session_key, epoch, created_at, updated_at) VALUES (?, ?, 1, 1)",
+          )
+          .run(aliasKey, aliasEpoch);
+
+        expect(await repairCanonicalSessionKeys({ apply: true, cfg, env })).toMatchObject({
+          foundGroups: 1,
+          repairedGroups: 1,
+        });
+        expect(
+          loadExactSessionEntryReadOnly({
+            agentId: "main",
+            env,
+            sessionKey: canonicalKey,
+            storePath: destinationStore,
+          })?.entry,
+        ).toMatchObject({
+          createdActor: { type: "human", id: "owner-after" },
+          sessionId: "alias-session",
+        });
+        const repairedAuthority = destinationDatabase.db
+          .prepare("SELECT epoch FROM session_recipient_authority WHERE session_key = ?")
+          .get(canonicalKey) as { epoch: string };
+        expect(repairedAuthority.epoch).not.toBe(canonicalEpoch);
+        expect(repairedAuthority.epoch).not.toBe(aliasEpoch);
+        expect(repairedAuthority.epoch).toMatch(/^[0-9a-f-]{36}$/u);
+        expect(
+          sourceDatabase.db
+            .prepare("SELECT session_key FROM session_recipient_authority WHERE session_key = ?")
+            .get(aliasKey),
+        ).toBeUndefined();
+      });
+    },
+  );
+
   it.each([
     { sourceAgentId: "main", requiredAlias: true, requiredCanonical: false },
     { sourceAgentId: "ops", requiredAlias: true, requiredCanonical: false },
@@ -161,14 +470,15 @@ describe("doctor transcript owner repair", () => {
           sessionKey: canonicalKey,
           storePath: destinationStore,
         });
-        assignSessionOwner(
-          { agentId: "main", env, sessionKey: canonicalKey, storePath: destinationStore },
-          {
-            owner: { type: "human", id: "profile-stale" },
-            assignedBy: { type: "human", id: "profile-stale-assigner" },
-            assignedAt: 10,
-          },
-        );
+        assignLegacySessionOwner({
+          agentId: "main",
+          env,
+          sessionKey: canonicalKey,
+          storePath: destinationStore,
+          owner: { type: "human", id: "profile-stale" },
+          assignedBy: { type: "human", id: "profile-stale-assigner" },
+          assignedAt: 10,
+        });
       }
 
       insertLegacySession({
@@ -179,14 +489,15 @@ describe("doctor transcript owner repair", () => {
         storePath: sourceStore,
       });
       const owner = winnerOwned
-        ? assignSessionOwner(
-            { agentId: sourceAgentId, env, sessionKey: winnerKey, storePath: sourceStore },
-            {
-              owner: { type: "human", id: "profile-winner" },
-              assignedBy: { type: "agent", id: "research" },
-              assignedAt: 1234,
-            },
-          )
+        ? assignLegacySessionOwner({
+            agentId: sourceAgentId,
+            env,
+            sessionKey: winnerKey,
+            storePath: sourceStore,
+            owner: { type: "human", id: "profile-winner" },
+            assignedBy: { type: "agent", id: "research" },
+            assignedAt: 1234,
+          })
         : undefined;
 
       if ("malformed" in fixture) {

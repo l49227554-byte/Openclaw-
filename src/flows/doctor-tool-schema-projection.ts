@@ -5,6 +5,7 @@ import {
 } from "../agents/tool-schema-projection.js";
 import { buildReadableToolsByName } from "../agents/tools-effective-inventory-build.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
+import { buildInventoryContinuationToolOpts } from "../agents/tools/continuation-inventory-opts.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
@@ -166,6 +167,9 @@ export async function collectAgentRuntimeToolSchemaFindings(
       modelContextWindowTokens: params.model.contextWindow,
       allowGatewaySubagentBinding: true,
       emitBeforeToolCallDiagnostics: false,
+      ...buildInventoryContinuationToolOpts(
+        params.cfg.agents?.defaults?.continuation?.enabled === true,
+      ),
     });
   } catch (error) {
     return [agentRuntimeToolLoadFailureFinding({ agentId: params.agentId, error })];

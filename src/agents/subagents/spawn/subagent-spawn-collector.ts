@@ -7,6 +7,7 @@ import { getAsyncWorkSignal } from "../../../shared/async-work-scope.js";
 import { summarizeSpawnError } from "../../spawn-pipeline.js";
 import {
   completeCollectorLaunchCleanup,
+  recordAcceptedSubagentSpawnRollback,
   settleFailedQueuedSubagentLaunch,
   startQueuedSubagentRun,
 } from "../registry/subagent-registry.js";
@@ -101,13 +102,43 @@ export function createCollectorLaunchCallbacks(params: {
           throw new Error("collector registry row could not transition from queued to running");
         }
       } catch (error) {
-        await terminateAcceptedCollectorRun({
+        // Record the accepted-spawn rollback owner before terminating so the
+        // sweeper can reconcile the accepted child if termination fails or the
+        // process dies mid-cleanup.
+        const rollbackOwner = recordAcceptedSubagentSpawnRollback({
+          runId: childRunId,
           childSessionKey,
           gatewayRunId,
+          reason: summarizeSpawnError(error),
           ...provisionalSessionIdentity,
-          isCurrent: canCleanupCreatedSession,
         });
+        const rollbackFailures: unknown[] = [];
+        if (rollbackOwner.status === "rejected") {
+          rollbackFailures.push(
+            new Error(`Accepted collector rollback owner was rejected: ${childRunId}`),
+          );
+        } else if (rollbackOwner.status === "pending-persistence") {
+          rollbackFailures.push(rollbackOwner.error);
+        }
+        try {
+          await terminateAcceptedCollectorRun({
+            childSessionKey,
+            gatewayRunId,
+            ...provisionalSessionIdentity,
+            isCurrent: canCleanupCreatedSession,
+          });
+        } catch (terminationError) {
+          rollbackFailures.push(terminationError);
+        }
         launchTerminationConfirmed = true;
+        if (rollbackFailures.length > 0) {
+          const aggregate = new AggregateError(
+            [error, ...rollbackFailures],
+            `Accepted collector rollback incomplete: ${childRunId}`,
+          );
+          aggregate.cause = error;
+          throw aggregate;
+        }
         throw error;
       }
       await params.emitSpawnLifecycleHooks(gatewayRunId);

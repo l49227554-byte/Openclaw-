@@ -1,4 +1,10 @@
 import type { TranscriptEntryAnchor } from "../config/sessions/transcript-entry-anchor.js";
+import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import { isUserMessage } from "./user-turn-transcript.message.js";
+import {
+  normalizePersistedSteerTargetRunId,
+  rewritePersistedSteerTargetRunId,
+} from "./user-turn-transcript.metadata.js";
 import type {
   PersistedUserTurnMessage,
   UserTurnTranscriptAdmissionReceipt,
@@ -55,4 +61,47 @@ export function resolveUserTurnTranscriptAdmission(params: {
         logicalTurnId: params.logicalTurnId,
         role: "user",
       };
+}
+
+// The transcript read fence imports this module for its pure admission-registry
+// reads, and `session-history-read.imports.test.ts` keeps every read owner clear
+// of host acquisition and decoration. This write-path confirmation is the only
+// consumer of the session accessor here, so it loads that owner on demand rather
+// than pulling it into the read graph statically.
+const loadSessionAccessor = createLazyRuntimeModule(
+  () => import("../config/sessions/session-accessor.js"),
+);
+
+export async function confirmPersistedSteerTargetRunId(params: {
+  admission: UserTurnTranscriptAdmissionReceipt;
+  targetRunId: string;
+}): Promise<
+  | {
+      admission: UserTurnTranscriptAdmissionReceipt;
+      message: PersistedUserTurnMessage;
+    }
+  | undefined
+> {
+  const { publishTranscriptUpdate, rewriteTranscriptMessageAtAnchor } = await loadSessionAccessor();
+  const rewritten = await rewriteTranscriptMessageAtAnchor(params.admission, (message) => {
+    if (!isUserMessage(message)) {
+      return undefined;
+    }
+    const currentTarget = normalizePersistedSteerTargetRunId(
+      message["__openclaw"]?.steerTargetRunId,
+    );
+    return currentTarget === params.targetRunId
+      ? undefined
+      : rewritePersistedSteerTargetRunId(message, params.targetRunId);
+  });
+  if (!rewritten) {
+    return undefined;
+  }
+  const admission = { ...params.admission, generation: rewritten.generation };
+  await publishTranscriptUpdate(admission, {
+    message: rewritten.message,
+    messageId: admission.entryId,
+    messageSeq: admission.activeMessagePosition + 1,
+  });
+  return { admission, message: rewritten.message };
 }

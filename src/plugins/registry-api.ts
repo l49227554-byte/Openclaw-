@@ -15,6 +15,7 @@ import {
   schedulePluginSessionTurn,
   unschedulePluginSessionTurnsByTag,
 } from "./host-hook-scheduled-turns.js";
+import { getPluginInstance } from "./plugin-instance-scope.js";
 import { getPluginRuntimeEntrySource } from "./plugin-runtime-artifact-binding.js";
 import {
   capturePluginLifecycleAuthority,
@@ -80,6 +81,13 @@ export function createPluginApiFactory(
   ): OpenClawPluginApi => {
     const registrationMode = params.registrationMode ?? "full";
     const registrationCapabilities = resolvePluginRegistrationCapabilities(registrationMode);
+    const resolveBaseCapabilityCatalogContext = registryParams.resolveCapabilityCatalogContext;
+    const resolveCapabilityCatalogContext = resolveBaseCapabilityCatalogContext
+      ? () => {
+          const context = resolveBaseCapabilityCatalogContext();
+          return getPluginInstance(record)?.wrap(context) ?? context;
+        }
+      : undefined;
     const shouldCommitWorkflowSideEffect = () =>
       capturePluginLifecycleAuthority(getPluginRecordRegistry(registry, record), record, {
         registration: true,
@@ -119,21 +127,21 @@ export function createPluginApiFactory(
               registerSpeechProvider: (entry) => {
                 const provider = resolveCapabilityProviderRegistration(
                   entry,
-                  registryParams.resolveCapabilityCatalogContext,
+                  resolveCapabilityCatalogContext,
                 );
                 bound.registerSpeechProvider(provider);
               },
               registerRealtimeTranscriptionProvider: (entry) => {
                 const provider = resolveCapabilityProviderRegistration(
                   entry,
-                  registryParams.resolveCapabilityCatalogContext,
+                  resolveCapabilityCatalogContext,
                 );
                 bound.registerRealtimeTranscriptionProvider(provider);
               },
               registerRealtimeVoiceProvider: (entry) => {
                 const provider = resolveCapabilityProviderRegistration(
                   entry,
-                  registryParams.resolveCapabilityCatalogContext,
+                  resolveCapabilityCatalogContext,
                 );
                 bound.registerRealtimeVoiceProvider(provider);
               },

@@ -321,7 +321,10 @@ describe("handleMessageUpdate text signatures", () => {
     });
 
     expect(flushBlockReplyBuffer).toHaveBeenCalledWith({ assistantMessageIndex: 7 });
-    expect(resetAssistantMessageState).toHaveBeenCalledWith(0);
+    expect(resetAssistantMessageState).toHaveBeenCalledWith(0, {
+      preserveMessageTextBaseline: true,
+      preserveReplyDirectiveState: true,
+    });
     expect(onAssistantMessageStart).toHaveBeenCalledTimes(1);
     expect(onPartialReply).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -435,7 +438,9 @@ describe("handleMessageUpdate text signatures", () => {
       },
     });
 
-    expect(flushBlockReplyBuffer.mock.calls).toEqual([[{ assistantMessageIndex: 0, final: true }]]);
+    expect(flushBlockReplyBuffer.mock.calls).toEqual([
+      [{ assistantMessageIndex: 0, deferPendingToolMedia: true, final: true }],
+    ]);
     expect(resetAssistantMessageState).not.toHaveBeenCalled();
     expect(onAssistantMessageStart).not.toHaveBeenCalled();
     expect(onPartialReply).toHaveBeenCalledWith(

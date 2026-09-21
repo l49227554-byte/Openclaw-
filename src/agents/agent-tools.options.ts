@@ -32,6 +32,7 @@ import type {
   ToolSearchToolContext,
 } from "./tool-search.js";
 import type { CronCreatorToolAllowlistEntry, CronToolsAllowCaptureRef } from "./tools/cron-tool.js";
+import type { RequestCompactionToolOpts } from "./tools/request-compaction-tool.js";
 
 /** Public options for building one plugin-owned agent tool surface. */
 export type OpenClawCodingToolsOptions = {
@@ -96,6 +97,16 @@ export type OpenClawCodingToolsOptions = {
   hookChannelId?: string;
   /** Trusted provider role ids for the requester in this group turn. */
   memberRoleIds?: string[];
+  /** Whether this run consumes the continue_delegate staging queue. */
+  drainsContinuationDelegateQueue?: boolean;
+  /** Internal maintenance/model-only runs that cannot schedule post-turn continuation work. */
+  disableContinuationTools?: boolean;
+  /** Callback for continue_work to request a post-turn continuation. */
+  continueWorkOpts?: {
+    requestContinuation: (
+      request: import("./tools/continue-work-tool.js").ContinueWorkRequest,
+    ) => void;
+  };
   /** True when runtimeToolAllowlist is real parent authority that child sessions inherit. */
   inheritRuntimeToolAllowlist?: boolean;
   /** Mutable spawn capability snapshot refreshed after late-bound runtime tools are authorized. */
@@ -128,6 +139,12 @@ export type OpenClawCodingToolsOptions = {
   systemAgentTool?: import("./tools/system-agent-tool.js").SystemAgentToolOptions;
   /** Auth profiles already loaded for this run; used for prompt-time tool availability. */
   authProfileStore?: AuthProfileStore;
+  /** Continuation: request_compaction tool opts (injected from execution context). */
+  requestCompactionOpts?: {
+    sessionId?: string;
+    getContextUsage: () => number | null;
+    triggerCompaction: RequestCompactionToolOpts["triggerCompaction"];
+  };
   /** Live observer called after wrapped tool outcomes are recorded. */
   onToolOutcome?: ToolOutcomeObserver;
   /** Reads the sticky untrusted-content flag for the current user turn. */

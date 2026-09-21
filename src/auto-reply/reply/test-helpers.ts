@@ -2,6 +2,7 @@
 import path from "node:path";
 import { onTestFinished, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import type { ModelDefinitionConfig } from "../../config/types.models.js";
 import type { FollowupRun } from "./queue.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import type { TypingController } from "./typing.js";
@@ -182,5 +183,18 @@ export function createMockFollowupRun(
       ...base.run,
       ...overrides.run,
     },
+  };
+}
+
+export function makeTestModel(id: string, contextTokens: number): ModelDefinitionConfig {
+  return {
+    id,
+    name: id,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: contextTokens,
+    contextTokens,
+    maxTokens: 4096,
   };
 }

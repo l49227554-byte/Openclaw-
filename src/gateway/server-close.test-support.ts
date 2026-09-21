@@ -71,9 +71,11 @@ export function createGatewayCloseTestDepsFactory(mocks: GatewayCloseFixtureMock
         stopPeriodicTasks: vi.fn(async () => {}),
         startMediaCleanup: vi.fn(),
         stopMediaCleanup: vi.fn(async () => "drained" as const),
+
         skillUsageCleanup: vi.fn(async () => {}),
       },
       stopMediaCleanup: vi.fn(async () => "drained" as const),
+      delegateArtifactCleanup: null,
       agentUnsub: null,
       taskUnsub: null,
       heartbeatUnsub: null,

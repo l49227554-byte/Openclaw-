@@ -99,7 +99,17 @@ describe("spawn context-engine resource custody", () => {
     resolveEngine.mockReset();
     completeLaunchCleanup.mockReset();
     settleLaunchFailure.mockReset();
-    registerRun.mockReset();
+    registerRun
+      .mockReset()
+      .mockImplementation((record: { runId: string; childSessionKey: string }) => ({
+        status: "new-row-committed",
+        attempted: {
+          runId: record.runId,
+          childSessionKey: record.childSessionKey,
+          generation: 1,
+          createdAt: Date.now(),
+        },
+      }));
     resetScheduler();
     vi.stubEnv("OPENCLAW_TEST_FAST", "1");
   });
@@ -250,6 +260,7 @@ describe("spawn context-engine resource custody", () => {
       return { rollback };
     });
     resolveEngine.mockImplementation(() => fixture.resolve());
+    const register = registerRun.getMockImplementation()!;
     const settleFailedLaunch = vi.fn(async () => {});
     const cancelledScope = {
       waitForClaim: () => undefined,
@@ -261,11 +272,12 @@ describe("spawn context-engine resource custody", () => {
     } satisfies SubagentRegistrationScope;
     registerRun.mockImplementation(
       async (
-        { runId }: { runId: string },
+        record: { runId: string; childSessionKey: string },
         options: { retainOwnership?: (scope: SubagentRegistrationScope) => void },
       ) => {
         options.retainOwnership?.(cancelledScope);
-        expect(scheduler.removeQueuedSwarmRun(runId)).toBe(true);
+        expect(scheduler.removeQueuedSwarmRun(record.runId)).toBe(true);
+        return register(record);
       },
     );
     try {

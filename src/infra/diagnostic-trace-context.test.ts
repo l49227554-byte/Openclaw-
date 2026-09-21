@@ -11,6 +11,7 @@ import {
   isValidDiagnosticTraceFlags,
   isValidDiagnosticTraceId,
   parseDiagnosticTraceparent,
+  resetDiagnosticTraceContextForTest,
   runWithDiagnosticTraceContext,
 } from "./diagnostic-trace-context.js";
 
@@ -88,6 +89,7 @@ describe("diagnostic-trace-context", () => {
       traceId: TRACE_ID,
       spanId: SPAN_ID,
       traceFlags: "01",
+      spanIdSource: "remote",
     });
   });
 
@@ -159,6 +161,20 @@ describe("diagnostic-trace-context", () => {
       expect(getActiveDiagnosticTraceContext()).toEqual(outer);
     });
 
+    expect(getActiveDiagnosticTraceContext()).toBeUndefined();
+  });
+
+  it("resets the process-global trace scope used by test isolation", () => {
+    const trace = createDiagnosticTraceContext({
+      traceId: TRACE_ID,
+      spanId: SPAN_ID,
+    });
+
+    runWithDiagnosticTraceContext(trace, () => {
+      expect(getActiveDiagnosticTraceContext()).toEqual(trace);
+      resetDiagnosticTraceContextForTest();
+      expect(getActiveDiagnosticTraceContext()).toBeUndefined();
+    });
     expect(getActiveDiagnosticTraceContext()).toBeUndefined();
   });
 

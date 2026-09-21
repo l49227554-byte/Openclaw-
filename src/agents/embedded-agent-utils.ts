@@ -4,6 +4,8 @@ import { stripCompactionReplayCheckpointInPlace } from "@openclaw/ai/transports"
  * Extracts visible assistant text, reasoning summaries, thinking-tag blocks,
  * and compact tool metadata for channel delivery and transcript replay.
  */
+import { stripContinuationSignal } from "../auto-reply/continuation/signal.js";
+import { splitTrailingDirective } from "../auto-reply/reply/streaming-directives.js";
 import type { AssistantMessage } from "../llm/types.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
 import {
@@ -46,6 +48,16 @@ function sanitizeAssistantText(
       options,
     ),
   );
+}
+
+function sanitizeAssistantDisplayText(text: string, phase?: AssistantPhase): string {
+  const sanitized = sanitizeAssistantText(text, phase);
+  const stripped = stripContinuationSignal(sanitized);
+  if (stripped.signal) {
+    return stripped.text;
+  }
+  const trailing = splitTrailingDirective(sanitized);
+  return /^\s*(?:\[\[\s*)?CONT/iu.test(trailing.tail) ? trailing.text : sanitized;
 }
 
 function isAssistantTextContentBlockType(value: unknown): boolean {
@@ -103,7 +115,7 @@ function prepareEmbeddedAssistantTextForPhase(
     return () => {
       const text = finalizeAssistantExtraction(
         errorContext,
-        sanitizeAssistantText(preparedText, messagePhase),
+        sanitizeAssistantDisplayText(preparedText, messagePhase),
       );
       return selectedPhase === "final_answer" && !text.trim() ? "" : text;
     };
@@ -167,7 +179,7 @@ function prepareEmbeddedAssistantTextForPhase(
       errorContext,
       // A native block boundary can divide markup; finalize only the selected snapshot.
       parts
-        .map(({ text, phase }) => sanitizeAssistantText(text, phase))
+        .map(({ text, phase }) => sanitizeAssistantDisplayText(text, phase))
         .filter((text) => text.trim())
         .join("\n")
         .trimEnd(),

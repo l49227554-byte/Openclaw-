@@ -5,6 +5,7 @@
  * server types and helpers without paying the full startup dependency graph.
  */
 import { measureGatewayBootstrapStep } from "../cli/startup-trace.js";
+import { copyGatewayServerExtras } from "./server-extra-handlers.js";
 
 export { truncateCloseReason } from "./server/close-reason.js";
 export type { GatewayServer, GatewayServerOptions } from "./server-public.js";
@@ -33,7 +34,8 @@ export async function startGatewayServer(
         withAgentDatabaseStartupAdmission(async (admission) => {
           stopDatabaseAdmission = () => admission.stop();
           const mod = await loadServerStart();
-          return mod.startGatewayServerCore(port, { ...opts, startupStartedAt });
+          const startOptions = copyGatewayServerExtras(opts, { ...opts, startupStartedAt });
+          return mod.startGatewayServerCore(port, startOptions);
         }),
       );
       return {

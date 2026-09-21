@@ -2438,7 +2438,9 @@ describe("CLI attempt execution", () => {
       agentDir,
       { filterExternalAuthProfiles: false, syncExternalCli: false },
     );
-    expect(() =>
+    // runAgentAttempt is async in this lane, so the refusal surfaces as a
+    // rejection rather than a synchronous throw.
+    await expect(
       runStoredAttempt({
         providerOverride: "google",
         modelOverride: "gemini-3.1-pro-preview",
@@ -2458,7 +2460,7 @@ describe("CLI attempt execution", () => {
         runId: "run-gemini-cli-incompatible-auth",
         sessionStore,
       }),
-    ).toThrow(/cannot use auth profile "vercel-ai-gateway:default"/);
+    ).rejects.toThrow(/cannot use auth profile "vercel-ai-gateway:default"/);
 
     expect(runCliAgentMock).not.toHaveBeenCalled();
   });

@@ -23,6 +23,7 @@ type InlineDirectiveParseOptions = {
   currentMessageId?: string;
   stripAudioTag?: boolean;
   stripReplyTags?: boolean;
+  isInsideCodeSpan?: (index: number) => boolean;
   preserveTrailingWhitespace?: boolean;
   /** Observes each audio directive accepted outside canonical code regions. */
   onAudioDirective?: () => void;
@@ -65,13 +66,16 @@ export function replaceOutsideCodeRegions(
   text: string,
   regex: RegExp,
   replacement: (match: string, captures: unknown[], offset: number, source: string) => string,
+  isInsideCodeSpan?: (index: number) => boolean,
 ): string {
   let codeRegions: ReturnType<typeof findCodeRegions> | undefined;
   return text.replace(regex, (...args: unknown[]) => {
     codeRegions ??= text.includes("[[") ? findCodeRegions(text) : [];
     const match = String(args[0]);
     const offset = args.at(-2);
-    return typeof offset === "number" && isInsideCode(offset + match.indexOf("[["), codeRegions)
+    const markerOffset = Number(offset) + match.indexOf("[[");
+    return typeof offset === "number" &&
+      (isInsideCodeSpan?.(markerOffset) ?? isInsideCode(markerOffset, codeRegions))
       ? match
       : replacement(match, args.slice(1, -2), Number(offset), text);
   });
@@ -145,29 +149,36 @@ export function replaceOutsideCodeRegionParts(
     source: string,
     partIndex: number,
   ) => string,
+  /** Chunk-streaming callers own inline-code state across parts; offsets are joined-source indexes. */
+  isInsideCodeSpan?: (index: number) => boolean,
 ): string[] {
   const source = indexTextParts(parts);
   const edits: NativeTextEdit[] = [];
   let part = 0;
-  replaceOutsideCodeRegions(source.text, regex, (match, captures, offset, text) => {
-    while (
-      source.spans[part + 1] &&
-      expectDefined(source.spans[part + 1], "next text part").start <= offset
-    ) {
-      part++;
-    }
-    const value = replacement(
-      match,
-      captures,
-      offset,
-      text,
-      expectDefined(source.spans[part], "directive start part").index,
-    );
-    if (value !== match) {
-      edits.push({ start: offset, end: offset + match.length, text: value });
-    }
-    return value;
-  });
+  replaceOutsideCodeRegions(
+    source.text,
+    regex,
+    (match, captures, offset, text) => {
+      while (
+        source.spans[part + 1] &&
+        expectDefined(source.spans[part + 1], "next text part").start <= offset
+      ) {
+        part++;
+      }
+      const value = replacement(
+        match,
+        captures,
+        offset,
+        text,
+        expectDefined(source.spans[part], "directive start part").index,
+      );
+      if (value !== match) {
+        edits.push({ start: offset, end: offset + match.length, text: value });
+      }
+      return value;
+    },
+    isInsideCodeSpan,
+  );
   return edits.length ? applyNativeTextEdits(parts, edits) : [...parts];
 }
 
@@ -357,6 +368,7 @@ export function parseInlineDirectiveParts(
     stripReplyTags = true,
     preserveTrailingWhitespace = false,
     onAudioDirective,
+    isInsideCodeSpan,
   } = options;
   const states: Array<{
     audioAsVoice: boolean;
@@ -394,6 +406,7 @@ export function parseInlineDirectiveParts(
       onAudioDirective?.();
       return stripAudioTag ? stripDirective(match, offset, source, partIndex) : match;
     },
+    isInsideCodeSpan,
   );
   const replyText = replaceOutsideCodeRegionParts(
     audioText,
@@ -412,6 +425,7 @@ export function parseInlineDirectiveParts(
       }
       return stripReplyTags ? stripDirective(match, offset, source, partIndex) : match;
     },
+    isInsideCodeSpan,
   );
   const regions = parts.length > 1 ? createTextPartCodeRegionResolver(replyText) : undefined;
   return states.map((state, index) => {

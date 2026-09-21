@@ -127,14 +127,15 @@ export function registerQueuedRegistrationClaimCases(params: {
     async (stage) => {
       const f = fixture();
       const finalize = vi.mocked(params.finalizer());
-      const registration = f.register();
-      const registrationJoined = registration?.catch(() => {});
+      // Required queued registration may settle synchronously or through persistence.
+      const registration = Promise.resolve(f.register());
+      const registrationJoined = registration.catch(() => {});
       if (stage !== "initial intent") {
         f.writes[0]!.gate.resolve();
         await vi.waitFor(() => expect(f.writes).toHaveLength(2));
       }
       const entry = f.runs.get(f.registration.runId)!;
-      let completion = registration;
+      let completion: Promise<unknown> = registration;
       if (stage === "recovery intent" || stage === "terminal") {
         f.writes[1]!.gate.resolve();
         await registration;
@@ -150,7 +151,7 @@ export function registerQueuedRegistrationClaimCases(params: {
         }
       }
       let completed = false;
-      const joined = completion?.then(
+      const joined = completion.then(
         () => {
           completed = true;
         },
@@ -215,7 +216,20 @@ export function registerQueuedRegistrationClaimCases(params: {
         await joined;
         await registrationJoined;
       }
-      await expect(completion).resolves.toBeUndefined();
+      if (stage === "recovery intent" || stage === "terminal") {
+        await expect(completion).resolves.toBeUndefined();
+      } else {
+        // Required queued registration resolves with the committed row's ownership.
+        await expect(completion).resolves.toEqual({
+          status: "new-row-committed",
+          attempted: {
+            runId: f.registration.runId,
+            childSessionKey: f.registration.childSessionKey,
+            generation: entry.generation,
+            createdAt: entry.createdAt,
+          },
+        });
+      }
       expect(createTask).toHaveBeenCalledOnce();
       expect(finalize).toHaveBeenCalledTimes(
         stage === "recovery intent" || stage === "terminal" ? 1 : 0,

@@ -11,7 +11,13 @@ import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
 import { ACP_TURN_TIMEOUT_DETAIL_CODE } from "../../acp/control-plane/manager.turn-timeout.js";
 import { formatAcpErrorChain } from "../../acp/runtime/errors.js";
 import { resolveAcpToolTerminalOutcome } from "../../acp/tool-status.js";
+import { failQueuedDelegatesOwnedByRun } from "../../auto-reply/continuation/delegate-store.js";
+import {
+  computeRequestCompactionContextUsage,
+  releaseQueuedCompactionTolerant,
+} from "../../auto-reply/reply/agent-runner-post-compaction-release.js";
 import { normalizeReplyPayload } from "../../auto-reply/reply/normalize-reply.js";
+import type { FollowupRun } from "../../auto-reply/reply/queue.js";
 import {
   readChannelSourceTurnId,
   readChannelSourceTurnSameThreadRequired,
@@ -32,7 +38,12 @@ import {
   timestampOptsFromConfig,
 } from "../../gateway/server-methods/agent-timestamp.js";
 import { emitAgentAuditEvent, emitAgentEvent } from "../../infra/agent-events.js";
+import {
+  formatActiveContinuationTraceparent,
+  resolveContinuationTraceparent,
+} from "../../infra/continuation-tracer.js";
 import { emitTrustedDiagnosticEvent } from "../../infra/diagnostic-events.js";
+import { runWithDiagnosticTraceparent } from "../../infra/diagnostic-trace-context.js";
 import { redactSensitiveText } from "../../logging/redact.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
@@ -72,6 +83,7 @@ import {
   resolveCliSessionClearReason,
   shouldClearFailedCliSessionBinding,
 } from "../cli-session.js";
+import type { RequestCompactionInvocation } from "../compaction-attribution.js";
 import { resolveConversationCapabilityProfile } from "../conversation-capability-profile.js";
 import { resolveConversationToolPolicies } from "../conversation-tool-policy-pipeline.js";
 import { resolveDelegationCapability } from "../delegation-capability.js";
@@ -104,6 +116,8 @@ import {
 } from "../subagents/announce/subagent-announce-handoff.js";
 import { isRuntimeToolAllowed, isToolAllowedByPolicies } from "../tool-policy-match.js";
 import { DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS } from "../tool-result-limits.js";
+import type { ContinueWorkRequest } from "../tools/continue-work-tool.js";
+import { scheduleSpawnInitContinueWorkWake } from "./attempt-execution.continue-work.js";
 import {
   buildClaudeCliFallbackContextPrelude,
   claudeCliSessionTranscriptHasContent,
@@ -239,7 +253,7 @@ function isClaudeCliProvider(provider: string): boolean {
   return provider.trim().toLowerCase() === "claude-cli";
 }
 
-export function runAgentAttempt(params: {
+export async function runAgentAttempt(params: {
   preparedRunAdmission: PreparedAgentRunAdmission;
   providerOverride: string;
   modelOverride: string;
@@ -318,6 +332,7 @@ export function runAgentAttempt(params: {
       void params.onAgentEvent({ stream: "lifecycle", data: { phase: "start" } });
     }
   };
+  const runStartedAt = Date.now();
   const sessionAuthProfileId = params.sessionEntry?.authProfileOverride?.trim();
   const sessionAuthProfileSource = resolveCollapsedSessionAuthPinSource(params.sessionEntry);
   // An explicit session choice owns the conversation. Otherwise the profile
@@ -1014,6 +1029,127 @@ export function runAgentAttempt(params: {
     );
   }
 
+  const continuationEnabled = params.cfg.agents?.defaults?.continuation?.enabled === true;
+  const attemptContinueWorkRequests: ContinueWorkRequest[] = [];
+  const continueWorkOpts = continuationEnabled
+    ? {
+        requestContinuation: (request: ContinueWorkRequest) => {
+          attemptContinueWorkRequests.push(request);
+        },
+      }
+    : undefined;
+
+  const requestCompactionOpts = continuationEnabled
+    ? {
+        sessionId: params.sessionId,
+        ownerAgentId: params.sessionAgentId,
+        contextUsageOrigin: "live_runner" as const,
+        getContextUsage: () =>
+          computeRequestCompactionContextUsage({
+            entry: params.sessionEntry,
+            cfg: params.cfg,
+            provider: embeddedAgentProvider,
+            model: params.modelOverride,
+          }),
+        triggerCompaction: async (request: RequestCompactionInvocation) => {
+          try {
+            const { compactEmbeddedAgentSession } =
+              await import("../embedded-agent-runner/compact.queued.js");
+            const result = await compactEmbeddedAgentSession({
+              sessionId: params.sessionId,
+              runId: request.runId ?? params.runId,
+              sessionKey: params.sessionKey,
+              sessionFile: params.sessionFile,
+              workspaceDir: params.workspaceDir,
+              cwd: params.cwd,
+              config: params.cfg,
+              messageChannel: params.messageChannel,
+              messageProvider: params.opts.messageProvider ?? params.messageChannel,
+              agentAccountId: params.runContext.accountId,
+              provider: embeddedAgentProvider,
+              model: params.modelOverride,
+              authProfileId,
+              customInstructions: request.customInstructions,
+              trigger: request.trigger,
+              diagId: request.diagId,
+              traceparent: request.traceparent,
+              abortSignal: params.opts.abortSignal,
+            });
+            if (params.opts.abortSignal?.aborted) {
+              if (params.sessionKey) {
+                failQueuedDelegatesOwnedByRun(
+                  params.sessionKey,
+                  {
+                    originRunId: params.runId,
+                    legacyCreatedAfter: runStartedAt,
+                  },
+                  "Continuation delegate election ignored because the spawn-init turn was cancelled.",
+                );
+              }
+              return result;
+            }
+            if (result.ok && result.compacted) {
+              const releaseOriginatingTo = params.opts.replyTo ?? params.opts.to;
+              const releaseMessageProvider = params.opts.messageProvider ?? params.messageChannel;
+              const compactionReleaseFollowupRun: FollowupRun = {
+                prompt: effectivePrompt,
+                enqueuedAt: Date.now(),
+                ...(params.runContext.messageChannel
+                  ? { originatingChannel: params.runContext.messageChannel }
+                  : {}),
+                ...(releaseOriginatingTo ? { originatingTo: releaseOriginatingTo } : {}),
+                ...(params.runContext.accountId
+                  ? { originatingAccountId: params.runContext.accountId }
+                  : {}),
+                ...(params.opts.threadId != null
+                  ? { originatingThreadId: params.opts.threadId }
+                  : {}),
+                abortSignal: params.opts.abortSignal,
+                run: {
+                  agentId: params.sessionAgentId,
+                  agentDir: params.agentDir,
+                  sessionId: params.sessionId,
+                  ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+                  sessionFile: params.sessionFile,
+                  workspaceDir: params.workspaceDir,
+                  ...(params.cwd ? { cwd: params.cwd } : {}),
+                  config: params.cfg,
+                  provider: embeddedAgentProvider,
+                  model: params.modelOverride,
+                  ...(releaseMessageProvider ? { messageProvider: releaseMessageProvider } : {}),
+                  ...(params.runContext.accountId
+                    ? { agentAccountId: params.runContext.accountId }
+                    : {}),
+                  timeoutMs: params.timeoutMs,
+                  blockReplyBreak: "message_end",
+                },
+              };
+              await releaseQueuedCompactionTolerant({
+                ...(params.sessionStore ? { activeSessionStore: params.sessionStore } : {}),
+                compactionResult: result,
+                followupRun: compactionReleaseFollowupRun,
+                getActiveSessionEntry: () => params.sessionEntry,
+                ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+                ...(params.storePath ? { storePath: params.storePath } : {}),
+                ...(request.traceparent ? { traceparent: request.traceparent } : {}),
+              });
+            }
+            return {
+              ok: result.ok,
+              compacted: result.compacted,
+              reason: result.reason,
+            };
+          } catch (err) {
+            return {
+              ok: false,
+              compacted: false,
+              reason: err instanceof Error ? err.message : String(err),
+            };
+          }
+        },
+      }
+    : undefined;
+
   const embeddedRunParams: RunEmbeddedAgentInternalParams = {
     ...buildCommonRunParams(),
     sandboxSessionKey: params.sessionKey,
@@ -1102,13 +1238,129 @@ export function runAgentAttempt(params: {
       }
     },
     onSessionIdChanged: params.opts.onSessionIdChanged,
+    continueWorkOpts,
+    requestCompactionOpts,
   };
   setChannelSourceTurnId(embeddedRunParams, readChannelSourceTurnId(params.runContext));
   setChannelSourceTurnSameThreadRequired(
     embeddedRunParams,
     readChannelSourceTurnSameThreadRequired(params.runContext),
   );
-  return runEmbeddedAgent(embeddedRunParams);
+  const embeddedRunResult = await runWithDiagnosticTraceparent(params.opts.traceparent, () =>
+    runEmbeddedAgent(embeddedRunParams),
+  );
+
+  if (continuationEnabled && params.sessionKey) {
+    try {
+      if (embeddedRunResult.meta?.aborted === true || params.opts.abortSignal?.aborted === true) {
+        if (attemptContinueWorkRequests.length > 0) {
+          log.info(
+            `[continuation] Ignoring ${attemptContinueWorkRequests.length} continue_work election(s) because the spawn-init turn was cancelled for session ${sanitizeForLog(params.sessionKey)}`,
+          );
+        }
+        const failedDelegateRows = failQueuedDelegatesOwnedByRun(
+          params.sessionKey,
+          {
+            originRunId: params.runId,
+            legacyCreatedAfter: runStartedAt,
+          },
+          "Continuation delegate election ignored because the spawn-init turn was cancelled.",
+        );
+        if (failedDelegateRows > 0) {
+          log.info(
+            `[continuation] Failed ${failedDelegateRows} queued continue_delegate election(s) because the spawn-init turn was cancelled for session ${sanitizeForLog(params.sessionKey)}`,
+          );
+        }
+        return embeddedRunResult;
+      }
+      const suppressContinuationAfterReplayUnsafeRun =
+        embeddedRunResult.meta?.error?.kind === "incomplete_turn" &&
+        embeddedRunResult.meta?.replayInvalid === true;
+      if (suppressContinuationAfterReplayUnsafeRun) {
+        if (attemptContinueWorkRequests.length > 0) {
+          log.info(
+            `[continuation] Ignoring ${attemptContinueWorkRequests.length} continue_work election(s) because the spawn-init turn was incomplete and replay-unsafe for session ${sanitizeForLog(params.sessionKey)}`,
+          );
+        }
+        const failedDelegateRows = failQueuedDelegatesOwnedByRun(
+          params.sessionKey,
+          {
+            originRunId: params.runId,
+            legacyCreatedAfter: runStartedAt,
+          },
+          "Continuation delegate election ignored because the spawn-init turn was incomplete and replay-unsafe.",
+        );
+        if (failedDelegateRows > 0) {
+          log.info(
+            `[continuation] Failed ${failedDelegateRows} queued continue_delegate election(s) because the spawn-init turn was incomplete and replay-unsafe for session ${sanitizeForLog(params.sessionKey)}`,
+          );
+        }
+        return embeddedRunResult;
+      }
+      const { extractContinuationSignal, stripContinuationSignal } =
+        await import("../../auto-reply/continuation/signal.js");
+      const continuationPayloads = embeddedRunResult.payloads ?? [];
+      const firstWorkRequest = attemptContinueWorkRequests[0];
+      const extraction = extractContinuationSignal({
+        payloads: continuationPayloads.map((payload) => ({ ...payload })),
+        ...(firstWorkRequest ? { continueWorkRequest: firstWorkRequest } : {}),
+        enabled: true,
+        sessionKey: params.sessionKey,
+      });
+      if (extraction.signal?.kind === "work") {
+        const internalBracketTraceparent = extraction.fromBracket
+          ? (resolveContinuationTraceparent(params.opts.traceparent) ??
+            formatActiveContinuationTraceparent())
+          : undefined;
+        const requests =
+          !extraction.fromBracket && attemptContinueWorkRequests.length > 0
+            ? attemptContinueWorkRequests
+            : [
+                {
+                  reason: extraction.workReason ?? "",
+                  ...(extraction.signal.delayMs !== undefined
+                    ? { delaySeconds: extraction.signal.delayMs / 1000 }
+                    : {}),
+                  ...(internalBracketTraceparent
+                    ? { traceparent: internalBracketTraceparent }
+                    : {}),
+                },
+              ];
+        if (extraction.fromBracket) {
+          for (let i = continuationPayloads.length - 1; i >= 0; i--) {
+            const payload = continuationPayloads[i];
+            if (!payload?.text) {
+              continue;
+            }
+            const stripped = stripContinuationSignal(payload.text);
+            if (stripped.signal?.kind !== "work") {
+              continue;
+            }
+            payload.text = stripped.text;
+            break;
+          }
+        }
+        await scheduleSpawnInitContinueWorkWake({
+          sessionKey: params.sessionKey,
+          sessionEntry: params.sessionStore?.[params.sessionKey] ?? params.sessionEntry,
+          sessionStore: params.sessionStore,
+          storePath: params.storePath,
+          requests,
+          cfg: params.cfg,
+          runResult: embeddedRunResult,
+          originRunId: params.runId,
+          originTurnId: params.sessionId,
+          abortSignal: params.opts.abortSignal,
+        });
+      }
+    } catch (err) {
+      log.warn(
+        `[attempt-execution] failed to schedule continue_work wake for ${sanitizeForLog(params.sessionKey)}: ${sanitizeForLog(String(err))}`,
+      );
+    }
+  }
+
+  return embeddedRunResult;
 }
 
 export function buildAcpResult(params: {

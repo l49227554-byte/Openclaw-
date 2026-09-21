@@ -1,8 +1,10 @@
 // Subagent spawn attachment tests cover strict base64 decoding, attachment name
 // validation, materialization paths, and cleanup after spawn failures.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withEnvAsync } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
@@ -179,9 +181,16 @@ describe("spawnSubagentDirect filename validation", () => {
   });
 
   it("rejects a raw-valid path list whose wrapped prompt exceeds the budget", async () => {
-    // Raw path stays under 4096; wrapper label/tags push the rendered block over.
-    const nearCapName = `${"n".repeat(4000)}.bin`;
-    const result = await spawnWithName(nearCapName);
+    // Each basename stays portable while the complete rendered path block exceeds 4096.
+    const attachments = Array.from({ length: 17 }, (_, index) => ({
+      name: `${String(index).padStart(2, "0")}-${"n".repeat(236)}.bin`,
+      content: validContent,
+      encoding: "base64" as const,
+    }));
+    const result = await subagentSpawnModule.spawnSubagentDirect(
+      { task: "test", attachments },
+      ctx,
+    );
     expect(result.status).toBe("error");
     expect(result.error).toMatch(/attachments_prompt_paths_exceeded/);
     expect(result.error).toContain("maxChars=4096");
@@ -216,6 +225,115 @@ describe("spawnSubagentDirect filename validation", () => {
     const result = await spawnWithName("");
     expect(result.status).toBe("error");
     expect(result.error).toMatch(/attachments_invalid_name/);
+  });
+
+  it.each([
+    ["non-object member", [null]],
+    ["non-string content", [{ name: "file.txt", content: 42 }]],
+    ["unknown encoding", [{ name: "file.txt", content: "MATERIALIZER_SECRET", encoding: "hex" }]],
+    ["non-string mimeType", [{ name: "file.txt", content: "data", mimeType: 42 }]],
+  ])("rejects malformed runtime attachment shape: %s", async (_label, attachments) => {
+    const result = await subagentSpawnModule.spawnSubagentDirect(
+      {
+        task: "test",
+        attachments: attachments as never,
+      },
+      ctx,
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.error).toMatch(/attachments_invalid_member/);
+    expect(JSON.stringify(result)).not.toContain("MATERIALIZER_SECRET");
+  });
+
+  async function spawnWithForcedMaterializationFailure(params: {
+    continuation: boolean;
+    attachmentNames?: string[];
+  }) {
+    const attachmentId = "00000000-0000-4000-8000-000000000001";
+    const attachmentNames = params.attachmentNames ?? [
+      "MATERIALIZATION_FILENAME_MUST_NOT_ECHO.txt",
+    ];
+    const collisionName = expectDefined(attachmentNames.at(-1), "collision attachment name");
+    const randomUuid = vi.spyOn(crypto, "randomUUID").mockReturnValue(attachmentId);
+    try {
+      // Attachments stage under the Gateway-owned per-session root, so the
+      // conflict must be planted at the resolved staged path, not the workspace.
+      // mintSpawnSessionKey uses the same mocked randomUUID as attachmentId.
+      const childSessionKey = `agent:main:subagent:${attachmentId}`;
+      // 0o700 so the private-file store admits the staged tree and the failure
+      // is the intended target conflict, not an insecure-permissions rejection.
+      fs.mkdirSync(path.join(resolveStagedDir(attachmentId, childSessionKey), collisionName), {
+        recursive: true,
+        mode: 0o700,
+      });
+
+      const result = await subagentSpawnModule.spawnSubagentDirect(
+        {
+          task: "test materialization failure redaction",
+          attachments: attachmentNames.map((name) => ({ name, content: "snapshot" })),
+          ...(params.continuation
+            ? {
+                drainsContinuationDelegateQueue: true,
+                continuationChainState: {
+                  count: 1,
+                  startedAt: Date.now(),
+                  tokens: 0,
+                  chainId: "materialization-failure",
+                },
+              }
+            : {}),
+        },
+        ctx,
+      );
+      return { result, attachmentId, attachmentNames };
+    } finally {
+      randomUuid.mockRestore();
+    }
+  }
+
+  it("keeps ordinary materialization failures actionable without exposing paths", async () => {
+    const { result, attachmentId, attachmentNames } = await spawnWithForcedMaterializationFailure({
+      continuation: false,
+    });
+
+    expect(result).toEqual({
+      status: "error",
+      error: "attachments_materialization_failed (stage=attachment_write reason=target_conflict)",
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(attachmentNames[0]);
+    expect(serialized).not.toContain(attachmentId);
+    expect(serialized).not.toContain(workspaceDirOverride);
+  });
+
+  it("does not leak overlapping attachment name fragments from ordinary failures", async () => {
+    const overlappingFragment = "OVERLAP_FRAGMENT_MUST_NOT_ECHO";
+    const secretPrefix = "SECRET_PREFIX_MUST_NOT_ECHO";
+    const { result } = await spawnWithForcedMaterializationFailure({
+      continuation: false,
+      attachmentNames: [overlappingFragment, `${secretPrefix}-${overlappingFragment}`],
+    });
+
+    expect(result).toEqual({
+      status: "error",
+      error: "attachments_materialization_failed (stage=attachment_write reason=target_conflict)",
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(overlappingFragment);
+    expect(serialized).not.toContain(secretPrefix);
+  });
+
+  it("fully redacts continuation materialization failures", async () => {
+    const { result, attachmentId, attachmentNames } = await spawnWithForcedMaterializationFailure({
+      continuation: true,
+    });
+
+    expect(result).toEqual({ status: "error", error: "attachments_materialization_failed" });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(attachmentNames[0]);
+    expect(serialized).not.toContain(attachmentId);
+    expect(serialized).not.toContain(workspaceDirOverride);
   });
 
   it("lists staged attachment file paths in the child launch prompt", async () => {
@@ -401,6 +519,115 @@ describe("spawnSubagentDirect filename validation", () => {
     } finally {
       fs.rmSync(explicitWorkspaceDir, { recursive: true, force: true });
     }
+  });
+
+  it("materializes continuation delegate input in the staged attachment root", async () => {
+    const attachmentContent = "continuation child input";
+    const result = await subagentSpawnModule.spawnSubagentDirect(
+      {
+        task: "read delegated input",
+        drainsContinuationDelegateQueue: true,
+        continuationChainState: {
+          count: 1,
+          startedAt: Date.now(),
+          tokens: 0,
+          chainId: "attachment-chain",
+        },
+        attachments: [{ name: "handoff.txt", content: attachmentContent }],
+        attachMountPath: "handoff",
+      },
+      ctx,
+    );
+
+    expect(result.status).toBe("accepted");
+    // Attachments stage under the Gateway-owned root, never the child workspace.
+    const relDir = result.attachments?.relDir ?? "";
+    expect(relDir).toMatch(/^\.openclaw\/attachments\/[0-9a-f-]{36}$/);
+    const stagedFile = path.join(
+      resolveStagedDir(relDir, result.childSessionKey as string),
+      "handoff.txt",
+    );
+    expect(fs.readFileSync(stagedFile, "utf8")).toBe(attachmentContent);
+    expect(fs.existsSync(path.join(workspaceDirOverride, ".openclaw", "attachments"))).toBe(false);
+  });
+
+  it("re-evaluates attachment policy when queued continuation input reaches spawn", async () => {
+    const queuedAttachments = [{ name: "handoff.txt", content: "queued child input" }];
+    configOverride = createSubagentSpawnTestConfig(workspaceDirOverride, {
+      tools: {
+        sessions_spawn: {
+          attachments: {
+            enabled: false,
+            maxFiles: 50,
+            maxFileBytes: 1 * 1024 * 1024,
+            maxTotalBytes: 5 * 1024 * 1024,
+          },
+        },
+      },
+    });
+
+    const result = await subagentSpawnModule.spawnSubagentDirect(
+      {
+        task: "read delegated input after policy reload",
+        drainsContinuationDelegateQueue: true,
+        continuationChainState: {
+          count: 1,
+          startedAt: Date.now(),
+          tokens: 0,
+          chainId: "attachment-policy-change",
+        },
+        attachments: queuedAttachments,
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      status: "forbidden",
+      error: expect.stringContaining("attachments are disabled for sessions_spawn"),
+    });
+    expect(fs.existsSync(path.join(workspaceDirOverride, ".openclaw", "attachments"))).toBe(false);
+    expect(callGatewayMock).not.toHaveBeenCalledWith(expect.objectContaining({ method: "agent" }));
+  });
+
+  it("fails closed at child spawn if policy changes after a snapshot was accepted", async () => {
+    const attachmentContent = "POLICY_CHANGED_SNAPSHOT_MUST_NOT_ECHO";
+    const snapshot = [{ name: "handoff.txt", content: attachmentContent }];
+
+    const accepted = await subagentSpawnModule.spawnSubagentDirect(
+      {
+        task: "accept the snapshot under the original policy",
+        attachments: snapshot,
+      },
+      ctx,
+    );
+    expect(accepted.status).toBe("accepted");
+
+    configOverride = createSubagentSpawnTestConfig(workspaceDirOverride, {
+      tools: { sessions_spawn: { attachments: { enabled: false } } },
+    });
+    callGatewayMock.mockClear();
+
+    const result = await subagentSpawnModule.spawnSubagentDirect(
+      {
+        task: "materialize the previously accepted snapshot",
+        attachments: snapshot,
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      status: "forbidden",
+      error:
+        "attachments are disabled for sessions_spawn (enable tools.sessions_spawn.attachments.enabled)",
+    });
+    expect(JSON.stringify(result)).not.toContain(attachmentContent);
+    // The provisional child is deliberately cleaned up after the current
+    // policy rejects materialization; no child agent run begins.
+    expect(
+      callGatewayMock.mock.calls.filter(
+        ([request]) => (request as { method?: string }).method === "agent",
+      ),
+    ).toHaveLength(0);
   });
 
   it("normalizes explicit cwd without using it for attachment storage", async () => {

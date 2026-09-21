@@ -28,6 +28,14 @@ const statementCacheEntryBytes = 64 * 1024;
 type SqliteAuthorizer = Parameters<DatabaseSync["setAuthorizer"]>[0];
 type SqliteDisposeReason = "close" | "replace";
 
+/**
+ * Error code for a destructive replacement refused while the connection holds a
+ * transaction. Distinct from every `SQLITE_*` code so storage diagnostics cannot
+ * mistake this deliberate refusal for a retryable busy failure, and outside the
+ * `OPENCLAW_*` namespace because that census counts environment variable names.
+ */
+export const SQLITE_DESERIALIZE_IN_TRANSACTION_CODE = "ERR_SQLITE_DESERIALIZE_IN_TRANSACTION";
+
 type StatementCache = {
   statements: Map<string, StatementSync>;
   candidates: Set<string>;
@@ -108,10 +116,26 @@ export function installStatementInvalidation(owner: StatementCacheOwner): void {
       value(this: StatementCacheOwner, ...args: Parameters<DatabaseSync["deserialize"]>): void {
         disposeNodeSqliteDependents(this, "replace");
         try {
+          // Replacing the image while this connection holds a transaction swaps a
+          // file-backed database for the deserialized one underneath its own
+          // readers. SQLite 3.53.3+ (Node >= 24.19) rejects that with "database is
+          // locked"; 3.53.0 (Node 24.16/24.17, inside the supported engine range)
+          // performs the swap instead. Refuse it here so every supported runtime
+          // keeps one destructive-replacement invariant, and refuse after disposal
+          // so a refused attempt retires proof and read companions exactly as a
+          // native rejection does.
+          if (this.isTransaction) {
+            const error: NodeJS.ErrnoException = new Error(
+              "refusing to deserialize over a database that holds an open transaction; commit or roll back before replacing it",
+            );
+            error.code = SQLITE_DESERIALIZE_IN_TRANSACTION_CODE;
+            throw error;
+          }
           deserialize(...args);
         } finally {
           // Node finalizes all statements before attempting deserialization,
-          // including failed attempts, so no cached object remains usable.
+          // including failed attempts, and a refused attempt has already retired
+          // this connection's dependents, so no cached object remains usable.
           delete this[statementCacheSymbol];
         }
       },

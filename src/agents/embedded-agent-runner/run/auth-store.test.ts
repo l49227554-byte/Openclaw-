@@ -44,6 +44,18 @@ describe("resolveAttemptDispatchApiKey", () => {
       }),
     ).toBe("source-token");
   });
+
+  it("does not expose a stale API key after the active profile changes", () => {
+    expect(
+      resolveAttemptDispatchApiKey({
+        apiKeyInfo: { ...apiKeyInfo, profileId: "test:profile", mode: "api-key" },
+        runtimeAuthState: null,
+        pluginHarnessOwnsTransport: true,
+        authProfileId: "test:next-profile",
+        authProfileStore: { version: 1, profiles: {} },
+      }),
+    ).toBeUndefined();
+  });
 });
 
 describe("createScopedAuthProfileStore", () => {

@@ -103,18 +103,13 @@ export {
 // Public entry API. Async preparation precedes BEGIN; commit revalidates repository snapshots.
 
 type SqliteSessionEntryPatchOptions = SessionEntryPatchOptions & {
+  afterPersistInTransaction?: (database: OpenClawAgentDatabase) => void;
   skipMaintenance?: boolean;
   /** Recheck owner cancellation after async preparation, immediately before committing. */
   shouldCommit?: () => boolean;
   /** Synchronous owner bookkeeping after COMMIT, before identity observers can cancel the caller. */
   onCommitted?: (entry: SessionEntry) => void;
 };
-
-function assertCanonicalSessionWriteScope(
-  scope: Pick<ResolvedSqliteScope, "agentId" | "sessionKey">,
-): void {
-  assertCanonicalSessionKeyWrite(scope.sessionKey, scope.agentId);
-}
 
 /** Loads one session entry from the additive SQLite session store. */
 export function loadSessionEntry(scope: SessionAccessScope): SessionEntry | undefined {
@@ -412,7 +407,7 @@ export async function replaceSessionEntry(
 /** Replaces one entry synchronously for sync session runtimes. */
 export function replaceSessionEntrySync(scope: SessionAccessScope, entry: SessionEntry): void {
   const resolved = resolveSqliteScope(scope);
-  assertCanonicalSessionWriteScope(resolved);
+  assertCanonicalSessionKeyWrite(resolved.sessionKey, resolved.agentId);
   const publish = runOpenClawAgentWriteTransaction((database) => {
     const { previous, current } = replaceSessionEntryInDatabase(
       database,
@@ -446,7 +441,7 @@ async function patchSessionEntryInScope(
   if (databaseAgentId) {
     resolved.databaseAgentId = databaseAgentId;
   }
-  assertCanonicalSessionWriteScope(resolved);
+  assertCanonicalSessionKeyWrite(resolved.sessionKey, resolved.agentId);
   return await patchSqliteSessionEntrySnapshot({
     operationLabel: "session-entry.patch",
     validateCanonicalKeys: options.replaceEntry !== true,
@@ -579,6 +574,8 @@ async function patchSqliteSessionEntrySnapshot(
             if (!mutation.identity) {
               return undefined;
             }
+            // The mutation owner performed the persist; fire the in-transaction hook.
+            options.afterPersistInTransaction?.(writeDatabase);
             wrote = true;
             return prepareSessionIdentityPublication(
               writeDatabase,

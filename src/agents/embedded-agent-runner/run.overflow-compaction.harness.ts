@@ -22,6 +22,7 @@ import type {
 } from "../../plugins/types.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import type { markAuthProfileSuccess } from "../auth-profiles.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { extractObservedOverflowTokenCount } from "../embedded-agent-helpers/context-overflow-observation.js";
 import type { FailoverReason } from "../failover/signal.js";
@@ -68,6 +69,12 @@ type MockCompactionResult =
       reason: string;
       result?: undefined;
     };
+
+type MockContextEngine = {
+  info: { ownsCompaction: boolean };
+  compact: Mock<(params: unknown) => Promise<MockCompactionResult>>;
+  maintain: ContextEngine["maintain"];
+};
 
 type MockResolvedModel = {
   id: string;
@@ -120,7 +127,7 @@ type MockAgentDiscoveryStores = {
 
 type MockResolveModelResult = MockAgentDiscoveryStores & {
   model: MockResolvedModel;
-  logicalRef: { provider: string; model: string };
+  logicalRef?: { provider: string; model: string };
   error: null;
 };
 
@@ -154,13 +161,14 @@ export const mockedGlobalHookRunner = {
   runAfterCompaction: vi.fn(async () => undefined),
 };
 
-const mockedContextEngine = {
+export const mockedContextEngine: MockContextEngine = {
   info: { ownsCompaction: false as boolean },
   compact: vi.fn<(params: unknown) => Promise<MockCompactionResult>>(async () => ({
     ok: false as const,
     compacted: false as const,
     reason: "nothing to compact",
   })),
+  maintain: undefined,
 };
 
 type MockRuntimePlan = Pick<AgentRuntimePlan, "auth"> & {
@@ -250,7 +258,7 @@ export const mockedResolveModelAsync = vi.fn(
   async (provider?: string, modelId?: string, _agentDir?: string, cfg?: unknown) =>
     createMockResolvedModel(provider, modelId, cfg),
 );
-const mockedPrepareProviderRuntimeAuth = vi.fn<
+export const mockedPrepareProviderRuntimeAuth = vi.fn<
   (params?: { context?: { apiKey?: string } }) => Promise<{ apiKey: string } | undefined>
 >(async () => undefined);
 export const mockedRunEmbeddedAttempt =
@@ -260,18 +268,18 @@ export const mockedBuildEmbeddedRunPayloads = vi.fn<
     ...args: Parameters<typeof buildEmbeddedRunPayloads>
   ) => ReturnType<typeof buildEmbeddedRunPayloads>
 >(() => []);
-const mockedRunContextEngineMaintenance = vi.fn(async () => undefined);
-const mockedWaitForDeferredTurnMaintenanceForSession = vi.fn(
+export const mockedRunContextEngineMaintenance = vi.fn(async () => undefined);
+export const mockedWaitForDeferredTurnMaintenanceForSession = vi.fn(
   async (_sessionKey?: string) => undefined,
 );
-const mockedSessionLikelyHasOversizedToolResults = vi.fn(() => false);
+export const mockedSessionLikelyHasOversizedToolResults = vi.fn(() => false);
 const mockedResolveLiveToolResultMaxChars = vi.fn(() => 32_000);
 type MockTruncateOversizedToolResultsResult = {
   truncated: boolean;
   truncatedCount: number;
   reason?: string;
 };
-const mockedTruncateOversizedToolResultsInSession = vi.fn<
+export const mockedTruncateOversizedToolResultsInSession = vi.fn<
   () => MockTruncateOversizedToolResultsResult
 >(() => ({
   truncated: false,
@@ -300,8 +308,8 @@ export class MockedFailoverError extends Error {
   }
 }
 
-const mockedCoerceToFailoverError = vi.fn<MockCoerceToFailoverError>();
-const mockedDescribeFailoverError = vi.fn<MockDescribeFailoverError>(
+export const mockedCoerceToFailoverError = vi.fn<MockCoerceToFailoverError>();
+export const mockedDescribeFailoverError = vi.fn<MockDescribeFailoverError>(
   (err: unknown): MockFailoverErrorDescription => ({
     message: formatErrorMessage(err),
     reason: undefined,
@@ -309,9 +317,9 @@ const mockedDescribeFailoverError = vi.fn<MockDescribeFailoverError>(
     code: undefined,
   }),
 );
-const mockedResolveFailoverStatus = vi.fn<MockResolveFailoverStatus>();
+export const mockedResolveFailoverStatus = vi.fn<MockResolveFailoverStatus>();
 
-const mockedLog: {
+export const mockedLog: {
   debug: Mock<(...args: unknown[]) => void>;
   info: Mock<(...args: unknown[]) => void>;
   warn: Mock<(...args: unknown[]) => void>;
@@ -353,8 +361,10 @@ const mockedParseImageSizeError = vi.fn(() => null);
 const mockedParseImageDimensionError = vi.fn(() => null);
 export const mockedIsRateLimitAssistantError = vi.fn<MockAssistantErrorProbe>(() => false);
 const mockedIsTimeoutErrorMessage = vi.fn(() => false);
-const mockedPickFallbackThinkingLevel = vi.fn<(params?: unknown) => ThinkLevel | null>(() => null);
-const mockedEvaluateContextWindowGuard = vi.fn(() => ({
+export const mockedPickFallbackThinkingLevel = vi.fn<(params?: unknown) => ThinkLevel | null>(
+  () => null,
+);
+export const mockedEvaluateContextWindowGuard = vi.fn(() => ({
   shouldWarn: false,
   shouldBlock: false,
   tokens: 200000,
@@ -362,7 +372,7 @@ const mockedEvaluateContextWindowGuard = vi.fn(() => ({
   hardMinTokens: 1000,
   warnBelowTokens: 5000,
 }));
-const mockedResolveContextWindowInfo = vi.fn(() => ({
+export const mockedResolveContextWindowInfo = vi.fn(() => ({
   tokens: 200000,
   source: "model",
 }));
@@ -386,7 +396,7 @@ export const mockedGetApiKeyForModel = vi.fn<
   source: "test",
   mode: "api-key",
 }));
-const mockedIsProfileInCooldown = vi.fn(
+export const mockedIsProfileInCooldown = vi.fn(
   (_store: unknown, _profileId: string, _now?: number, _modelId?: string) => false,
 );
 export const mockedMarkAuthProfileFailure = vi.fn(async () => {});
@@ -428,11 +438,11 @@ const mockedResolveAuthProfileOrderWithMetadata = vi.fn<
   profileIds: mockedResolveAuthProfileOrder(params),
   hasExplicitOrder: false,
 }));
-const mockedResolveProviderEntryApiKeyProfileReference = vi.fn<(_params?: unknown) => unknown>(
-  () => ({ kind: "none" }),
-);
+export const mockedResolveProviderEntryApiKeyProfileReference = vi.fn<
+  (_params?: unknown) => unknown
+>(() => ({ kind: "none" }));
 const mockedHasUsableCustomProviderApiKey = vi.fn(() => false);
-const mockedMarkAuthProfileSuccess = vi.fn(async () => {});
+export const mockedMarkAuthProfileSuccess = vi.fn<typeof markAuthProfileSuccess>(async () => {});
 const mockedShouldPreferExplicitConfigApiKeyAuth = vi.fn(() => false);
 
 // No provider here means model resolution defaults to anthropic/test-model, which
@@ -476,7 +486,7 @@ function resetMockAgentHarness(): void {
 }
 
 /** Reset every mocked runner dependency to the default successful no-op state. */
-function resetRunOverflowCompactionHarnessMocks(): void {
+export function resetRunOverflowCompactionHarnessMocks(): void {
   // Loading and warmup can run inside an already-owned environment. Only the
   // per-test reset restores stubbed env, before the next fixture applies it.
   resetCommandQueueStateForTest();
@@ -497,6 +507,7 @@ function resetRunOverflowCompactionHarnessMocks(): void {
   mockedGlobalHookRunner.runAfterCompaction.mockResolvedValue(undefined);
 
   mockedContextEngine.info.ownsCompaction = false;
+  mockedContextEngine.maintain = undefined;
   mockedResolveContextEngine.mockReset();
   mockedResolveContextEngine.mockResolvedValue(mockedContextEngine);
   mockedBuildAgentRuntimePlan.mockReset();
@@ -925,7 +936,16 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
 
   vi.doMock("./model.js", () => ({
     createEmptyAgentDiscoveryStores: mockedCreateEmptyAgentDiscoveryStores,
-    resolveModelAsync: mockedResolveModelAsync,
+    resolveModelAsync: async (...args: Parameters<typeof mockedResolveModelAsync>) => {
+      const result = await mockedResolveModelAsync(...args);
+      return {
+        ...result,
+        logicalRef: result.logicalRef ?? {
+          provider: result.model.provider,
+          model: result.model.id,
+        },
+      };
+    },
   }));
 
   vi.doMock("../model-auth.js", () => ({

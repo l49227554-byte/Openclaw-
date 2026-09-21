@@ -22,6 +22,7 @@ import { isLoopbackHost } from "./net.js";
 import { createNodeReapprovalCoordinator } from "./node-reapproval-coordinator.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import { createGatewayControlUiRootLifecycle } from "./server-control-ui-root.js";
+import type { GatewayServerExtraHttpRoute } from "./server-extra-handlers.js";
 import type { GatewayInstanceRuntime } from "./server-instance-runtime.types.js";
 import type { GatewayServerLiveState } from "./server-live-state.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
@@ -48,6 +49,7 @@ export async function prepareGatewayKernelState(params: {
   getPluginReloadStatus: () => GatewayPluginReloadStatus | undefined;
   port: number;
   opts: GatewayBootstrap["opts"];
+  serverExtraHttpRoutes: readonly GatewayServerExtraHttpRoute[];
   log: GatewayLogger;
   logChannels: GatewayLogger;
   logHooks: GatewayLogger;
@@ -66,6 +68,7 @@ export async function prepareGatewayKernelState(params: {
     bootId,
     port,
     opts,
+    serverExtraHttpRoutes,
     log,
     logChannels,
     logHooks,
@@ -482,6 +485,7 @@ export async function prepareGatewayKernelState(params: {
     handleNodeWorkerBundleTransferRequest,
     handleWorkerBootstrapArtifactTransferRequest,
     handleNodeWorkspaceTransferRequest,
+    serverExtraHttpRoutes,
     workerIngressEnabled: Boolean(workerEnvironmentService),
     desktopSessionRegistry,
     nodeDesktopStreamBroker,

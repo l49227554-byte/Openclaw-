@@ -67,6 +67,11 @@ function rowToSyncMode(row: FlowRegistryRow): TaskFlowSyncMode {
   return resolveFlowSyncMode(row);
 }
 
+// Restored with bindTaskFlowExecutionInDatabase below: upstream ba2fc97a917c moved
+// execution binding into the SQLite worker, whose handler imports that function from
+// this kernel. Our branch had inlined the same owner-active check in
+// task-flow-registry.store.sqlite.ts; upstream converged on identical semantics here,
+// so the producer owns the check and every caller -- worker path included -- gets it.
 function isFlowExecutionOwnerActive(row: {
   sync_mode: string | null;
   shape: string | null;
@@ -86,6 +91,30 @@ function isFlowExecutionOwnerActive(row: {
     : status === "queued" || status === "running" || status === "waiting" || status === "blocked";
 }
 
+export function bindTaskFlowExecutionInDatabase(
+  db: DatabaseSync,
+  flowId: string,
+  binding: Parameters<typeof bindExecutionOwnerLifecycleMetadata>[0]["binding"],
+): Exclude<ExecutionOwnerBindingResult, "disabled"> {
+  const kysely = getFlowRegistryKysely(db);
+  const current = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom("flow_runs")
+      .select(["flow_id", "sync_mode", "shape", "status", "cancel_requested_at", "ended_at"])
+      .where("flow_id", "=", flowId),
+  );
+  if (!current || !isFlowExecutionOwnerActive(current)) {
+    return "missing";
+  }
+  return bindExecutionOwnerLifecycleMetadata({
+    db,
+    ownerKind: "flow",
+    ownerId: current.flow_id,
+    binding,
+  });
+}
+
 function rowToFlowRecord(row: FlowRegistryRow): TaskFlowRecord {
   const endedAt = normalizeSqliteNumber(row.ended_at);
   const cancelRequestedAt = normalizeSqliteNumber(row.cancel_requested_at);
@@ -96,6 +125,7 @@ function rowToFlowRecord(row: FlowRegistryRow): TaskFlowRecord {
     flowId: row.flow_id,
     syncMode: rowToSyncMode(row),
     ownerKey: row.owner_key,
+    ...(row.chain_id ? { chainId: row.chain_id } : {}),
     ...(requesterOrigin ? { requesterOrigin } : {}),
     ...(row.controller_id ? { controllerId: row.controller_id } : {}),
     revision: normalizeSqliteNumber(row.revision) ?? 0,
@@ -122,6 +152,7 @@ export function bindTaskFlowRecord(record: TaskFlowRecord): BoundTaskFlowRecord 
     sync_mode: record.syncMode,
     shape: null,
     owner_key: record.ownerKey,
+    chain_id: record.chainId ?? null,
     requester_origin_json: serializeJson(record.requesterOrigin),
     controller_id: record.controllerId ?? null,
     revision: record.revision,
@@ -149,6 +180,7 @@ const FLOW_RUN_SELECT_COLUMNS = [
   "sync_mode",
   "shape",
   "owner_key",
+  "chain_id",
   "requester_origin_json",
   "controller_id",
   "revision",
@@ -288,6 +320,7 @@ export function upsertTaskFlowRowInDatabase(db: DatabaseSync, row: BoundTaskFlow
         conflict.column("flow_id").doUpdateSet({
           sync_mode: (eb) => eb.ref("excluded.sync_mode"),
           owner_key: (eb) => eb.ref("excluded.owner_key"),
+          chain_id: (eb) => eb.ref("excluded.chain_id"),
           requester_origin_json: (eb) => eb.ref("excluded.requester_origin_json"),
           controller_id: (eb) => eb.ref("excluded.controller_id"),
           revision: (eb) => eb.ref("excluded.revision"),
@@ -372,31 +405,6 @@ export function updateTaskFlowRecordInDatabase(
   }
   upsertTaskFlowRowInDatabase(db, bindTaskFlowRecord(flow));
   return { applied: true, previous: current, flow };
-}
-
-/** Revalidate the native flow lifecycle before recording its exact execution binding. */
-export function bindTaskFlowExecutionInDatabase(
-  db: DatabaseSync,
-  flowId: string,
-  binding: Parameters<typeof bindExecutionOwnerLifecycleMetadata>[0]["binding"],
-): Exclude<ExecutionOwnerBindingResult, "disabled"> {
-  const kysely = getFlowRegistryKysely(db);
-  const current = executeSqliteQueryTakeFirstSync(
-    db,
-    kysely
-      .selectFrom("flow_runs")
-      .select(["flow_id", "sync_mode", "shape", "status", "cancel_requested_at", "ended_at"])
-      .where("flow_id", "=", flowId),
-  );
-  if (!current || !isFlowExecutionOwnerActive(current)) {
-    return "missing";
-  }
-  return bindExecutionOwnerLifecycleMetadata({
-    db,
-    ownerKind: "flow",
-    ownerId: current.flow_id,
-    binding,
-  });
 }
 
 /** The caller keeps the flow deletion and native metadata cleanup in one transaction. */

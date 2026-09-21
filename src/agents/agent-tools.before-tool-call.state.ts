@@ -131,3 +131,13 @@ export function resetAdjustedParamsByToolCallIdForTests(): void {
   structuredReplaySafeToolCallIds.clear();
   batchAdmittedToolCallIds.clear();
 }
+
+export function cloneParamsForAdjustedReplay(
+  params: unknown,
+): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: structuredClone(params) };
+  } catch {
+    return { ok: false };
+  }
+}

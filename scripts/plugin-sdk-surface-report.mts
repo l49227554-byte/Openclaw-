@@ -379,6 +379,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared widget CDN policy for core and channel presenters.
       // +13: runtime-neutral WebSocket client/server, stream, data, and option contracts.
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
+      // +17: continuation runtime, task-flow, trace, and channel-ingress contracts.
+      // +5: final continuation system-event and diagnostic runtime contracts.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
@@ -395,8 +397,15 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: prepare admitted input attachments and bind a workspace transfer adapter.
       // +1: approved host workspace Skill resource reader.
       // +1: approved terminal-reply classifier for A2A task completion.
+      // -1: re-tightened to the measured surface after the absorb of upstream
+      //     main ff004d3605. That absorb ADDED exports, so the cap is not
+      //     tracking a removal; it carried slack and is pinned to reality
+      //     again. The one name that left is removeSystemEvents, which upstream
+      //     d69a4fa9ca (#151652) stopped re-exporting from this deprecated
+      //     barrel so every SDK subpath goes through the plugins/runtime facade.
       // +1: approved native workspace worker argv resolver for node adapters.
-      4530,
+      // Re-pinned to the measured surface after absorbing upstream ba2fc97a917c.
+      4547,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -536,6 +545,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared per-connection webhook request ordering for channel listeners.
       // +4: runtime-neutral WebSocket client/server and stream constructors.
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
+      // +5: callable continuation and channel-ingress runtime helpers.
+      // +2: plugin-safe system-event alias and diagnostic trace scope runner.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
@@ -551,8 +562,12 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: prepare admitted input attachments and bind a workspace transfer adapter.
       // +1: approved host workspace Skill resource reader.
       // +1: approved terminal-reply classifier for A2A task completion.
+      // -1: re-tightened to the measured surface, as above; slack reclaimed,
+      //     not a net loss. The callable that left is removeSystemEvents,
+      //     withdrawn from the public barrel by upstream d69a4fa9ca (#151652).
       // +1: approved native workspace worker argv resolver for node adapters.
-      2673,
+      // Re-pinned to the measured surface after absorbing upstream ba2fc97a917c.
+      2678,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
@@ -572,7 +587,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       //     Slack progress-draft render) so installed plugins survive upgrade (#124041 class).
       // -18: retire the expired August compatibility exports and messaging-targets subpath.
       // +4: rendering helpers forwarded by the shipped channel-message wildcard.
-      1138,
+      // +7: continuation compatibility projections retained during migration.
+      1145,
       env,
     ),
     publicWildcardReexports: readPluginSdkSurfaceBudgetEnv(

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import type { runHeartbeatOnce } from "./heartbeat-runner-run.js";
+import type { runHeartbeatOnceCore } from "./heartbeat-runner-run.js";
 import type { HeartbeatRunner } from "./heartbeat-runner-scheduler.js";
 import type { HeartbeatWakeRequest } from "./heartbeat-wake-contracts.js";
 
@@ -13,7 +13,7 @@ const cfg: OpenClawConfig = {
 };
 const runners: HeartbeatRunner[] = [];
 const executionLoaded = vi.fn();
-const execute = vi.fn<typeof runHeartbeatOnce>();
+const execute = vi.fn<typeof runHeartbeatOnceCore>();
 
 beforeEach(() => {
   // Cold module evaluation is the contract under test, not shared scheduler state.
@@ -24,7 +24,7 @@ beforeEach(() => {
   execute.mockReset().mockResolvedValue({ status: "ran", durationMs: 1 });
   vi.doMock("./heartbeat-runner-run.js", () => {
     executionLoaded();
-    return { runHeartbeatOnce: execute };
+    return { runHeartbeatOnceCore: execute };
   });
 });
 
@@ -120,7 +120,7 @@ describe("heartbeat scheduler execution loading", { concurrent: false }, () => {
       vi.doMock("./heartbeat-runner-run.js", async () => {
         loading.resolve();
         await release.promise;
-        return { runHeartbeatOnce: execute };
+        return { runHeartbeatOnceCore: execute };
       });
       const nextCfg: OpenClawConfig = {
         agents: {
@@ -179,10 +179,10 @@ describe("heartbeat scheduler execution loading", { concurrent: false }, () => {
       vi.doMock("./heartbeat-runner-run.js", async () => {
         loading.resolve();
         await release.promise;
-        return { runHeartbeatOnce: execute };
+        return { runHeartbeatOnceCore: execute };
       });
       const replacement = vi
-        .fn<typeof runHeartbeatOnce>()
+        .fn<typeof runHeartbeatOnceCore>()
         .mockResolvedValue({ status: "ran", durationMs: 1 });
       const result = wake();
       try {

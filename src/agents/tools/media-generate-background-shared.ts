@@ -9,6 +9,7 @@ import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
+import { formatActiveContinuationTraceparent } from "../../infra/continuation-tracer.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { parseCronRunScopeSuffix } from "../../sessions/session-key-utils.js";
@@ -243,6 +244,7 @@ function createMediaGenerationTaskRun(params: {
       requesterAgentId: params.requesterAgentId,
       requesterOrigin,
       taskLabel: params.prompt,
+      traceparent: formatActiveContinuationTraceparent(),
     };
     touchMediaGenerationTaskRunContext(handle);
     return handle;

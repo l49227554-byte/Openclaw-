@@ -117,5 +117,5 @@ timeout. Those events do not automatically cancel them.
 - Sub-agents still share the same gateway process resources; treat `maxConcurrent` as a safety valve.
 - `sessions_spawn` returns `{ status: "accepted", runId, childSessionKey }` when startup is accepted, without waiting for the child task to finish. Cloud-worker spawns can wait for provisioning before returning this receipt.
 - Sub-agent context only injects `AGENTS.md` (no `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, or `BOOTSTRAP.md`). Its `## Tools` section carries environment-specific notes. Codex-native subagents follow the same boundary through native `AGENTS.md` discovery, while parent-only persona, identity, and user files are injected as turn-scoped collaboration instructions so children do not clone them.
-- Recursive spawning is enabled through depth `5` by default. Set `maxSpawnDepth` from `1` through `5` to lower the boundary.
-- `maxChildrenPerAgent` caps active children per session (default `5`, range `1-20`).
+- Recursive spawning is enabled through depth `5` by default. Set `maxSpawnDepth` from `1` through `5` to lower the boundary. Depth 2 is recommended for most interactive use cases.
+- `maxChildrenPerAgent` caps active children per session (default `5`, range `1–10000`). Default stays low for interactive single-agent safety; raise via config for wide-fanout patterns (parallel delegate fan-out, batch processing, distributed investigation).

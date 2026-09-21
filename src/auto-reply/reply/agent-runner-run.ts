@@ -2,14 +2,12 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
 import { resolveReplyCompletion } from "../../agents/reply-completion.js";
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
-import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
 import { isRestartRecoveryTerminalDeliveryFailClosed } from "../../config/sessions/restart-recovery-receipt.js";
 import { hasRestartRecoverySourceClaim } from "../../config/sessions/restart-recovery-state.js";
 import { loadSessionEntry, updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { logVerbose } from "../../globals.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
-import { hasOutboundReplyContent } from "../../plugin-sdk/reply-payload.js";
 import {
   getGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
@@ -17,6 +15,7 @@ import {
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
+import { createReplyContinuationController } from "./agent-runner-continuation.js";
 import {
   BLOCK_REPLY_SEND_TIMEOUT_MS,
   cleanupReplyAgentRun,
@@ -31,6 +30,7 @@ import {
   executePreparedReplyAgentRun,
 } from "./agent-runner-execute.js";
 import {
+  bindVisiblePartialReplyObserver,
   createShouldEmitToolOutput,
   createShouldEmitToolResult,
   isAudioPayload,
@@ -67,6 +67,7 @@ import {
   retireTerminalRestartRecoverySourceClaim,
 } from "./restart-recovery-claim.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
+import { resolveReplyHookTrigger } from "./run-provenance.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
 import { readChannelSourceTurnId } from "./source-turn-id.js";
 import { createTypingSignaler } from "./typing-mode.js";
@@ -99,6 +100,7 @@ export async function runReplyAgent(
     sessionCtx,
     typingMode,
     resetTriggered,
+    isContinuationWake,
     replyOperation: providedReplyOperation,
   } = params;
   const resolveGatewayContext = providedReplyOperation
@@ -125,20 +127,8 @@ export async function runReplyAgent(
       cfg: followupRun.run.config,
       isHeartbeat,
     }));
-  let didDeliverVisiblePartialReply = false;
-  const onPartialReply = opts?.onPartialReply;
-  const runOpts = onPartialReply
-    ? {
-        ...opts,
-        onPartialReply: async (payload: Parameters<NonNullable<typeof opts.onPartialReply>>[0]) => {
-          const observed = await settleProgressVisibilityCallbackResult(onPartialReply(payload));
-          if (observed.visible && hasOutboundReplyContent(payload, { trimText: true })) {
-            didDeliverVisiblePartialReply = true;
-          }
-          return observed.result;
-        },
-      }
-    : opts;
+  const visiblePartialReply = bindVisiblePartialReplyObserver(opts);
+  const runOpts = visiblePartialReply.runOpts;
   const replyOperationRunState = replyRunState.resolveReplyOperationRunState(opts);
   if (replyOperationRunState) {
     replyOperationRunState.replyCompletion = resolveReplyCompletion(
@@ -516,7 +506,10 @@ export async function runReplyAgent(
         `failed to flush streamed reply blocks before surfacing run failure: ${String(flushError)}`,
       );
     }
-    return didDeliverVisiblePartialReply || blockReplyPipeline?.didStream() === true;
+    return (
+      visiblePartialReply.hasDeliveredVisiblePartialReply() ||
+      blockReplyPipeline?.didStream() === true
+    );
   };
   const replySessionKey = sessionKey ?? followupRun.run.sessionKey;
   const replyRouteThreadId = resolveRoutedDeliveryThreadId({
@@ -619,6 +612,17 @@ export async function runReplyAgent(
     },
     storePath,
   });
+  const continuation = createReplyContinuationController({
+    cfg,
+    sessionKey,
+    storePath,
+    isContinuationWake: isContinuationWake === true,
+    activeSessionStore,
+    getActiveSessionEntry: () => activeSessionEntry,
+    setActiveSessionEntry: (entry) => {
+      activeSessionEntry = entry;
+    },
+  });
   const resetSessionAfterRoleOrderingConflict = async (reason: string): Promise<boolean> =>
     await resetReplyRunSession({
       options: {
@@ -650,9 +654,12 @@ export async function runReplyAgent(
       blockReplyPipeline,
       cfg,
       checkpointBeforeAgentReply,
+      continuation,
       resolveVisibleReplyDelivery,
       getActiveIsNewSession: () => activeIsNewSession,
       getActiveSessionEntry: () => activeSessionEntry,
+      hookTrigger: resolveReplyHookTrigger(opts),
+      isContinuationWake: isContinuationWake === true,
       isHeartbeat,
       isRestartRecoveryArmed,
       opts: runOpts,
@@ -697,6 +704,7 @@ export async function runReplyAgent(
     await cleanupReplyAgentRun({
       blockReplyPipeline,
       clearRestartRecoveryDeliveryClaim,
+      postCompactionDelegatesToPreserve: continuation.postCompactionDelegatesToPreserve,
       providedReplyOperation,
       queueKey,
       replyOperation,

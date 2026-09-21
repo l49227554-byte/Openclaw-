@@ -681,11 +681,12 @@ describe("channel ingress drain", () => {
     });
   });
 
-  it("keeps retry-accounted abandonment pending beyond the failure threshold", async () => {
+  it("dead-letters abandonment at the failure threshold without redispatch", async () => {
     await withTempState(async (stateDir) => {
       let clock = 1;
       const queue = createTestIngressQueue(stateDir, { now: () => clock });
       await queue.enqueue("abandoned", { text: "x" }, { laneKey: "l", receivedAt: 1 });
+      const dispatched = vi.fn();
 
       for (let attempt = 0; attempt < 3; attempt += 1) {
         clock += 1;
@@ -694,6 +695,7 @@ describe("channel ingress drain", () => {
           now: () => clock,
           retryPolicy: { maxAttempts: 1, deadLetterMinAgeMs: 0, baseMs: 0, maxMs: 0 },
           dispatchClaimedEvent: async (_event, lifecycle) => {
+            dispatched();
             await lifecycle.onAbandoned();
             return { kind: "deferred" };
           },
@@ -703,14 +705,15 @@ describe("channel ingress drain", () => {
         drain.dispose();
       }
 
-      expect(await queue.listPending()).toEqual([
+      expect(dispatched).toHaveBeenCalledOnce();
+      expect(await queue.listFailed?.()).toEqual([
         expect.objectContaining({
           id: "abandoned",
-          attempts: 3,
-          lastError: "turn-abandoned",
+          attempts: 0,
+          reason: "retry-limit-exceeded",
+          message: "turn-abandoned",
         }),
       ]);
-      expect(await queue.listFailed?.()).toEqual([]);
     });
   });
 

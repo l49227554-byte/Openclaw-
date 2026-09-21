@@ -44,6 +44,24 @@ const runtimeServiceMocks = vi.hoisted(() => {
     listLegacyDeliveryQueueArtifacts: vi.fn(() => [] as string[]),
     drainPendingDeliveries: vi.fn<DrainPendingDeliveries>(async () => undefined),
     recoverPendingRestartContinuationDeliveries: vi.fn(async () => undefined),
+    recoverPendingContinuationDelegates: vi.fn(async () => ({
+      sessions: 0,
+      dispatched: 0,
+      rejected: 0,
+    })),
+    requeueAwaitingNextCompactionDelegates: vi.fn(async () => ({ requeued: 0 })),
+    recoverAndReleaseStagedPostCompactionDelegates: vi.fn(async () => ({
+      sessions: 0,
+      dispatched: 0,
+      failed: 0,
+    })),
+    recoverPendingContinuationWork: vi.fn(async () => ({
+      sessions: 0,
+      dispatched: 0,
+      failed: 0,
+      reaped: 0,
+      terminalNotices: 0,
+    })),
     deliverQueuedSessionDelivery: vi.fn(async () => undefined),
     settleQueuedSessionDelivery: vi.fn(async () => undefined),
     deliverOutboundPayloads: vi.fn(),
@@ -56,7 +74,9 @@ vi.mock("../infra/heartbeat-runner-scheduler.js", () => ({
 }));
 
 vi.mock("../infra/heartbeat-runner-run.js", () => ({
-  runHeartbeatOnce: runtimeServiceMocks.runHeartbeatOnce,
+  // The module exports `runHeartbeatOnceCore`; a factory keyed on the old name
+  // leaves the lazy loader with an undefined export.
+  runHeartbeatOnceCore: runtimeServiceMocks.runHeartbeatOnce,
 }));
 
 vi.mock("../sessions/session-upstream-monitor.js", () => ({
@@ -97,6 +117,18 @@ vi.mock("./server-restart-sentinel.js", () => ({
   recoverPendingRestartContinuationDeliveries:
     runtimeServiceMocks.recoverPendingRestartContinuationDeliveries,
   settleQueuedSessionDelivery: runtimeServiceMocks.settleQueuedSessionDelivery,
+}));
+
+vi.mock("../auto-reply/continuation/delegate-dispatch-recovery.js", () => ({
+  recoverPendingContinuationDelegates: runtimeServiceMocks.recoverPendingContinuationDelegates,
+  requeueAwaitingNextCompactionDelegates:
+    runtimeServiceMocks.requeueAwaitingNextCompactionDelegates,
+  recoverAndReleaseStagedPostCompactionDelegates:
+    runtimeServiceMocks.recoverAndReleaseStagedPostCompactionDelegates,
+}));
+
+vi.mock("../auto-reply/continuation/work-dispatch.js", () => ({
+  recoverPendingContinuationWork: runtimeServiceMocks.recoverPendingContinuationWork,
 }));
 
 vi.mock("./channel-health-monitor.js", () => ({
@@ -165,7 +197,9 @@ export function createMaintenanceHandles() {
   return {
     stopPeriodicTasks: vi.fn(async () => {}),
     startMediaCleanup: vi.fn(async () => undefined),
+
     stopMediaCleanup: vi.fn(async () => "drained" as const),
+
     skillUsageCleanup: vi.fn(async () => {}),
   };
 }

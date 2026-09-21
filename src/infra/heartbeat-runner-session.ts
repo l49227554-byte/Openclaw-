@@ -21,6 +21,7 @@ export function resolveHeartbeatSessionKey(
   heartbeat?: HeartbeatConfig,
   forcedSessionKey?: string,
   env: NodeJS.ProcessEnv = process.env,
+  options?: { allowSubagentSession?: boolean },
 ) {
   const sessionCfg = cfg.session;
   const scope = sessionCfg?.scope ?? "per-sender";
@@ -45,31 +46,36 @@ export function resolveHeartbeatSessionKey(
 
   // Guard: never route heartbeats to subagent sessions, regardless of entry path.
   const forced = forcedSessionKey?.trim();
-  if (forced && isSubagentSessionKey(forced)) {
+  if (forced && isSubagentSessionKey(forced) && options?.allowSubagentSession !== true) {
     return mainSession(true);
   }
 
-  if (forced && !isSubagentSessionKey(forced)) {
+  if (forced) {
     const forcedCandidate = toAgentStoreSessionKey({
       agentId: resolvedAgentId,
       requestKey: forced,
       mainKey: cfg.session?.mainKey,
     });
-    if (!isSubagentSessionKey(forcedCandidate)) {
+    if (options?.allowSubagentSession === true || !isSubagentSessionKey(forcedCandidate)) {
       const forcedCanonical = canonicalizeMainSessionAlias({
         cfg,
         agentId: resolvedAgentId,
         sessionKey: forcedCandidate,
       });
-      if (forcedCanonical !== "global" && !isSubagentSessionKey(forcedCanonical)) {
+      if (
+        forcedCanonical !== "global" &&
+        (options?.allowSubagentSession === true || !isSubagentSessionKey(forcedCanonical))
+      ) {
         const sessionAgentId = resolveAgentIdFromSessionKey(forcedCanonical);
         if (sessionAgentId === normalizeAgentId(resolvedAgentId)) {
           const routedSessionKey =
-            resolveMainScopedEventSessionKey({
-              cfg,
-              sessionKey: forcedCanonical,
-              agentId: resolvedAgentId,
-            }) ?? forcedCanonical;
+            options?.allowSubagentSession === true && isSubagentSessionKey(forcedCanonical)
+              ? forcedCanonical
+              : (resolveMainScopedEventSessionKey({
+                  cfg,
+                  sessionKey: forcedCanonical,
+                  agentId: resolvedAgentId,
+                }) ?? forcedCanonical);
           return {
             sessionKey: routedSessionKey,
             storePath,
@@ -123,8 +129,16 @@ export function resolveHeartbeatSession(
   heartbeat?: HeartbeatConfig,
   forcedSessionKey?: string,
   env: NodeJS.ProcessEnv = process.env,
+  options?: { allowSubagentSession?: boolean },
 ) {
-  const resolved = resolveHeartbeatSessionKey(cfg, agentId, heartbeat, forcedSessionKey, env);
+  const resolved = resolveHeartbeatSessionKey(
+    cfg,
+    agentId,
+    heartbeat,
+    forcedSessionKey,
+    env,
+    options,
+  );
   return {
     ...resolved,
     entry: loadSessionEntry({
@@ -204,8 +218,9 @@ export function resolveHeartbeatSessionSelection(
   heartbeat?: HeartbeatConfig,
   forcedSessionKey?: string,
   env: NodeJS.ProcessEnv = process.env,
+  options?: { allowSubagentSession?: boolean },
 ) {
-  const session = resolveHeartbeatSession(cfg, agentId, heartbeat, forcedSessionKey, env);
+  const session = resolveHeartbeatSession(cfg, agentId, heartbeat, forcedSessionKey, env, options);
   if (heartbeat?.isolatedSession !== true) {
     return {
       ...session,

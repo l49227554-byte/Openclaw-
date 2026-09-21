@@ -15,6 +15,7 @@ import {
 } from "../agents/internal-events.js";
 import type { RuntimeContextFragment } from "../agents/internal-runtime-context.js";
 import { resolveDurableCompletionDeliveryMode } from "../auto-reply/reply/completion-delivery-policy.js";
+import { isContinuationHeartbeatEquivalent } from "../auto-reply/reply/run-provenance.js";
 import {
   getRestartRecoveryTerminalDeliveryEvidence,
   hasRestartRecoveryTerminalRun,
@@ -22,6 +23,7 @@ import {
 import { SessionTranscriptWriterClaimReboundError } from "../config/sessions/transcript-write-context.js";
 import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import { normalizeDiagnosticTraceparent } from "../infra/diagnostic-trace-context.js";
 import {
   advanceSessionDeliveryAgentRun,
   deferSessionDelivery,
@@ -41,6 +43,7 @@ import {
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeMediaReferenceForComparison } from "../media/media-reference-comparison.js";
 import { getMediaDir } from "../media/store.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import {
@@ -287,16 +290,25 @@ async function evaluateQueuedGeneratedMediaAgentResult(params: {
 }
 
 /** Runs durable generated-media handoffs through the normal owning-session agent loop. */
-export async function deliverQueuedGeneratedMediaAgentTurn(params: {
+export async function deliverQueuedGeneratedMediaAgentTurn(input: {
   canonicalKey: string;
   agentId: string;
   storePath: string;
   entry: QueuedSessionDelivery;
   runtimeContextFragments?: RuntimeContextFragment[];
   sessionEntry?: SessionEntry;
-  queueContext: OpenClawStateWorkerContext;
+  queueContext?: OpenClawStateWorkerContext;
+  stateDir?: string;
   resolveGatewayContext?: GatewayContextResolver;
 }): Promise<boolean> {
+  const queueContext =
+    input.queueContext ??
+    (input.stateDir === undefined
+      ? captureOpenClawStateWorkerContext()
+      : captureOpenClawStateWorkerContext({
+          env: { ...process.env, OPENCLAW_STATE_DIR: input.stateDir },
+        }));
+  const params = { ...input, queueContext };
   if (params.entry.kind !== "agentTurn") {
     return false;
   }
@@ -496,6 +508,13 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
   // The queue owner fixes route/media and disables the model-facing message tool,
   // so only this one system completion can use the normal final-delivery transport.
   const sourceReplyDeliveryMode = "automatic" as const;
+  const continuationTrigger = isContinuationHeartbeatEquivalent(entry.continuationTrigger)
+    ? entry.continuationTrigger
+    : undefined;
+  const traceparent =
+    entry.traceparentProvenance === "internal"
+      ? normalizeDiagnosticTraceparent(entry.traceparent)
+      : undefined;
   const cronLifecycleRevision = params.sessionEntry?.cronRunContinuation?.lifecycleRevision?.trim();
   const cronSessionId = cronLifecycleRevision ? params.sessionEntry?.sessionId?.trim() : undefined;
   // Fence before gateway admission. Recovery clears it only for an explicit
@@ -520,6 +539,8 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
         ...(cronSessionId ? { sessionId: cronSessionId } : {}),
         inputProvenance: entry.inputProvenance,
         sourceReplyDeliveryMode,
+        ...(continuationTrigger ? { continuationTrigger } : {}),
+        ...(traceparent ? { traceparent } : {}),
         disableMessageTool: true,
         forceRestartSafeTools: true,
         idempotencyKey: queuedRunId,

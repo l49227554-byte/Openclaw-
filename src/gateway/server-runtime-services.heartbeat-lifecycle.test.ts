@@ -29,7 +29,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doMock("../infra/heartbeat-runner-run.js", () => ({
-    runHeartbeatOnce: runtimeServiceMocks.runHeartbeatOnce,
+    runHeartbeatOnceCore: runtimeServiceMocks.runHeartbeatOnce,
   }));
   vi.useRealTimers();
   resetGatewayWorkAdmission();
@@ -44,7 +44,7 @@ describe("scheduled heartbeat execution loading", { concurrent: false }, () => {
       vi.doMock("../infra/heartbeat-runner-run.js", async () => {
         loading.resolve();
         await release.promise;
-        return { runHeartbeatOnce: runtimeServiceMocks.runHeartbeatOnce };
+        return { runHeartbeatOnceCore: runtimeServiceMocks.runHeartbeatOnce };
       });
       const { activateGatewayScheduledServices } = await import("./server-runtime-services.js");
       const { requestHeartbeatAndWait, setHeartbeatWakeHandler } =

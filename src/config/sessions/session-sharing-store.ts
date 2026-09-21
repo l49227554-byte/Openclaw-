@@ -11,6 +11,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import type { SessionAccessScope } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryInstanceId } from "./session-accessor.sqlite-entry-identity.js";
+import { advanceSessionRecipientAuthorityInTransaction } from "./session-accessor.sqlite-recipient-authority.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import {
   getSessionMemberKysely,
@@ -142,6 +143,9 @@ export function removeSessionMember(
         .where("session_key", "=", sessionKey)
         .where("identity_id", "=", normalizedIdentityId),
     );
+    // Removal revokes access, so advance recipient authority before observers
+    // are notified of the membership change.
+    advanceSessionRecipientAuthorityInTransaction(database, resolveSqliteScope(scope).sessionKey);
     sessionChanges.emit({ agentId, storePath: database.path, sessionKey }, database.db);
     return { identityId: row.identity_id, addedBy: row.added_by, addedAt: row.added_at };
   }, options);

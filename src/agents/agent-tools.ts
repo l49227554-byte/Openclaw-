@@ -99,6 +99,7 @@ export function createOpenClawCodingToolsInternal(
 ): AnyAgentTool[] {
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
   const isMemoryFlushRun = options?.trigger === "memory";
+  const disableContinuationTools = options?.disableContinuationTools === true || isMemoryFlushRun;
   if (isMemoryFlushRun && !options?.memoryFlushWritePath) {
     throw new Error("memoryFlushWritePath required for memory-triggered tool runs");
   }
@@ -651,6 +652,10 @@ export function createOpenClawCodingToolsInternal(
             claimYieldCompletion: options?.claimYieldCompletion,
             processScopeKey: scopeKey,
             allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
+            drainsContinuationDelegateQueue: options?.drainsContinuationDelegateQueue,
+            disableContinuationTools,
+            continueWorkOpts: options?.continueWorkOpts,
+            requestCompactionOpts: options?.requestCompactionOpts,
             recordToolPrepStage: options?.recordToolPrepStage,
           }),
         )

@@ -277,6 +277,10 @@ export {
   type SecretFileReadResult,
 } from "../infra/secret-file.js";
 export * from "../infra/secure-random.js";
+// Security: never re-export the RAW `infra/system-events` producers, which honor
+// `trusted: true`. Every SDK subpath (this deprecated barrel, system-event-runtime,
+// channel-runtime) goes through the `plugins/runtime/system-events` facade, which
+// forces `trusted: false` and strips ack/trace fields a plugin must not inject.
 export {
   consumeSelectedSystemEventEntriesFromSdk as consumeSelectedSystemEventEntries,
   consumeSelectedSystemEventEntriesFromSdk as consumeSystemEventEntries,

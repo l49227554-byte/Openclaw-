@@ -400,6 +400,21 @@ export const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
         "cleanup",
       ],
     },
+    delegate_artifacts_publish: {
+      emoji: "📦",
+      title: "Publish Delegate Artifacts",
+      detailKeys: [],
+    },
+    delegate_artifacts: {
+      emoji: "📦",
+      title: "Delegate Artifacts",
+      actions: {
+        list: displayAction("list"),
+        inspect: displayAction("inspect", ["claimId"]),
+        materialize: displayAction("materialize", ["claimId", "destination"]),
+        discard: displayAction("discard", ["claimId"]),
+      },
+    },
     agents_wait: { emoji: "⏳", title: "Wait for Agents", detailKeys: ["ids", "timeoutSeconds"] },
     structured_output: { emoji: "🧾", title: "Structured Output", detailKeys: ["result"] },
     subagents: {
@@ -507,6 +522,21 @@ export const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
       emoji: "📑",
       title: "PDF",
       detailKeys: ["path", "paths", "url", "urls", "prompt", "pageRange", "model"],
+    },
+    continue_delegate: {
+      emoji: "🔄",
+      title: "Continue Delegate",
+      detailKeys: ["task", "mode", "delaySeconds"],
+    },
+    continue_work: {
+      emoji: "⏩",
+      title: "Continue Work",
+      detailKeys: ["reason", "delaySeconds"],
+    },
+    request_compaction: {
+      emoji: "📦",
+      title: "Request Compaction",
+      detailKeys: ["reason"],
     },
     sessions_yield: { emoji: "⏸️", title: "Yield" },
     tts: { emoji: "🔊", title: "TTS", detailKeys: ["text", "channel"] },

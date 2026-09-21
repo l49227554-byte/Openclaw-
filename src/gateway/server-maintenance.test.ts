@@ -66,6 +66,7 @@ function createMaintenanceTimerDeps() {
     logHealth: { info: vi.fn(), error: vi.fn() },
     runWorktreeGc: vi.fn(async () => undefined),
     runDeliveryQueueMediaGc: vi.fn(async () => undefined),
+    runDelegateArtifactGc: vi.fn(async () => 0),
     runManagedOutgoingMediaGc: cleanupManagedOutgoingMediaRecordsMock,
   };
 }
@@ -143,6 +144,7 @@ async function stopMaintenanceTimers(
 ) {
   await timers.stopPeriodicTasks();
   await timers.skillUsageCleanup();
+
 }
 
 describe("startGatewayMaintenanceTimers", () => {

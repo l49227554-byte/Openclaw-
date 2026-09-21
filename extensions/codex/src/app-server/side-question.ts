@@ -60,8 +60,8 @@ import {
 } from "./dynamic-tool-build.js";
 import {
   emitDynamicToolErrorDiagnostic,
-  emitDynamicToolStartedDiagnostic,
   emitDynamicToolTerminalDiagnostic,
+  startDynamicToolDiagnosticExecution,
 } from "./dynamic-tool-diagnostics.js";
 import {
   handleDynamicToolCallWithTimeout,
@@ -599,19 +599,23 @@ export async function runCodexAppServerSideQuestion(
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
       };
-      emitDynamicToolStartedDiagnostic(diagnosticContext);
-      const toolCall = handleDynamicToolCallWithTimeout({
-        call,
-        toolBridge,
-        signal,
-        timeoutMs,
-        observeToolTerminal: sideRunParams.observeToolTerminal,
-      });
+      const { trace, execution: toolCall } = startDynamicToolDiagnosticExecution(
+        diagnosticContext,
+        () =>
+          handleDynamicToolCallWithTimeout({
+            call,
+            toolBridge,
+            signal,
+            timeoutMs,
+            observeToolTerminal: sideRunParams.observeToolTerminal,
+          }),
+      );
       activeDynamicToolCalls.add(toolCall);
       try {
         const response = await toolCall;
         emitDynamicToolTerminalDiagnostic({
           ...diagnosticContext,
+          trace,
           response,
           durationMs: Math.max(0, Date.now() - toolStartedAt),
         });
@@ -622,6 +626,7 @@ export async function runCodexAppServerSideQuestion(
       } catch (error) {
         emitDynamicToolErrorDiagnostic({
           ...diagnosticContext,
+          trace,
           durationMs: Math.max(0, Date.now() - toolStartedAt),
           terminalReason: signal.aborted ? resolveCodexToolAbortTerminalReason(signal) : "failed",
         });
@@ -1190,6 +1195,7 @@ async function createCodexSideToolBridge(input: {
     effectiveWorkspace: input.cwd,
     sandboxSessionKey,
     sandbox,
+    disableContinuationTools: true,
     nativeToolSurfaceEnabled: input.nativeToolSurfaceEnabled,
     nativeProviderWebSearchSupport: input.nativeProviderWebSearchSupport,
     sessionPermissionPolicy: input.sessionPermissionPolicy,

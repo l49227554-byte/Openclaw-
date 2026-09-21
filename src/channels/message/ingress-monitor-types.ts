@@ -1,4 +1,5 @@
 import type { ChannelIngressDispatchLifecycle } from "./ingress-drain-lifecycle.js";
+import type { ResolveChannelIngressPendingDisposition } from "./ingress-drain-pending-disposition.js";
 import type { CreateChannelIngressDrainOptions } from "./ingress-drain.js";
 import type { ChannelIngressQueue, ChannelIngressQueueClaim } from "./ingress-queue.js";
 
@@ -100,6 +101,8 @@ export type CreateChannelIngressMonitorOptions<TRaw, TBody, TStoredPayload, TMet
     context: { facts: ChannelIngressMonitorFacts; receivedAt: number; isNew: boolean },
   ) => void | Promise<void>;
   onAdmissionFailure?: (raw: TRaw, error: unknown) => void | Promise<void>;
+  /** Reject stale or otherwise unclaimable backlog before a pending row can win a lane. */
+  resolvePendingDisposition?: ResolveChannelIngressPendingDisposition<TStoredPayload, TMetadata>;
   /** False lets repeated requests fill drain capacity while earlier claims remain active. */
   waitForDeliveryIdleBeforeRepump?: boolean;
   /** Runs each pump under a channel-owned async context such as a detached request root. */

@@ -12,6 +12,7 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { buildGatewaySessionRow } from "../../gateway/session-utils-row.js";
 import { disposeOpenClawAgentDatabaseByPath } from "../../state/openclaw-agent-db.js";
+import { createReplyContinuationController } from "./agent-runner-continuation.js";
 import { accountAgentTurn } from "./agent-runner-result-accounting.js";
 import { createMockFollowupRun } from "./test-helpers.js";
 
@@ -41,11 +42,26 @@ async function createFixture(selected = diagnostic) {
   };
   const cfg: OpenClawConfig = { session: { store: storePath } };
   await replaceSessionEntry({ storePath, sessionKey }, entry);
+  const activeSessionStore = { [sessionKey]: entry };
+  let activeSessionEntry: InternalSessionEntry | undefined = entry;
+  const getActiveSessionEntry = () => activeSessionEntry;
+  const continuation = createReplyContinuationController({
+    cfg,
+    sessionKey,
+    storePath,
+    isContinuationWake: false,
+    activeSessionStore,
+    getActiveSessionEntry,
+    setActiveSessionEntry: (next) => {
+      activeSessionEntry = next;
+    },
+  });
   const context: Parameters<typeof accountAgentTurn>[0] = {
-    activeSessionEntry: entry,
-    activeSessionStore: { [sessionKey]: entry },
+    activeSessionEntry,
+    activeSessionStore,
     blockReplyPipeline: null,
     cfg,
+    continuation,
     defaultModel: selected.model,
     followupRun: createMockFollowupRun({
       run: {
@@ -58,9 +74,12 @@ async function createFixture(selected = diagnostic) {
         model: selected.model,
       },
     }),
+    getActiveSessionEntry,
     isHeartbeat: false,
+    noOpRearmWakeClass: undefined,
     pendingToolTasks: new Set(),
     preflightCompactionApplied: false,
+    replySessionKey: sessionKey,
     resolvedVerboseLevel: "off",
     execution: {
       kind: "settled",

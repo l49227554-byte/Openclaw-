@@ -3,6 +3,7 @@
  */
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
+import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import type { ReplyDirectiveParseResult } from "../auto-reply/reply/reply-directives.js";
 import type { BlockReplyPayload } from "./embedded-agent-payloads.js";
 import type { EmbeddedAgentSubscribeState } from "./embedded-agent-subscribe.handlers.types.js";
@@ -53,6 +54,30 @@ function clearPendingToolMedia(
 
 function hasReplyMedia(payload: BlockReplyPayload): boolean {
   return (payload.mediaUrls ?? []).some((url) => url.trim().length > 0);
+}
+
+export function recordAssistantTranscriptMedia(payload: BlockReplyPayload): void {
+  if (payload.mediaUrls?.length) {
+    setReplyPayloadMetadata(payload, {
+      assistantTranscriptMediaUrls: Array.from(new Set(payload.mediaUrls)),
+    });
+  }
+}
+
+export function blockReplyDeliveryKey(
+  payload: BlockReplyPayload,
+  assistantMessageIndex?: number,
+): string {
+  return JSON.stringify([
+    assistantMessageIndex,
+    payload.text ?? "",
+    payload.mediaUrls ?? [],
+    payload.audioAsVoice === true,
+    payload.replyToId ?? "",
+    payload.replyToTag === true,
+    payload.replyToCurrent === true,
+    payload.isReasoning === true,
+  ]);
 }
 
 function readAlignedPendingToolMedia(
@@ -250,13 +275,68 @@ export function consumePendingAssistantReplyDirectivesIntoReply(
   }
   const pending = state.pendingAssistantReplyDirectives;
   state.pendingAssistantReplyDirectives = undefined;
+  const audioAsVoice = payload.audioAsVoice || pending.audioAsVoice ? true : payload.audioAsVoice;
   return {
     ...payload,
-    audioAsVoice: payload.audioAsVoice || pending.audioAsVoice || undefined,
+    audioAsVoice,
     replyToId: payload.replyToId ?? pending.replyToId,
     replyToTag: Boolean(payload.replyToTag || pending.replyToTag) || undefined,
     replyToCurrent: Boolean(payload.replyToCurrent || pending.replyToCurrent) || undefined,
   };
+}
+
+function mergeAssistantReplyDirectives(
+  current: EmbeddedAgentSubscribeState["lastDeliveredAssistantReplyDirectives"],
+  payload: BlockReplyPayload,
+) {
+  const mediaUrls = Array.from(
+    new Set([...(current?.mediaUrls ?? []), ...(payload.mediaUrls ?? [])]),
+  );
+  if (
+    mediaUrls.length === 0 &&
+    !payload.audioAsVoice &&
+    !payload.replyToId &&
+    !payload.replyToTag &&
+    !payload.replyToCurrent
+  ) {
+    return current;
+  }
+  return {
+    mediaUrls: mediaUrls.length ? mediaUrls : undefined,
+    audioAsVoice: current?.audioAsVoice || payload.audioAsVoice || undefined,
+    replyToId: payload.replyToId ?? current?.replyToId,
+    replyToTag: current?.replyToTag || payload.replyToTag || undefined,
+    replyToCurrent: current?.replyToCurrent || payload.replyToCurrent || undefined,
+  };
+}
+
+export function recordDeliveredAssistantReplyDirectives(
+  state: EmbeddedAgentSubscribeState,
+  payload: BlockReplyPayload,
+) {
+  state.lastDeliveredAssistantReplyDirectives = mergeAssistantReplyDirectives(
+    state.lastDeliveredAssistantReplyDirectives,
+    payload,
+  );
+}
+
+export function recordDeferredAssistantReplyDirectives(
+  state: EmbeddedAgentSubscribeState,
+  payload: BlockReplyPayload,
+) {
+  state.deferredAssistantReplyDirectives = mergeAssistantReplyDirectives(
+    state.deferredAssistantReplyDirectives,
+    payload,
+  );
+}
+
+export function recordDeliveredAutoMedia(
+  state: EmbeddedAgentSubscribeState,
+  mediaUrls: readonly string[] | undefined,
+) {
+  for (const url of mediaUrls ?? []) {
+    state.toolAutoDeliveryMediaUrls.delete(url);
+  }
 }
 
 /** True when a reply payload has text, media, or voice content worth sending. */
@@ -267,6 +347,20 @@ export function hasAssistantVisibleReply(params: {
   audioAsVoice?: boolean;
 }): boolean {
   return resolveSendableOutboundReplyParts(params).hasContent || Boolean(params.audioAsVoice);
+}
+
+/**
+ * A terminal snapshot that only carries a reply target is still evidence the turn
+ * spoke, so continuation finals must not treat its empty text as "nothing sent".
+ */
+export function hasReplyTargetOnlyTerminalEvidence(parsed: ReplyDirectiveParseResult): boolean {
+  const hasReplyTarget = Boolean(parsed.replyToId || parsed.replyToTag || parsed.replyToCurrent);
+  return (
+    hasReplyTarget &&
+    parsed.text.trim().length === 0 &&
+    !resolveSendableOutboundReplyParts(parsed).hasMedia &&
+    !parsed.audioAsVoice
+  );
 }
 
 /** Exact tool-owned media that the managed WebChat pipeline may hide from display text. */

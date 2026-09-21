@@ -32,6 +32,7 @@ import {
   type EmbeddedRunCompactionRecoveryInput,
 } from "./compaction-runtime.js";
 import { createRunRecoveryDiagId } from "./helpers.js";
+import { emitRecoveryContextPressure } from "./recovery-context-pressure.js";
 import {
   isNoRealConversationCompactionNoop,
   resetNoRealConversationTokenSnapshot,
@@ -268,6 +269,10 @@ export async function recoverEmbeddedRunOverflow(
     log.warn(
       `${pressureDescription} detected (attempt ${input.state.overflowCompactionAttempts}/${MAX_OVERFLOW_COMPACTION_ATTEMPTS}); attempting auto-compaction for ${input.modelSelection.provider}/${input.modelSelection.model}`,
     );
+    if (overflowTokenCountForCompaction !== undefined) {
+      await emitRecoveryContextPressure(input, overflowTokenCountForCompaction);
+      input.assertRecoveryActive();
+    }
     const compaction = await compactEmbeddedRunForRecovery(input, {
       tokenBudget: preflightPromptBudget ?? input.contextTokenBudget,
       trigger: compactionTrigger,

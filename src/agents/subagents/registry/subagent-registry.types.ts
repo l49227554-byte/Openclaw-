@@ -149,6 +149,22 @@ type SubagentKillIntent = {
   suppressTaskDelivery?: boolean;
 };
 
+export type SubagentAcceptedSteerDispatch = {
+  gatewayRunId: string;
+  phase?: "dispatching" | "accepted";
+  lifecycleGeneration?: string;
+  expectedSessionId?: string;
+  expectedLifecycleRevision?: string;
+};
+
+type SubagentAcceptedSpawnRollback = {
+  gatewayRunId: string;
+  requestedAt: number;
+  reason: string;
+  expectedSessionId?: string;
+  expectedLifecycleRevision?: string;
+};
+
 export type SubagentRunRecord = Omit<SubagentRunReadRecord, "execution" | "collectorCompletion"> & {
   /** Detached task owner; steer/restart changes runId but continues the same task. */
   taskRunId?: string;
@@ -172,6 +188,10 @@ export type SubagentRunRecord = Omit<SubagentRunReadRecord, "execution" | "colle
   archiveAtMs?: number;
   cleanupHandled?: boolean;
   suppressAnnounceReason?: "steer-restart" | "killed";
+  /** Accepted steer run awaiting remap or exact termination confirmation. */
+  acceptedSteerDispatch?: SubagentAcceptedSteerDispatch;
+  /** Accepted child awaiting exact termination before failed spawn ownership can retire. */
+  acceptedSpawnRollback?: SubagentAcceptedSpawnRollback;
   /** Sticky owner while restart recovery replays this exact terminal run. */
   terminalOwner?: "interrupted-recovery";
   /** Present only while a current-version killed run awaits bounded reconciliation. */
@@ -200,6 +220,22 @@ export type SubagentRunRecord = Omit<SubagentRunReadRecord, "execution" | "colle
   attachmentsDir?: string;
   attachmentsRootDir?: string;
   retainAttachmentsOnKeep?: boolean;
+  /** Continuation: suppress channel echo for silent delegate returns. */
+  silentAnnounce?: boolean;
+  /** When true (with silentAnnounce), trigger a generation cycle after enrichment delivery. */
+  wakeOnReturn?: boolean;
+  /** Continuation: marks this run as a chain-hop that can consume pending delegates. */
+  drainsContinuationDelegateQueue?: boolean;
+  /** Continuation: return to one explicitly addressed session instead of the dispatcher. */
+  continuationTargetSessionKey?: string;
+  /** Continuation: byte-identical return fan-out to explicit sessions. */
+  continuationTargetSessionKeys?: string[];
+  /** Continuation: computed fan-out over the local session graph. */
+  continuationFanoutMode?: "tree" | "all";
+  /** Durable logical-mailbox authority captured before this run was accepted. */
+  continuationRecipientAuthorityBinding?: import("../../../config/sessions/session-recipient-authority-types.js").ContinuationRecipientAuthorityBinding;
+  /** Continuation: producer span carrier available to child completion paths. */
+  traceparent?: string;
   /** Spawner plus ancestor sessions authorized to wait, frozen when the collector is registered. */
   swarmWaitOwnerSessionKeys?: string[];
   /** Stable scheduler slot identity across gateway-assigned run id replacements. */
@@ -291,5 +327,34 @@ export type RegisterSubagentRunParams = {
   /** Required when direct dispatch suppresses Gateway tracking. Out-of-process launches keep
       Gateway's existing best-effort CLI policy; other callers create a best-effort row here. */
   taskRowOwnership?: "required" | "gateway_best_effort";
+  silentAnnounce?: boolean;
+  wakeOnReturn?: boolean;
+  drainsContinuationDelegateQueue?: boolean;
+  continuationTargetSessionKey?: string;
+  continuationTargetSessionKeys?: string[];
+  continuationFanoutMode?: "tree" | "all";
+  continuationRecipientAuthorityBinding?: import("../../../config/sessions/session-recipient-authority-types.js").ContinuationRecipientAuthorityBinding;
+  traceparent?: string;
   gatewayContextResolver?: GatewayContextResolver;
 };
+
+export type SubagentRegistrationIdentity = {
+  runId: string;
+  childSessionKey: string;
+  generation: number;
+  createdAt: number;
+};
+
+export type SubagentRegistrationOwnership =
+  | { status: "new-row-committed"; attempted: SubagentRegistrationIdentity }
+  | { status: "new-row-survived"; attempted: SubagentRegistrationIdentity }
+  | { status: "no-new-row"; attempted: SubagentRegistrationIdentity }
+  | {
+      status: "predecessor-restored";
+      attempted: SubagentRegistrationIdentity;
+      predecessor: Pick<
+        SubagentRunRecord,
+        "runId" | "childSessionKey" | "generation" | "createdAt"
+      >;
+    }
+  | { status: "unknown"; attempted: SubagentRegistrationIdentity };

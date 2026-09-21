@@ -87,7 +87,14 @@ export function handleToolExecutionUpdate(
     partialResult?: unknown;
     hideFromChannelProgress?: boolean;
   },
+  options?: { deliveryGeneration?: number },
 ) {
+  if (
+    options?.deliveryGeneration !== undefined &&
+    options.deliveryGeneration !== ctx.getBlockReplyDeliveryGeneration()
+  ) {
+    return;
+  }
   const toolName = normalizeToolPolicyName(evt.toolName);
   const toolCallId = evt.toolCallId;
   const startData = toolStartData.get(buildToolStartKey(ctx.params.runId, toolCallId));

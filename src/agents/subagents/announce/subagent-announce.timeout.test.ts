@@ -172,6 +172,7 @@ vi.mock("./subagent-announce-delivery.js", () => ({
   runAnnounceDeliveryWithRetry: async <T>(params: { run: () => Promise<T> }) => await params.run(),
 }));
 vi.mock("./subagent-announce.runtime.js", () => ({
+  callGateway: createGatewayCallModuleMock().callGateway,
   callSubagentLifecycleGateway: createGatewayCallModuleMock().callGateway,
   dispatchGatewayMethodInProcess: async (
     method: string,
@@ -188,9 +189,17 @@ vi.mock("./subagent-announce.runtime.js", () => ({
     return await callGatewayImpl(request);
   },
   getRuntimeConfig: () => configOverride,
+  loadConfig: () => configOverride,
   loadSessionStore: vi.fn(() => sessionStore),
   readSessionMessagesAsync: vi.fn(async () => []),
-  readSubagentSessionEntry: (_storePath: string, sessionKey: string) => sessionStore[sessionKey],
+  readSubagentSessionEntry: (_storePath: string, sessionKey: string) =>
+    (sessionStore as Record<string, unknown>)?.[sessionKey],
+  resolveContinuationRuntimeConfig: () => ({
+    maxChainLength: 10,
+    costCapTokens: 500_000,
+    minDelayMs: 5_000,
+    maxDelayMs: 300_000,
+  }),
   resolveAgentIdFromSessionKey: () => "main",
   resolveSessionStorePathCore: () => "/tmp/sessions-main.json",
   resolveMainSessionKey: () => "agent:main:main",
@@ -202,6 +211,7 @@ vi.mock("../registry/subagent-registry-read.js", () => ({
   countActiveDescendantRuns: () => 0,
   countPendingDescendantRuns: () => pendingDescendantRuns,
   hasDescendantRunAwaitingSettle: () => false,
+  getLatestLiveSubagentRunByChildSessionKey: () => undefined,
   getLatestSubagentRunByChildSessionKey: () => undefined,
   listSubagentRunsForRequester: () => [],
   isSubagentSessionRunActive: () => subagentSessionRunActive,
@@ -595,12 +605,10 @@ describe("subagent announce timeout config", () => {
         result?: string;
         status?: string;
         statusLabel?: string;
-        noVisibleResult?: boolean;
       }>) ?? [];
     expect(internalEvents[0]?.status).toBe("error");
     expect(internalEvents[0]?.statusLabel).toContain("All models failed");
     expect(internalEvents[0]?.result).toBe("(no output)");
-    expect(internalEvents[0]?.noVisibleResult).toBe(true);
     expect(directAgentCall?.params?.message).not.toContain("stale");
     expect(directAgentCall?.params?.message).not.toContain("older fallback");
   });

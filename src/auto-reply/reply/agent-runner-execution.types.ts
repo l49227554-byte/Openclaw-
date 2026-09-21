@@ -2,6 +2,7 @@ import type { CompactionAccountingFact } from "../../agents/embedded-agent-runne
 import type { runEmbeddedAgent } from "../../agents/embedded-agent.js";
 import type { FailoverReason } from "../../agents/failover/signal.js";
 import type { CompactionRequestBudget } from "../../agents/sessions/compaction/request-budget.js";
+import type { ContinueWorkRequest } from "../../agents/tools/continue-work-tool.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
@@ -29,6 +30,24 @@ export type RuntimeFallbackAttempt = {
   code?: string;
 };
 
+export type ContinuationWrappedRunResult = {
+  result: EmbeddedAgentRunResult;
+  continueWorkRequests?: ContinueWorkRequest[];
+  compactionTraceparent?: string;
+  rawContinuationText?: string;
+};
+
+export function isContinuationWrappedRunResult(
+  result: unknown,
+): result is ContinuationWrappedRunResult {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    "result" in result &&
+    "continueWorkRequests" in result
+  );
+}
+
 /** Presentation counts include target-less events; only captured durable facts may be persisted. */
 export type AgentTurnCompaction = {
   count: number;
@@ -55,6 +74,9 @@ export type AgentTurnInternalResult =
       fallbackAttempts: RuntimeFallbackAttempt[];
       didLogHeartbeatStrip: boolean;
       autoCompactionCount: number;
+      compactionTraceparent?: string;
+      continueWorkRequests?: ContinueWorkRequest[];
+      rawContinuationText?: string;
       /** Captured before cleanup; late settlements remain in the live receipts below. */
       hasDirectlySentBlockReply?: true;
       /** Delivery receipts for direct tool-flush payloads, including retry custody. */
@@ -75,6 +97,9 @@ type SettledAgentTurnBase = {
   maintenanceAuthProfile?: CompletedAgentAuthSelection;
   compactionRequestBudget?: CompactionRequestBudget;
   result: Awaited<ReturnType<typeof runEmbeddedAgent>>;
+  continueWorkRequests?: ContinueWorkRequest[];
+  compactionTraceparent?: string;
+  rawContinuationText?: string;
   resolved: { provider: string; model: string };
   fallback: { exhausted: boolean; attempts: RuntimeFallbackAttempt[] };
   autoCompactionCount: number;
@@ -141,6 +166,7 @@ export type AgentTurnParams = {
   pendingToolTasks: Set<Promise<void>>;
   resetSessionAfterRoleOrderingConflict: (reason: string) => Promise<boolean>;
   isHeartbeat: boolean;
+  hookTrigger?: "heartbeat" | "user";
   sessionKey?: string;
   runtimePolicySessionKey?: string;
   getActiveSessionEntry: () => SessionEntry | undefined;

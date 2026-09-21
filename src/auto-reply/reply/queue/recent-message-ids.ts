@@ -37,6 +37,13 @@ export function recordRecentQueueMessageId(
       RECENT_QUEUE_MESSAGE_IDS.delete(key, ownerToken);
       onAbandoned?.();
     };
+    const onCancelled = lifecycle.onCancelled;
+    if (onCancelled) {
+      lifecycle.onCancelled = () => {
+        RECENT_QUEUE_MESSAGE_IDS.delete(key, ownerToken);
+        return onCancelled();
+      };
+    }
   }
 }
 

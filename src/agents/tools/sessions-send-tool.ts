@@ -19,7 +19,7 @@ import { shouldResumeParentSubagent } from "../../gateway/session-subagent-resum
 import { resolveGatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store-lookup.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
-import { enqueueSystemEventEntry } from "../../infra/system-events.js";
+import { enqueueSystemEventEntryRaw as enqueueSystemEventEntry } from "../../infra/system-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   logSessionOwnershipLookupFailure,

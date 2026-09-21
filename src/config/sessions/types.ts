@@ -24,6 +24,7 @@ import type {
   CronToolsAllowExecTargetRequirement,
 } from "../../cron/scheduled-tool-policy.js";
 import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
+import type { InlineAttachment, InlineAttachmentMount } from "../../shared/inline-attachments.js";
 import type { SessionBoardFace } from "../../shared/session-types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import type { TtsAutoMode } from "../types.tts.js";
@@ -43,6 +44,7 @@ import type {
 } from "./session-entry-provenance.js";
 import type { AgentPatchedSessionModelFallback } from "./session-model-fallback.js";
 import type { SessionSkillSnapshot } from "./session-prompt-types.js";
+import type { ContinuationRecipientAuthorityBinding } from "./session-recipient-authority-types.js";
 import type { SessionSystemPromptReport } from "./session-system-prompt-report.js";
 import type { SessionToolOverrides } from "./session-tool-overrides.js";
 import type { PendingSessionWorktree } from "./session-worktree-intent.js";
@@ -262,6 +264,41 @@ export type {
   SessionGoalStatus,
 } from "../../../packages/gateway-protocol/src/schema/sessions-goal.js";
 
+export type SessionPostCompactionDelegate = {
+  task: string;
+  createdAt: number;
+  /** Stable original arm time, preserved across re-stage/restart cycles. */
+  firstArmedAt?: number;
+  /** Post-compaction delegates are silent by contract; persist the intent across store round trips. */
+  silent?: boolean;
+  silentWake?: boolean;
+  attachments?: InlineAttachment[];
+  attachAs?: InlineAttachmentMount;
+  targetSessionKey?: string;
+  targetSessionKeys?: string[];
+  fanoutMode?: "tree" | "all";
+  /** Durable logical-mailbox authority captured before this delegate was accepted. */
+  recipientAuthorityBinding?: ContinuationRecipientAuthorityBinding;
+  returnOptions?: {
+    artifacts?: "forbidden" | "optional" | "required";
+  };
+  recipientContext?: {
+    purpose: string;
+  };
+  traceparent?: string;
+  /** Persisted proof that traceparent came from a runtime-owned capture boundary. */
+  traceparentProvenance?: "internal";
+  /** Optional provider/model override forwarded to the released delegate; omitted => inherit parent. */
+  model?: string;
+  /**
+   * Runtime-only TaskFlow claim handle for a delegate just released by
+   * consumeStagedPostCompactionDelegates. Used to finalize or fail exactly the
+   * claimed row after a durable handoff; never persisted in session entries.
+   */
+  flowId?: string;
+  expectedRevision?: number;
+};
+
 export type RestartRecoveryRun = {
   runId: string;
   lifecycleGeneration: string;
@@ -295,12 +332,18 @@ type SessionEntryCore = SessionRestartRecoveryState &
     pluginExtensionSlotKeys?: Record<string, Record<string, string>>;
     /** Durable one-shot prompt additions drained before the next agent turn. */
     pluginNextTurnInjections?: Record<string, SessionPluginNextTurnInjection[]>;
+    /** Internal one-shot traceparent for a freshly spawned child agent run. */
+    continuationTraceparent?: string;
     sessionId: string;
     updatedAt: number;
     /** Process-lifetime session whose entry and transcript stay in the in-memory agent database. */
     incognito?: true;
     /** Opaque owner revision used to reject stale lifecycle mutations. */
     lifecycleRevision?: string;
+    /**
+     * Durable logical-mailbox authority. Runtime consumers must validate this
+     * unknown value before comparing it so malformed persisted state fails closed.
+     */
     // archivedAt/pinnedAt mirror the Codex thread-management shape (state DB
     // threads.archived_at: the boolean is always derived from the timestamp and
     // stamped server-side). Codex serializes camelCase but in epoch SECONDS;
@@ -556,6 +599,11 @@ type SessionEntryCore = SessionRestartRecoveryState &
     /** Origin of the persisted context window; `resolved` is legacy/unverified. */
     contextTokensSource?: "runtime" | "runtime-configured" | "resolved" | "resolved-v1";
     contextBudgetStatus?: SessionContextBudgetStatus;
+    /**
+     * Last context-pressure band that fired (e.g. 80, 90, 95). Used to deduplicate
+     * pressure events until the session crosses into a higher band.
+     */
+    lastContextPressureBand?: number;
     compactionCount?: number;
     memoryFlush?: MemoryFlushState;
     cliSessionIds?: Record<string, string>;
@@ -591,6 +639,16 @@ type SessionEntryCore = SessionRestartRecoveryState &
     /** Explicit authorized immutable library pins; current speakers never replace this selection. */
     skillLibrarySelections?: import("../../../packages/gateway-protocol/src/schema/skill-library.js").SkillLibrarySelection[];
     systemPromptReport?: SessionSystemPromptReport;
+    /** Number of continuation turns completed in the current chain. Reset on external message. */
+    continuationChainCount?: number;
+    /** Timestamp (ms) when the current continuation chain started. */
+    continuationChainStartedAt?: number;
+    /** Accumulated token usage across the current continuation chain. Reset on external message. */
+    continuationChainTokens?: number;
+    /** Stable identifier for the current continuation chain, persisted across compaction. */
+    continuationChainId?: string;
+    /** Post-compaction delegates staged for execution after context compaction. */
+    pendingPostCompactionDelegates?: SessionPostCompactionDelegate[];
     /**
      * Generic plugin-owned runtime debug entries shown in verbose status surfaces.
      * Each plugin owns and may overwrite only its own entry between turns.
@@ -842,8 +900,9 @@ function stripRetiredSessionEntryLocators(entry: SessionEntry): SessionEntry {
 export function mergeSessionEntry(
   existing: SessionEntry | undefined,
   patch: Partial<SessionEntry>,
+  options?: MergeSessionEntryOptions,
 ): SessionEntry {
-  return mergeSessionEntryWithPolicy(existing, patch);
+  return mergeSessionEntryWithPolicy(existing, patch, options);
 }
 
 export function mergeSessionEntryPreserveActivity(

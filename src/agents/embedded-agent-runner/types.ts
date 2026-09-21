@@ -308,7 +308,7 @@ export type EmbeddedAgentRunResult = {
 export type EmbeddedAgentCompactResult = {
   ok: boolean;
   compacted: boolean;
-  compactionKind?: "context-engine" | "native-harness" | "server-endpoint";
+  compactionKind?: "context-engine" | "native-harness" | "server-endpoint" | "volitional";
   reason?: string;
   /** Structured failure metadata used by model fallback classification. */
   failure?: {

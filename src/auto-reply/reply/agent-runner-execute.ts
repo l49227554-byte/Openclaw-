@@ -1,10 +1,18 @@
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveContextTokensForModel } from "../../agents/context.js";
+import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { withBeforeAgentReplyObserver } from "../../plugins/before-agent-reply.js";
 import { getGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
+import { defaultRuntime } from "../../runtime.js";
 import { readPendingUserTurnTranscriptAdmission } from "../../sessions/user-turn-transcript-admission.js";
+import { resolveLiveContinuationRuntimeConfig } from "../continuation/config.js";
+import {
+  checkContextPressure,
+  emitPersistedContextPressure,
+} from "../continuation/context-pressure.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
@@ -22,6 +30,7 @@ import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js"
 import { buildThreadingToolContext } from "./agent-runner-utils.js";
 import type { CompactionNoticePhase } from "./compaction-notice.js";
 import { createFollowupRunner } from "./followup-runner.js";
+import { evaluateNoOpRearmAdmission, type NoOpRearmWakeClass } from "./no-op-rearm-guard.js";
 import {
   buildRecoverablePendingFinalDeliveryText,
   normalizePendingFinalDeliveryPayloads,
@@ -31,12 +40,15 @@ import { recordReplyOperationAgentTurn } from "./reply-operation-run-state.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import { replyRunRegistry } from "./reply-run-registry.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
+import { resolveReplyHookTrigger } from "./run-provenance.js";
 type ExecutePreparedReplyAgentRunInput = Omit<
   FinalizeReplyAgentRunInput,
   | "activeIsNewSession"
   | "activeSessionEntry"
   | "preflightCompactionApplied"
   | "execution"
+  | "noOpRearmWakeClass"
+  | "replySessionKey"
   | "runId"
   | "runStartedAt"
 > &
@@ -55,6 +67,8 @@ type ExecutePreparedReplyAgentRunInput = Omit<
     resolveVisibleReplyDelivery: () => Promise<boolean>;
     getActiveIsNewSession: () => boolean;
     getActiveSessionEntry: () => SessionEntry | undefined;
+    hookTrigger: ReturnType<typeof resolveReplyHookTrigger>;
+    isContinuationWake: boolean;
     isRestartRecoveryArmed: () => boolean;
     resetSessionAfterRoleOrderingConflict: (reason: string) => Promise<boolean>;
     sendDirectCompactionNotice: ((phase: CompactionNoticePhase) => Promise<void>) | undefined;
@@ -91,10 +105,13 @@ export async function executePreparedReplyAgentRun(
     beginBeforeAgentReply: beginBeforeAgentReplyWithRecovery,
     cfg,
     checkpointBeforeAgentReply: checkpointBeforeAgentReplyWithRecovery,
+    continuation,
     defaultModel,
     followupRun,
     getActiveIsNewSession,
     getActiveSessionEntry,
+    isContinuationWake,
+    isHeartbeat,
     opts,
     replyOperation,
     replyThreadingOverride,
@@ -193,10 +210,85 @@ export async function executePreparedReplyAgentRun(
   setRunFollowupTurn(runFollowupTurn);
 
   replyOperation.setPhase("running");
+  const replySessionKey = sessionKey ?? followupRun.run.sessionKey;
+  // Evaluate continuation context pressure and persist the early-warning band
+  // before the provider request. Must run for every turn (not only continuation
+  // wakes) so the next turn's pre-provider gate sees an up-to-date band.
+  activeSessionEntry = getActiveSessionEntry() ?? activeSessionEntry;
+  if (activeSessionEntry && sessionKey) {
+    const { enabled, contextPressureThreshold, earlyWarningBand } =
+      resolveLiveContinuationRuntimeConfig(cfg);
+    const contextWindowTokens =
+      resolveContextTokensForModel({
+        cfg,
+        provider: followupRun.run.provider,
+        model: defaultModel,
+        fallbackContextTokens: activeSessionEntry.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
+        allowAsyncLoad: false,
+      }) ?? DEFAULT_CONTEXT_TOKENS;
+    if (storePath) {
+      try {
+        await emitPersistedContextPressure({
+          sessionEntry: activeSessionEntry,
+          sessionKey,
+          agentId: followupRun.run.agentId,
+          continuationEnabled: enabled,
+          contextPressureThreshold,
+          contextWindowTokens,
+          earlyWarningBand,
+          postCompaction: preflightCompactionApplied,
+          storePath,
+          expectedSessionId: activeSessionEntry.sessionId,
+        });
+      } catch (err) {
+        defaultRuntime.log(`context-pressure band persistence failed (non-fatal): ${String(err)}`);
+      }
+    } else if (enabled) {
+      checkContextPressure({
+        sessionEntry: activeSessionEntry,
+        sessionKey,
+        agentId: followupRun.run.agentId,
+        contextPressureThreshold,
+        contextWindowTokens,
+        earlyWarningBand,
+        postCompaction: preflightCompactionApplied,
+      });
+    }
+  }
+
+  await continuation.resetContinuationChainForFreshTurn();
+  activeSessionEntry = getActiveSessionEntry() ?? activeSessionEntry;
+
   const runStartedAt = Date.now();
   const userTurnAdmission = await admitUserTurn(followupRun.userTurnTranscriptRecorder);
   if (userTurnAdmission === "duplicate-source") {
     return returnWithQueuedFollowupDrain(undefined);
+  }
+
+  // Pre-provider no-op replay guard. This is the visible-turn and
+  // continuation (getReplyFromConfig) provider path; suppress a self-rearm wake
+  // before buying the turn when the per-session no-op streak is tripped. The
+  // finally block completes the reply operation and typing on the early return.
+  let noOpRearmWakeClass: NoOpRearmWakeClass | undefined;
+  if (replySessionKey) {
+    const admission = evaluateNoOpRearmAdmission({
+      sessionKey: replySessionKey,
+      provenance: followupRun.run.inputProvenance,
+      inboundEventKind: followupRun.currentInboundEventKind,
+      messageId: followupRun.messageId,
+      eventTimestampMs: followupRun.currentInboundEventTimestampMs,
+      isHeartbeat,
+      isContinuationWake,
+    });
+    noOpRearmWakeClass = admission.wake;
+    if (!admission.admit) {
+      if (admission.diagnostic) {
+        defaultRuntime.log?.(admission.diagnostic.message);
+      }
+      // Silent suppression: no provider turn, no visible reply. The finally block
+      // completes the reply operation and typing, identical to a NO_REPLY turn.
+      return returnWithQueuedFollowupDrain(undefined);
+    }
   }
   // Adoption marks run start and must never be spool-replayed (would re-run tools).
   // Suppressed delivery persists only the user transcript; crashed suppressed runs die
@@ -315,7 +407,9 @@ export async function executePreparedReplyAgentRun(
     ...context,
     activeIsNewSession,
     activeSessionEntry,
+    noOpRearmWakeClass,
     preflightCompactionApplied,
+    replySessionKey,
     runFollowupTurn,
     execution: runOutcome.outcome,
     runId: runOutcome.runId,

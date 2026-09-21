@@ -329,7 +329,7 @@ export const finalizeSubagentTaskRun = (
       childSessionKey: maskLifecycleIdentifier(args.entry.childSessionKey, "session"),
       outcomeStatus: args.outcome.status,
     });
-    if (pendingTask) {
+    if (pendingTask || taskResolution.lookup === "unavailable") {
       throw err;
     }
     return [];
@@ -337,10 +337,11 @@ export const finalizeSubagentTaskRun = (
   // A failed task write must keep the native terminal owner replayable.
   // Otherwise cleanup can discard the only outcome that repairs the running task.
   if (
-    pendingTask &&
-    !finalized?.some(
-      (task) => task.taskId === pendingTask.taskId && isTerminalTaskStatus(task.status),
-    )
+    (pendingTask &&
+      !finalized?.some(
+        (task) => task.taskId === pendingTask.taskId && isTerminalTaskStatus(task.status),
+      )) ||
+    (taskResolution.lookup === "unavailable" && (finalized?.length ?? 0) === 0)
   ) {
     throw new Error("subagent task projection did not finalize");
   }
@@ -514,9 +515,11 @@ export const loadPendingFinalDeliveryPayload = (
 ): PendingFinalDeliveryPayload => {
   return {
     requesterSessionKey: entry.delivery?.payload?.requesterSessionKey ?? entry.requesterSessionKey,
+    requesterAgentId: entry.delivery?.payload?.requesterAgentId ?? entry.requesterAgentId,
     requesterOrigin: entry.delivery?.payload?.requesterOrigin ?? entry.requesterOrigin,
     requesterDisplayKey: entry.delivery?.payload?.requesterDisplayKey ?? entry.requesterDisplayKey,
     childSessionKey: entry.delivery?.payload?.childSessionKey ?? entry.childSessionKey,
+    childAgentId: entry.delivery?.payload?.childAgentId ?? entry.agentId,
     childRunId: entry.delivery?.payload?.childRunId ?? entry.runId,
     task: entry.delivery?.payload?.task ?? entry.task,
     label: entry.delivery?.payload?.label ?? entry.label,

@@ -19,7 +19,8 @@ export async function startVisibleCloudSession(params: {
     request: Record<string, unknown>,
     assertAdmissionCurrent: () => void,
   ) => Promise<unknown>;
-  terminateRun: (runId: string) => Promise<void>;
+  /** Termination confirmation is reported through initialTaskStatus, not this result. */
+  terminateRun: (runId: string) => Promise<unknown>;
   assertActive: () => void;
   signal?: AbortSignal;
 }) {

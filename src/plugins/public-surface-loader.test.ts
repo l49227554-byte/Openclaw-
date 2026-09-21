@@ -48,6 +48,31 @@ afterEach(() => {
 });
 
 describe("bundled plugin public surface loader", () => {
+  it("rejects non-object exports before caching the public surface", async () => {
+    const bundledPluginsDir = tempDirs.make("openclaw-public-surface-invalid-");
+    const pluginRoot = path.join(bundledPluginsDir, "demo");
+    fs.mkdirSync(pluginRoot, { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, "package.json"), '{"type":"commonjs"}\n');
+    fs.writeFileSync(path.join(pluginRoot, "api.js"), "module.exports = null;\n");
+    const loader = await importFreshModule<typeof import("./public-surface-loader.js")>(
+      import.meta.url,
+      "./public-surface-loader.js?scope=invalid-export",
+    );
+    const load = () =>
+      loader.loadBundledPluginPublicArtifactModuleSync({
+        dirName: "demo",
+        artifactBasename: "api.js",
+        env: {
+          VITEST: "true",
+          OPENCLAW_BUNDLED_PLUGINS_DIR: bundledPluginsDir,
+          OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR: "1",
+        },
+      });
+
+    expect(load).toThrow("Plugin public surface is not an object");
+    expect(load).toThrow("Plugin public surface is not an object");
+  });
+
   it("loads bundled artifacts from each caller's environment without changing process.env", async () => {
     const tempRoot = tempDirs.make("openclaw-public-surface-env-");
     const createEnvironment = (marker: string) => {

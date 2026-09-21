@@ -368,6 +368,7 @@ export function ensureAdditiveStateColumns(db: DatabaseSync, scope: "runtime" | 
     backfillLegacyManagedImageRoots(db);
   }
   ensureColumns(db, columns.beforeTaskAttribution);
+  ensureColumns(db, columns.flowRunChain);
   const addedTaskRequesterAgentId = ensureColumn(db, ...columns.taskRequester[0]);
   if (addedTaskRequesterAgentId) {
     repairLegacyTaskAgentAttribution(db);

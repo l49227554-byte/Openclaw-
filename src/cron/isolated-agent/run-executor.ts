@@ -687,6 +687,9 @@ function createCronPromptExecutor(
             params.deliveryRequested && params.resolvedDelivery.ok ? "required" : "optional",
           disableMessageTool: !sourceDelivery.messageTool.enabled,
           forceMessageTool: sourceDelivery.messageTool.force,
+          // Cron owns its retry lifecycle; same-session continuation dispatch is
+          // an auto-reply turn contract and would strand work from this lane.
+          disableContinuationTools: true,
           allowTransientCooldownProbe: runOptions.allowTransientCooldownProbe,
           assistantErrorTranscript: runOptions.assistantErrorTranscript,
           abortSignal: params.abortSignal,

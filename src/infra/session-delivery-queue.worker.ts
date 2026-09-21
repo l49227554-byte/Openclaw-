@@ -1,18 +1,24 @@
 import { computeBackoff } from "../../packages/retry/src/index.js";
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db-contract.js";
 import {
-  loadDeliveryQueueEntryInDatabase,
+  deliveryQueueEntriesQuery,
   upsertBoundDeliveryQueueEntryInDatabase,
 } from "./delivery-queue-sqlite-bound.js";
+import { inflateDeliveryQueueEntryResult } from "./delivery-queue-sqlite-codec.js";
+import { terminalizeInvalidDeliveryQueueEntryInDatabase } from "./delivery-queue-sqlite.js";
 import {
   completeDeliveryQueueEntryInDatabase,
   deliveryQueueEntryNotFoundError,
   getDeliveryQueueEntryOwnersInDatabase,
-  loadDeliveryQueueEntriesInDatabase,
   prepareDeliveryQueueTerminalEntry,
   terminalizePendingDeliveryQueueEntryInDatabase,
   updateDeliveryQueueEntryInDatabase,
 } from "./delivery-queue-sqlite.kernel.js";
+import { executeSqliteQuerySync, executeSqliteQueryTakeFirstSync } from "./kysely-sync.js";
+import {
+  hasOnlyGenericAttachmentRefs,
+  scrubTerminalQueuedAttachments,
+} from "./session-delivery-queue-attachment-metadata.js";
 import {
   SESSION_DELIVERY_QUEUE_NAME,
   type QueuedSessionDelivery,
@@ -20,18 +26,17 @@ import {
 import type { SessionDeliveryWorkerOperations } from "./session-delivery-queue.worker-contract.js";
 import type { SqliteWorkerCommand } from "./sqlite-worker-contract.js";
 
-function readSessionDelivery(
+function readSessionDeliveryResult(
   database: OpenClawStateDatabase,
   id: string,
-): QueuedSessionDelivery | null {
-  const entry = loadDeliveryQueueEntryInDatabase(
-    database,
-    SESSION_DELIVERY_QUEUE_NAME,
+): SessionDeliveryWorkerOperations["sessionDelivery.load"]["output"] {
+  const query = deliveryQueueEntriesQuery(database, [SESSION_DELIVERY_QUEUE_NAME], "pending").where(
+    "id",
+    "=",
     id,
-    "pending",
   );
-  // SAFETY: The session namespace retains the canonical session-delivery payload contract.
-  return entry as QueuedSessionDelivery | null;
+  const row = executeSqliteQueryTakeFirstSync(database.db, query);
+  return row ? inflateDeliveryQueueEntryResult(row) : null;
 }
 
 export function executeSessionDeliveryCommand(
@@ -162,17 +167,21 @@ export function executeSessionDeliveryCommand(
     case "sessionDelivery.fail": {
       const { id, error, releaseAttemptOwnership } = command.input;
       update(id, (entry) => {
-        const retryCount = entry.retryCount + 1;
+        const safeEntry =
+          entry.kind === "postCompactionDelegate" || hasOnlyGenericAttachmentRefs(entry)
+            ? entry
+            : scrubTerminalQueuedAttachments(entry);
+        const retryCount = safeEntry.retryCount + 1;
         const now = Date.now();
         return {
-          ...entry,
+          ...safeEntry,
           retryCount,
-          ...(entry.kind === "agentTurn"
-            ? { lastChargedAgentRunAttempt: entry.agentRunAttempt ?? 0 }
+          ...(safeEntry.kind === "agentTurn"
+            ? { lastChargedAgentRunAttempt: safeEntry.agentRunAttempt ?? 0 }
             : {}),
           ...(releaseAttemptOwnership === true ? { deliveryStartedAt: undefined } : {}),
           lastAttemptAt: now,
-          ...(entry.kind === "agentTurn" && entry.owner?.kind === "subagent_completion"
+          ...(safeEntry.kind === "agentTurn" && safeEntry.owner?.kind === "subagent_completion"
             ? {
                 availableAt:
                   now +
@@ -187,25 +196,45 @@ export function executeSessionDeliveryCommand(
       });
       return;
     }
+    case "sessionDelivery.failInvalid": {
+      const { entry, error, entryJson } = command.input;
+      terminalizeInvalidDeliveryQueueEntryInDatabase(database, {
+        queueName: SESSION_DELIVERY_QUEUE_NAME,
+        id: entry.id,
+        lastError: error,
+        entry: {
+          id: entry.id,
+          enqueuedAt: entry.enqueuedAt,
+          retryCount: entry.retryCount,
+          retainOnFailure: true,
+        },
+        expectedEntryJson: entryJson,
+      });
+      return;
+    }
     case "sessionDelivery.load":
-      return readSessionDelivery(database, command.input.id);
+      return readSessionDeliveryResult(database, command.input.id);
     case "sessionDelivery.list": {
-      const entries = loadDeliveryQueueEntriesInDatabase(database, SESSION_DELIVERY_QUEUE_NAME);
-      // SAFETY: All returned rows belong to the canonical session-delivery namespace.
-      return entries as QueuedSessionDelivery[];
+      return executeSqliteQuerySync(
+        database.db,
+        deliveryQueueEntriesQuery(database, [SESSION_DELIVERY_QUEUE_NAME], "pending")
+          .orderBy("enqueued_at", "asc")
+          .orderBy("id", "asc"),
+      ).rows.map(inflateDeliveryQueueEntryResult);
     }
     case "sessionDelivery.moveToFailed": {
       const { id } = command.input;
       try {
-        const entry = readSessionDelivery(database, id);
-        if (!entry) {
+        const result = readSessionDeliveryResult(database, id);
+        if (result?.status !== "loaded") {
           throw deliveryQueueEntryNotFoundError(SESSION_DELIVERY_QUEUE_NAME, id);
         }
-        const result = terminalizePendingDeliveryQueueEntryInDatabase(
+        const entry = result.entry;
+        const terminalized = terminalizePendingDeliveryQueueEntryInDatabase(
           database,
           prepareDeliveryQueueTerminalEntry({ queueName: SESSION_DELIVERY_QUEUE_NAME, id, entry }),
         );
-        if (result.status !== "terminalized") {
+        if (terminalized.status !== "terminalized") {
           throw deliveryQueueEntryNotFoundError(SESSION_DELIVERY_QUEUE_NAME, id);
         }
       } catch (error) {

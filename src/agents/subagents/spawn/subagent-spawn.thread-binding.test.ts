@@ -8,6 +8,7 @@ import {
   createSubagentSpawnTestConfig,
   installSessionStoreCaptureMock,
   loadSubagentSpawnModuleForTest,
+  setupCommittedSubagentRegistrationMock,
 } from "./subagent-spawn.test-helpers.js";
 
 const hoisted = vi.hoisted(() => ({
@@ -164,6 +165,7 @@ describe("spawnSubagentDirect thread binding delivery", () => {
     hoisted.callGatewayMock.mockReset();
     hoisted.updateSessionStoreMock.mockReset();
     hoisted.registerSubagentRunMock.mockReset();
+    setupCommittedSubagentRegistrationMock(hoisted.registerSubagentRunMock);
     hoisted.emitSessionLifecycleEventMock.mockReset();
     hoisted.hookRunner.hasHooks.mockReset();
     installAcceptedSubagentGatewayMock(hoisted.callGatewayMock);

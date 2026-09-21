@@ -66,6 +66,8 @@ export type UserTurnInput = Pick<PersistedUserTurnMessage, "display" | "excludeF
   } | null;
   timestamp?: number;
   idempotencyKey?: string;
+  /** Private durable receipts for managed system events adopted by this turn. */
+  sessionDeliveryAckIds?: readonly string[];
   /** Durable transcript message reference used to render and hydrate replies. */
   replyToId?: string;
   /** Bounded display fallback for replies whose target is outside loaded history. */
@@ -228,6 +230,7 @@ export type UserTurnTranscriptRecorder = {
   isPendingInputConsumed?: () => boolean;
   withPendingInput?: <T>(run: () => T) => T;
   finishPendingInput?: (disposition: "cancelled" | "interrupted") => void;
+  replaceSessionDeliveryAckIds?: (deliveryIds: readonly string[]) => boolean;
   /** Replaces generated current-turn text before runtime persistence/provider submission. */
   replaceTextBeforePersistence?: (text: string) => void;
   /** Confirms exact-run steering provenance after transcript commitment is proven. */

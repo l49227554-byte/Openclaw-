@@ -6,7 +6,6 @@ import { replaceCompactionReplayOwnerContent } from "@openclaw/ai/transports";
  * Normalizes raw tool-call blocks and synthesizes missing tool results without rewriting trusted local payloads.
  */
 import { safeParseJsonRecord } from "@openclaw/normalization-core";
-import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import {
   classifyToolUseResultPairing,
   makeMissingToolResult as makePairingMissingToolResult,
@@ -27,6 +26,7 @@ import {
   createCompletedToolCallPredicate,
   isAllowedToolCallName,
   normalizeAllowedToolNames,
+  sanitizeTranscriptToolCallBlock,
 } from "./tool-call-shared.js";
 
 type RawToolCallBlock = ToolCallBlock & {
@@ -72,23 +72,7 @@ function isFinalizedOpenAIResponsesToolCall(
 }
 
 function sanitizeToolCallBlock(block: RawToolCallBlock): RawToolCallBlock {
-  // This repair path normalizes replay shape only. Tool payloads are local
-  // trusted-operator transcript state per SECURITY.md, so do not redact or
-  // rewrite sessions_spawn arguments here.
-  const rawName = readStringValue(block.name);
-  const trimmedName = rawName?.trim();
-  const hasTrimmedName = typeof trimmedName === "string" && trimmedName.length > 0;
-  const normalizedName = hasTrimmedName ? trimmedName : undefined;
-  const nameChanged = hasTrimmedName && rawName !== trimmedName;
-
-  if (!nameChanged) {
-    return block;
-  }
-  const next = { ...(block as Record<string, unknown>) };
-  if (nameChanged && normalizedName) {
-    next.name = normalizedName;
-  }
-  return next as RawToolCallBlock;
+  return sanitizeTranscriptToolCallBlock(block);
 }
 
 function countRawToolCallBlocks(content: unknown[]): number {
@@ -124,7 +108,11 @@ function isReplaySafeThinkingAssistantTurn(
       return false;
     }
     seenToolCallIds.add(toolCallId);
-    if (sanitizeToolCallBlock(block) !== block) {
+    if (
+      sanitizeTranscriptToolCallBlock(block, {
+        preserveLegacyContinueDelegateAttachmentName: true,
+      }) !== block
+    ) {
       return false;
     }
   }

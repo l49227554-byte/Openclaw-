@@ -21,6 +21,9 @@ const taskStatusMocks = vi.hoisted(() => ({
   findTaskByRunIdForStatus: vi.fn(),
   listTasksForSessionKeyForStatus: vi.fn(() => [] as never[]),
 }));
+const hasLiveOrRecentlyDispatchedContinuationWorkMock = vi.hoisted(() =>
+  vi.fn<(_sessionKey: string) => boolean>(() => false),
+);
 const sessionAccessorMocks = vi.hoisted(() => ({
   loadSessionEntryReadOnly: vi.fn<
     typeof import("../../../config/sessions/session-accessor.js").loadSessionEntryReadOnly
@@ -93,6 +96,9 @@ vi.mock("../../../config/config.js", async () => {
   };
 });
 
+vi.mock("../../../auto-reply/continuation/work-store.js", () => ({
+  hasLiveOrRecentlyDispatchedContinuationWork: hasLiveOrRecentlyDispatchedContinuationWorkMock,
+}));
 vi.mock("../announce/subagent-announce.js", () => ({
   runSubagentAnnounceFlow: vi.fn(async () => "delivered" as const),
 }));
@@ -159,6 +165,7 @@ describe("subagent registry archive behavior", () => {
       return {};
     });
     loadConfigMock.mockClear();
+    hasLiveOrRecentlyDispatchedContinuationWorkMock.mockReset().mockReturnValue(false);
     vi.mocked(getAgentRunContext).mockReset().mockReturnValue(undefined);
     taskRuntimeMocks.finalizeTaskRunByRunId.mockClear();
     taskStatusMocks.findTaskByRunIdForStatus.mockReset();

@@ -161,6 +161,7 @@ export const ORDERED_STARTUP_ADDITIVE_STATE_COLUMNS = {
     ["official_external_plugin_catalog_snapshots", "trust_verified_at TEXT"],
   ],
   taskRequester: [["task_runs", "requester_agent_id TEXT"]],
+  flowRunChain: [["flow_runs", "chain_id TEXT"]],
   taskRunDetails: [
     ["task_runs", "tool_use_count INTEGER"],
     ["task_runs", "last_tool_name TEXT"],

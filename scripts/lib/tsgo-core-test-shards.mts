@@ -12,9 +12,25 @@ export const TSGO_CORE_TEST_SHARDS = [
     config: "test/tsconfig/tsconfig.core.test.agents-other.json",
   },
   {
+    // The embedded-agent-* family is 81 roots and took agents-root to 706, past
+    // the same 700-root soft cap; it is a coherent unit, so it shards on its own.
+    name: "agents-embedded",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.agents-embedded.json",
+  },
+  {
     name: "agents-tools",
     group: "src",
     config: "test/tsconfig/tsconfig.core.test.agents-tools.json",
+  },
+  {
+    // src/security and src/secrets are their own domain, not agent tooling; they
+    // were sharing the agents-tools shard and pushed it to 712 roots, past the
+    // 700-root soft cap asserted in test/scripts/tsgo-core-test-shards.test.ts.
+    // (TSGO_CORE_TEST_MAX_ROOTS above is the 720 hard backstop, not that cap.)
+    name: "security-secrets",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.security-secrets.json",
   },
   {
     name: "gateway-root",
@@ -48,7 +64,16 @@ export const TSGO_CORE_TEST_SHARDS = [
     group: "src",
     config: "test/tsconfig/tsconfig.core.test.config-cli.json",
   },
-  { name: "messaging", group: "src", config: "test/tsconfig/tsconfig.core.test.messaging.json" },
+  {
+    name: "messaging-auto-reply",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.messaging-auto-reply.json",
+  },
+  {
+    name: "messaging-channels",
+    group: "src",
+    config: "test/tsconfig/tsconfig.core.test.messaging-channels.json",
+  },
   { name: "services", group: "src", config: "test/tsconfig/tsconfig.core.test.services.json" },
   { name: "other", group: "src", config: "test/tsconfig/tsconfig.core.test.other.json" },
   {

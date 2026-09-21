@@ -5,7 +5,6 @@ import { OPENAI_RESPONSES_APIS } from "@openclaw/ai/internal/openai-responses-pa
  * Applies logging redaction rules to persisted messages while preserving unchanged object identity.
  */
 import { findNormalizedProviderValue } from "@openclaw/model-catalog-core/provider-id";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   copyPreparedModelVisibleToolText,
@@ -17,6 +16,7 @@ import { readNestedToolActivity } from "../sessions/nested-tool-activity.js";
 import type { ProviderEndpointClass } from "./provider-attribution.js";
 import { resolveProviderEndpoint } from "./provider-attribution.js";
 import type { AgentMessage } from "./runtime/index.js";
+import { isTranscriptToolCallBlock, sanitizeTranscriptToolCallBlock } from "./tool-call-shared.js";
 import {
   copyCodeModeSourceAppend,
   readCodeModeSourceFields,
@@ -34,6 +34,7 @@ import {
   redactTranscriptText,
   resolveTranscriptLoggingConfig,
 } from "./transcript-redact-text.js";
+import { stripInvalidatedTranscriptUserMetadata } from "./transcript-redact-user-metadata.js";
 
 function isPlainTranscriptObject(value: object): value is Record<string, unknown> {
   const prototype = Object.getPrototypeOf(value);
@@ -509,8 +510,14 @@ function redactTranscriptStructuredValue(
   }
 
   seen.add(value);
-  const sanitizedImageRecord = sanitizeTranscriptImageRecord(value);
-  const source = sanitizedImageRecord ?? value;
+  // Continuation attachment snapshots are durable handoff input, not replayable
+  // transcript content. Apply the shared tool-call projection before any
+  // canonical writer serializes an assistant message (not only CLI mirroring).
+  const sanitizedToolCall: Record<string, unknown> = isTranscriptToolCallBlock(value)
+    ? sanitizeTranscriptToolCallBlock(value)
+    : value;
+  const sanitizedImageRecord = sanitizeTranscriptImageRecord(sanitizedToolCall);
+  const source = sanitizedImageRecord ?? sanitizedToolCall;
   const currentAssistantRoute =
     location === "root" && source.role === "assistant"
       ? resolveTranscriptAssistantRoute(source, cfg)
@@ -698,14 +705,13 @@ function redactTranscriptStructuredValue(
       delete next.humanMentions;
     }
   }
-  if (location === "root" && source.role === "user" && next && next.content !== source.content) {
-    const metadata = asOptionalRecord(next["__openclaw"]);
-    if (metadata?.humanMentions !== undefined) {
-      // UTF-16 selections cannot retain their binding after storage redacts the content.
-      const retained = { ...metadata };
-      delete retained.humanMentions;
-      next["__openclaw"] = retained;
-    }
+  if (next) {
+    next = stripInvalidatedTranscriptUserMetadata({
+      fieldKey,
+      location,
+      source,
+      redacted: next,
+    });
   }
   seen.delete(value);
   if (next && modelVisibleToolResult) {

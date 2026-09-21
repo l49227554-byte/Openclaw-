@@ -76,5 +76,13 @@ export function createSubagentRegistrationRecord(
     requesterSettleWake: undefined,
     attachmentId: registerParams.attachmentId,
     retainAttachmentsOnKeep: registerParams.retainAttachmentsOnKeep,
+    silentAnnounce: registerParams.silentAnnounce,
+    wakeOnReturn: registerParams.wakeOnReturn,
+    drainsContinuationDelegateQueue: registerParams.drainsContinuationDelegateQueue,
+    continuationTargetSessionKey: registerParams.continuationTargetSessionKey,
+    continuationTargetSessionKeys: registerParams.continuationTargetSessionKeys,
+    continuationFanoutMode: registerParams.continuationFanoutMode,
+    continuationRecipientAuthorityBinding: registerParams.continuationRecipientAuthorityBinding,
+    ...(registerParams.traceparent ? { traceparent: registerParams.traceparent } : {}),
   });
 }

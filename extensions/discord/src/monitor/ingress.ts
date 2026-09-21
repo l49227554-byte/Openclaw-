@@ -1,23 +1,27 @@
 // Discord plugin module owns raw gateway-message durable ingress and replay draining.
-import { GatewayDispatchEvents, type APIMessage } from "discord-api-types/v10";
+import { ChannelType, GatewayDispatchEvents, type APIMessage } from "discord-api-types/v10";
 import {
   createChannelIngressError,
   createChannelIngressMonitor,
   DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS,
   type ChannelIngressQueue,
+  type ChannelIngressQueueRecord,
   type ChannelIngressMonitorDeliveryResult,
   type ChannelIngressMonitorLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { danger, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isDiscordThreadChannelType } from "../channel-type.js";
 import type { Client } from "../internal/discord.js";
 import { mapGatewayDispatchData } from "../internal/gateway-dispatch.js";
 import { getDiscordRuntime } from "../runtime.js";
 import type { DiscordMessageEvent } from "./listeners.js";
+import { resolveDiscordChannelInfo } from "./message-channel-info.js";
 
 const DISCORD_INGRESS_PAYLOAD_VERSION = 1;
 const DISCORD_INGRESS_DRAIN_INTERVAL_MS = 1_000;
+const DISCORD_INGRESS_STALE_BACKLOG_MAX_AGE_MS = 5 * 60 * 1000;
 
 type DiscordIngressPayload = {
   version: 1;
@@ -98,6 +102,58 @@ function isDiscordAuthenticationFailure(error: unknown): boolean {
   return false;
 }
 
+async function resolveDiscordIngressPendingDisposition(
+  client: Client,
+  record: ChannelIngressQueueRecord<DiscordIngressPayload>,
+  now: number,
+) {
+  const rawMessage = record.payload?.rawMessage;
+  if (!rawMessage || typeof rawMessage !== "object") {
+    return null;
+  }
+  // Synthetic queue fixtures and pre-epoch timestamps (such as tests or
+  // replay seeds) intentionally use epoch-like sentinels smaller than a real
+  // Discord delivery window. Only real wall-clock ages participate in stale
+  // backlog rejection so the policy cannot dead-letter an in-flight synthetic row.
+  if (!Number.isFinite(record.receivedAt) || record.receivedAt <= 1_000_000_000_000) {
+    return null;
+  }
+  const ageMs = Math.max(0, now - record.receivedAt);
+  if (ageMs < DISCORD_INGRESS_STALE_BACKLOG_MAX_AGE_MS) {
+    return null;
+  }
+  const channelId = nonEmptyString(rawMessage.channel_id);
+  if (!channelId) {
+    return null;
+  }
+  const channelKind = await resolveDiscordChannelInfo(client, channelId);
+  if (!channelKind) {
+    return null;
+  }
+  const hasMention =
+    rawMessage.mention_everyone ||
+    rawMessage.mentions.length > 0 ||
+    rawMessage.mention_roles.length > 0;
+  const hasReply = Boolean(rawMessage.message_reference);
+  const isThreadMessage = isDiscordThreadChannelType(channelKind.type);
+  const isCommandLike = /^(?:\/|!|@|#)/.test(rawMessage.content.trimStart());
+  const isInFlight =
+    channelKind?.type === ChannelType.DM ||
+    channelKind?.type === ChannelType.GroupDM ||
+    hasMention ||
+    hasReply ||
+    isThreadMessage ||
+    isCommandLike;
+  if (isInFlight) {
+    return null;
+  }
+  return {
+    kind: "fail" as const,
+    reason: "stale-backlog",
+    message: `stale Discord backlog row ${record.id} on channel ${channelId} is ${ageMs}ms old; ambient backlog is not eligible for re-claim`,
+  };
+}
+
 export function createDiscordIngressMonitor(params: {
   accountId: string;
   client: Client;
@@ -131,6 +187,8 @@ export function createDiscordIngressMonitor(params: {
         ),
     },
     // Gateway mapping is intentionally delayed until after the durable claim.
+    resolvePendingDisposition: async (record, _context) =>
+      await resolveDiscordIngressPendingDisposition(params.client, record, _context.now),
     deliver: async (rawMessage, lifecycle) => {
       const event = mapGatewayDispatchData(
         params.client,

@@ -1061,6 +1061,82 @@ describe("createCodexDynamicToolBridge", () => {
     );
   });
 
+  it.each([
+    { toolName: "continue_work", status: "scheduled" },
+    { toolName: "continue_delegate", status: "scheduled" },
+    { toolName: "continue_delegate", status: "queued-for-compaction" },
+    { toolName: "request_compaction", status: "compaction_requested" },
+    { toolName: "request_compaction", status: "already_pending" },
+  ])(
+    "treats $toolName status $status as a successful dynamic tool call",
+    async ({ toolName, status }) => {
+      const onAgentToolResult = vi.fn();
+      const bridge = createBridgeWithToolResult(
+        toolName,
+        textToolResult(`${toolName}: ${status}`, { status }),
+      );
+
+      const result = await bridge.handleToolCall(
+        {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          callId: `call-${toolName}-${status}`,
+          namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
+          tool: toolName,
+          arguments: {},
+        },
+        { onAgentToolResult },
+      );
+
+      expect(result.success).toBe(true);
+      expect(onAgentToolResult).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName, isError: false }),
+      );
+    },
+  );
+
+  it("keeps structured continuation guard rejections informational", async () => {
+    const bridge = createBridgeWithToolResult(
+      "continue_delegate",
+      textToolResult("delegate limit reached", {
+        status: "rejected",
+        guard: "maxDelegatesPerTurn",
+      }),
+    );
+
+    const result = await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-continue-delegate-rejected",
+      namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
+      tool: "continue_delegate",
+      arguments: {},
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("keeps explicitly failed continuation rejections classified as failures", async () => {
+    const bridge = createBridgeWithToolResult(
+      "continue_delegate",
+      textToolResult("delegate request failed", {
+        status: "rejected",
+        ok: false,
+      }),
+    );
+
+    const result = await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-continue-delegate-rejected-failed",
+      namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
+      tool: "continue_delegate",
+      arguments: {},
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it.each(["pending", "applied", "rejected", "quarantined", "stale"] as const)(
     "treats Skill Workshop lifecycle status %s as a successful dynamic tool call",
     async (status) => {

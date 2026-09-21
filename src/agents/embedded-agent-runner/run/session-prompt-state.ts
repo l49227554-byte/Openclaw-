@@ -1,3 +1,5 @@
+import { resolveSessionStorePathCore } from "../../../config/sessions.js";
+import { resolveSessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import {
   runWithoutOwnedSessionTranscriptWrites,
   withOwnedSessionTranscriptWrites,
@@ -257,5 +259,49 @@ export async function createEmbeddedRunSessionPromptState(input: {
         activateInternalPrompt(CONTINUATION_PROMPT);
       }
     },
+  };
+}
+
+export async function resolveEmbeddedAttemptSessionTarget(params: {
+  sessionPromptState: Awaited<ReturnType<typeof createEmbeddedRunSessionPromptState>>;
+  resolvedSessionKey: string;
+  agentId: string;
+  sessionStore: Parameters<typeof resolveSessionStorePathCore>[0];
+  abortSignal?: AbortSignal;
+}) {
+  const { sessionPromptState, resolvedSessionKey } = params;
+  const existingSessionTarget = sessionPromptState.sessionTarget;
+  const reusableSessionTarget =
+    existingSessionTarget?.sessionKey === resolvedSessionKey ||
+    sessionPromptState.sessionTargetAdopted
+      ? existingSessionTarget
+      : undefined;
+  const resolvedTranscriptTarget =
+    reusableSessionTarget ??
+    (resolvedSessionKey
+      ? await resolveSessionTranscriptRuntimeTarget({
+          agentId: params.agentId,
+          sessionId: sessionPromptState.sessionId,
+          sessionKey: resolvedSessionKey,
+          storePath: resolveSessionStorePathCore(params.sessionStore, {
+            agentId: params.agentId,
+          }),
+        })
+      : undefined);
+  const resolvedSessionTarget =
+    resolvedTranscriptTarget || sessionPromptState.sessionTarget
+      ? {
+          ...sessionPromptState.sessionTarget,
+          ...resolvedTranscriptTarget,
+          ...sessionPromptState.sessionWriterFence,
+        }
+      : undefined;
+  await sessionPromptState.settleOwnedTranscriptProjection(
+    resolvedSessionTarget,
+    params.abortSignal,
+  );
+  return {
+    resolvedSessionTarget,
+    trajectorySessionFile: resolvedSessionTarget?.sessionKey ?? sessionPromptState.sessionFile,
   };
 }

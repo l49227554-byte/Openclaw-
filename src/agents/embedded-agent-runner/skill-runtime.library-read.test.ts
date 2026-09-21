@@ -348,6 +348,8 @@ describe("manual library resources through embedded and host-bound reads", () =>
           completionOwnerSessionKey: parentKey,
           creationPolicy: { actor: { type: "agent", id: "main" } },
           modelPatch: {},
+          // Continuation sessions carry an explicit patch; empty for a manual child.
+          continuationPatch: {},
           collect: false,
         });
         expect(child.status).toBe("ok");

@@ -7,15 +7,14 @@ import {
   persistSessionTranscriptTurn,
   stageSessionPendingInput,
   withSessionPendingInputPersistence,
-  publishTranscriptUpdate,
   readActiveTranscriptEntryAnchor,
   resolveSessionTranscriptRuntimeTarget,
-  rewriteTranscriptMessageAtAnchor,
   type TranscriptEntryAnchor,
   type SessionTranscriptTurnPersistOptions,
 } from "../config/sessions/session-accessor.js";
 import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
 import {
+  confirmPersistedSteerTargetRunId,
   registerUserTurnTranscriptAdmissionOwner,
   resolveUserTurnTranscriptAdmission,
 } from "./user-turn-transcript-admission.js";
@@ -173,39 +172,6 @@ async function resolveUserTurnTranscriptTarget(
   return typeof target === "function" ? await target() : target;
 }
 
-async function confirmPersistedSteerTargetRunId(params: {
-  admission: UserTurnTranscriptAdmissionReceipt;
-  targetRunId: string;
-}): Promise<
-  | {
-      admission: UserTurnTranscriptAdmissionReceipt;
-      message: PersistedUserTurnMessage;
-    }
-  | undefined
-> {
-  const rewritten = await rewriteTranscriptMessageAtAnchor(params.admission, (message) => {
-    if (!isUserMessage(message)) {
-      return undefined;
-    }
-    const currentTarget = normalizePersistedSteerTargetRunId(
-      message["__openclaw"]?.steerTargetRunId,
-    );
-    return currentTarget === params.targetRunId
-      ? undefined
-      : rewritePersistedSteerTargetRunId(message, params.targetRunId);
-  });
-  if (!rewritten) {
-    return undefined;
-  }
-  const admission = { ...params.admission, generation: rewritten.generation };
-  await publishTranscriptUpdate(admission, {
-    message: rewritten.message,
-    messageId: admission.entryId,
-    messageSeq: admission.activeMessagePosition + 1,
-  });
-  return { admission, message: rewritten.message };
-}
-
 export function createUserTurnTranscriptRecorder(
   params: CreateUserTurnTranscriptRecorderParams,
 ): UserTurnTranscriptRecorder {
@@ -232,6 +198,58 @@ export function createUserTurnTranscriptRecorder(
   let pendingInput: Awaited<ReturnType<typeof stageSessionPendingInput>>;
   let processingCompletion: Result<AgentRunTerminalOutcome, unknown> | undefined;
   let staging: Promise<boolean> | undefined;
+  const replacementSessionDeliveryAckIds = new Set<string>();
+  let hasReplacementSessionDeliveryAckIds = false;
+  const initialSessionDeliveryAckIds = message?.["__openclaw"]?.sessionDeliveryAckIds;
+  if (Array.isArray(initialSessionDeliveryAckIds)) {
+    hasReplacementSessionDeliveryAckIds = true;
+    for (const deliveryId of initialSessionDeliveryAckIds) {
+      if (typeof deliveryId === "string" && deliveryId.trim()) {
+        replacementSessionDeliveryAckIds.add(deliveryId.trim());
+      }
+    }
+  }
+
+  const replaceSessionDeliveryAckIds = (deliveryIds: readonly string[]): boolean => {
+    if (
+      pendingInput ||
+      staging ||
+      selfPersistencePromise ||
+      runtimePersistencePromise ||
+      runtimePersisted ||
+      persisted
+    ) {
+      return false;
+    }
+    hasReplacementSessionDeliveryAckIds = true;
+    replacementSessionDeliveryAckIds.clear();
+    for (const deliveryId of deliveryIds) {
+      const normalized = deliveryId.trim();
+      if (normalized) {
+        replacementSessionDeliveryAckIds.add(normalized);
+      }
+    }
+    return true;
+  };
+
+  const applyReplacementSessionDeliveryAckIds = (
+    candidate: PersistedUserTurnMessage | undefined,
+  ): PersistedUserTurnMessage | undefined => {
+    if (!candidate || !hasReplacementSessionDeliveryAckIds) {
+      return candidate;
+    }
+    const metadata = { ...candidate["__openclaw"] };
+    delete metadata.sessionDeliveryAckIds;
+    return {
+      ...candidate,
+      __openclaw: {
+        ...metadata,
+        ...(replacementSessionDeliveryAckIds.size > 0
+          ? { sessionDeliveryAckIds: [...replacementSessionDeliveryAckIds] }
+          : {}),
+      },
+    };
+  };
 
   const applyReplacementText = (
     candidate: PersistedUserTurnMessage | undefined,
@@ -251,7 +269,7 @@ export function createUserTurnTranscriptRecorder(
 
   const applyMessageOverrides = (candidate: PersistedUserTurnMessage | undefined) => {
     const next = rewritePersistedSteerTargetRunId(
-      applyReplacementText(candidate),
+      applyReplacementSessionDeliveryAckIds(applyReplacementText(candidate)),
       confirmedSteerTargetRunId,
     );
     // Native mirrors must reuse this admission even when no transport supplied a key.
@@ -608,6 +626,7 @@ export function createUserTurnTranscriptRecorder(
         }
       }
     },
+    replaceSessionDeliveryAckIds,
     replaceTextBeforePersistence: (text) => {
       if (pendingInput || persisted || runtimePersisted || sentToProvider) {
         return;

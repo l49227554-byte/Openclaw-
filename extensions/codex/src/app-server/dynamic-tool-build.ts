@@ -157,6 +157,8 @@ type DynamicToolBuildParams = {
   forceHeartbeatTool?: boolean;
   ignoreDisableMessageTool?: boolean;
   ignoreRuntimePlan?: boolean;
+  /** Side threads must not schedule continuation work for the parent turn. */
+  disableContinuationTools?: boolean;
   /** Host fact resolver; injectable only for focused plugin contract tests. */
   isHostScopedToolActive?: (toolName: string) => boolean;
   onYieldDetected: (message: string, acknowledgment?: string) => void;
@@ -363,6 +365,10 @@ export async function buildDynamicTools(
     cronCreatorToolAllowlistRef: input.cronCreatorToolAllowlistRef,
     cronCreatorToolAllowlistCaptureRef: input.cronCreatorToolAllowlistCaptureRef,
     cronCreatorAuthorityUnavailableReason: input.cronCreatorAuthorityUnavailableReason,
+    drainsContinuationDelegateQueue: params.drainsContinuationDelegateQueue,
+    continueWorkOpts: params.continueWorkOpts,
+    requestCompactionOpts: params.requestCompactionOpts,
+    disableContinuationTools: input.disableContinuationTools,
   };
 
   input.onMessageToolTargetResolved?.(options.requireExplicitMessageTarget === true);

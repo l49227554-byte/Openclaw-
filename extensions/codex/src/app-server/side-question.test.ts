@@ -1,5 +1,4 @@
 import "./side-question.test-support.js";
-import { Server } from "node:http";
 // Codex tests cover side question plugin behavior.
 import path from "node:path";
 import {
@@ -14,7 +13,6 @@ import {
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
-  createAdmittedHostCapabilityTestFixture,
   createMockPluginRegistry,
   loadWebFetchToolFactoryForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
@@ -1835,21 +1833,7 @@ describe("runCodexAppServerSideQuestion", () => {
     },
   );
 
-  it.each([false, true])("keeps side hooks after listener failure: %s", async (failed) => {
-    if (failed) {
-      vi.spyOn(Server.prototype, "listen").mockImplementationOnce(function (this: Server) {
-        queueMicrotask(() => this.emit("error", new Error("fixture side listener unavailable")));
-        return this;
-      });
-    }
-    const beforeToolCall = vi.fn(() => ({
-      block: true,
-      blockReason: "fixture side policy denial",
-    }));
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([{ hookName: "before_tool_call", handler: beforeToolCall }]),
-    );
-    const host = await createAdmittedHostCapabilityTestFixture({ runId: "run-side-1" });
+  it("installs native hook relay config for opted-in side threads", async () => {
     const client = createFakeClient();
     let relayIdDuringFork: string | undefined;
     client.request.mockImplementation(async (method: string, requestParams: unknown) => {
@@ -1866,23 +1850,6 @@ describe("runCodexAppServerSideQuestion", () => {
           channelId: "voice-room",
           allowedEvents: ["pre_tool_use", "post_tool_use", "before_agent_finalize"],
         });
-        const generation = codexHookCommand(config, "hooks.PreToolUse")?.command?.match(
-          /--generation ([^ ]+)/,
-        )?.[1];
-        const response = await invokeNativeHookRelay({
-          provider: "codex",
-          relayId: relayIdDuringFork,
-          generation,
-          requireGeneration: true,
-          event: "pre_tool_use",
-          rawPayload: {
-            hook_event_name: "PreToolUse",
-            tool_name: "Bash",
-            tool_use_id: "side-listener-unavailable-tool",
-            tool_input: { command: "pwd" },
-          },
-        });
-        expect(response.stdout).toContain("fixture side policy denial");
         return threadResult("side-thread");
       }
       if (method === "thread/inject_items") {
@@ -1905,7 +1872,6 @@ describe("runCodexAppServerSideQuestion", () => {
     await expect(
       runCodexAppServerSideQuestion(
         sideLoopRelayParams({
-          hostCapabilities: host.hostCapabilities,
           sessionKey: "agent:main:session-1",
           sessionEntry: {
             sessionId: "session-1",
@@ -1919,10 +1885,7 @@ describe("runCodexAppServerSideQuestion", () => {
           opts: { runId: "run-side-1" },
         }),
         { nativeHookRelay: { enabled: true, hookTimeoutSec: 9 } },
-      ).finally(() => {
-        host.closeHost();
-        host.closeAdmission();
-      }),
+      ),
     ).resolves.toEqual({ text: "Side answer." });
 
     const forkParams = mockCall(client.request)[1] as Record<string, unknown> | undefined;
@@ -1949,9 +1912,8 @@ describe("runCodexAppServerSideQuestion", () => {
     const turnStartCall = client.request.mock.calls.find(([method]) => method === "turn/start");
     expect(turnStartCall?.[1]).not.toHaveProperty("config");
     expect(relayIdDuringFork).toBeDefined();
-    expect(beforeToolCall).toHaveBeenCalledTimes(1);
     expect(createOpenClawCodingToolsMock).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-side-1" }),
+      expect.objectContaining({ runId: "run-side-1", disableContinuationTools: true }),
     );
     expect(
       nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relayIdDuringFork!),
@@ -2956,6 +2918,67 @@ describe("runCodexAppServerSideQuestion", () => {
     expect(toolExecuteMock).not.toHaveBeenCalled();
   });
 
+  it("rejects inherited continuation calls from a side fork without executing them", async () => {
+    const client = createFakeClient();
+    const continuationExecute = vi.fn();
+    let toolResponse: unknown;
+    createOpenClawCodingToolsMock.mockImplementation(
+      (options: { disableContinuationTools?: boolean }) =>
+        options.disableContinuationTools
+          ? []
+          : [
+              {
+                name: "continue_delegate",
+                description: "Schedule continuation work",
+                parameters: { type: "object", properties: {} },
+                execute: continuationExecute,
+              },
+            ],
+    );
+    client.request.mockImplementation(async (method: string) => {
+      if (method === "thread/fork") {
+        return threadResult("side-thread");
+      }
+      if (method === "thread/inject_items") {
+        return {};
+      }
+      if (method === "turn/start") {
+        setTimeout(() => {
+          void (async () => {
+            toolResponse = await client.handleRequest({
+              id: 42,
+              method: "item/tool/call",
+              params: {
+                threadId: "side-thread",
+                turnId: "turn-1",
+                callId: "inherited-continuation",
+                tool: "continue_delegate",
+                arguments: { task: "must not schedule" },
+              },
+            });
+            client.emit(agentDelta("side-thread", "turn-1", "Side answer."));
+            client.emit(turnCompleted("side-thread", "turn-1", "Side answer."));
+          })();
+        }, 0);
+        return turnStartResult("turn-1");
+      }
+      if (method === "thread/unsubscribe" || method === "turn/interrupt") {
+        return {};
+      }
+      throw new Error(`unexpected request: ${method}`);
+    });
+    getSharedCodexAppServerClientMock.mockResolvedValue(client);
+
+    await expect(runCodexAppServerSideQuestion(sideParams())).resolves.toEqual({
+      text: "Side answer.",
+    });
+    expect(continuationExecute).not.toHaveBeenCalled();
+    expect(toolResponse).toEqual({
+      success: false,
+      contentItems: [{ type: "inputText", text: "Unknown OpenClaw tool: continue_delegate" }],
+    });
+  });
+
   it("omits computer control from side threads without a compaction owner", async () => {
     const client = createFakeClient();
     const computerExecute = vi.fn();
@@ -3146,6 +3169,8 @@ describe("runCodexAppServerSideQuestion", () => {
         toolCallId: "tool-1",
       },
     ]);
+    expect(toolDiagnosticEvents[0]?.trace?.spanId).toBeTruthy();
+    expect(toolDiagnosticEvents[1]?.trace).toEqual(toolDiagnosticEvents[0]?.trace);
     expect(activeDiagnosticToolKeys(diagnosticEvents)).toEqual(new Set());
   });
 

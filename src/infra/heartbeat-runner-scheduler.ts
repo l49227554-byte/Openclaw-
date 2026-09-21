@@ -16,12 +16,13 @@ import {
 } from "./heartbeat-config.js";
 import { recordRunStart, shouldDeferWake, type DeferDecision } from "./heartbeat-cooldown.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
-import type { runHeartbeatOnce } from "./heartbeat-runner-run.js";
+import type { runHeartbeatOnceCore } from "./heartbeat-runner-run.js";
 import { isConfiguredHeartbeatAgent, isTargetedUnscheduledWake } from "./heartbeat-wake-policy.js";
 import {
   areHeartbeatsEnabled,
   getHeartbeatWakeAbortSignal,
   HEARTBEAT_SKIP_NO_PENDING_EVENT,
+  hasTrustedContinuationHeartbeatWake,
   type HeartbeatRunResult,
   type HeartbeatWakeHandler,
   type HeartbeatWakeIntent,
@@ -49,12 +50,12 @@ export type HeartbeatRunner = {
   updateConfig: (cfg: OpenClawConfig) => void;
 };
 
-export function startHeartbeatRunner(opts: {
+export function startHeartbeatRunnerScheduled(opts: {
   cfg?: OpenClawConfig;
   readCurrentConfig?: () => OpenClawConfig;
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
-  runOnce?: typeof runHeartbeatOnce;
+  runOnce?: typeof runHeartbeatOnceCore;
 }): HeartbeatRunner {
   const runtime = opts.runtime ?? defaultRuntime;
   const runOnce = opts.runOnce;
@@ -256,7 +257,7 @@ export function startHeartbeatRunner(opts: {
         ((isInterval || authoritativeScheduledTick) && !requestedSessionKey && !requestedHeartbeat);
       let res: HeartbeatRunResult;
       try {
-        const runOptions: Parameters<typeof runHeartbeatOnce>[0] = {
+        const runOptions: Parameters<typeof runHeartbeatOnceCore>[0] = {
           cfg: wakeConfig,
           agentId,
           heartbeat: useEnrolledHeartbeat
@@ -273,10 +274,14 @@ export function startHeartbeatRunner(opts: {
           reason,
           ...(scheduledEveryMs !== undefined ? { scheduledEveryMs } : {}),
           ...(targeted ? { sessionKey: requestedSessionKey } : {}),
+          ...(targeted && params.parentRunId ? { parentRunId: params.parentRunId } : {}),
+          ...(targeted && hasTrustedContinuationHeartbeatWake(params)
+            ? { trustedContinuationRouting: true }
+            : {}),
           tasks: requestedTasks,
           deps: { runtime: state.runtime },
         };
-        const execute = runOnce ?? (await loadHeartbeatExecution()).runHeartbeatOnce;
+        const execute = runOnce ?? (await loadHeartbeatExecution()).runHeartbeatOnceCore;
         // Import can outlive this runner or its wake generation. The wake owner
         // retains/requeues canceled work; a late loader must not dispatch it too.
         if (
@@ -422,3 +427,5 @@ export function startHeartbeatRunner(opts: {
 
   return { stop: cleanup, updateConfig };
 }
+
+export { startHeartbeatRunnerScheduled as startHeartbeatRunner };

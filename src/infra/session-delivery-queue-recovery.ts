@@ -16,8 +16,6 @@ import {
   loadPendingSessionDeliveries,
   markSessionDeliverySettlement,
   moveSessionDeliveryToFailed,
-} from "./session-delivery-queue-storage.js";
-import {
   SessionDeliveryAcknowledgementFinalizeError,
   SessionDeliveryAttemptStartError,
   SessionDeliveryDeadLetteredError,
@@ -26,7 +24,7 @@ import {
   SessionDeliverySafeRetryError,
   type QueuedSessionDelivery,
   type SessionDeliverySettledOutcome,
-} from "./session-delivery-queue.records.js";
+} from "./session-delivery-queue-storage.js";
 
 export type DeliverSessionDeliveryFn = (
   entry: QueuedSessionDelivery,
@@ -258,6 +256,42 @@ async function processDrainedSessionDelivery(
     );
   }
   return result;
+}
+
+type DeliveryRecoveryDrainDecision = {
+  match: boolean;
+  bypassBackoff?: boolean;
+};
+
+/** Drain one filtered delivery family without widening ownership to sibling rows. */
+export async function drainPendingSessionDeliveries(
+  opts: SessionDeliveryDrainContext & {
+    drainKey: string;
+    selectEntry: (entry: QueuedSessionDelivery, now: number) => DeliveryRecoveryDrainDecision;
+  },
+): Promise<void> {
+  const drained = await recoveryCoordinator.withDrain(opts.drainKey, async () => {
+    const entries = (await loadPendingSessionDeliveries(opts.queueContext)).filter(
+      (entry) => opts.selectEntry(entry, Date.now()).match,
+    );
+    await recoveryCoordinator.scan({
+      entries,
+      loadEntry: (id) => loadPendingSessionDelivery(id, opts.queueContext),
+      onClaimConflict: (entry) => {
+        opts.log.info(`${opts.logLabel}: entry ${entry.id} is already being recovered`);
+      },
+      onEntry: async (entry) => {
+        const decision = opts.selectEntry(entry, Date.now());
+        if (!decision.match) {
+          return;
+        }
+        await processDrainedSessionDelivery(entry, opts, decision.bypassBackoff);
+      },
+    });
+  });
+  if (!drained) {
+    opts.log.info(`${opts.logLabel}: already in progress for ${opts.drainKey}, skipping`);
+  }
 }
 
 /** Drain one exact queued session delivery and return its final pending state. */

@@ -6,7 +6,24 @@ export function resolveAttemptDispatchApiKey(params: {
   apiKeyInfo: ResolvedProviderAuth | null;
   runtimeAuthState: RuntimeAuthState | null;
   pluginHarnessOwnsTransport: boolean;
+  authProfileId?: string;
+  authRequirement?: "api-key" | "subscription";
+  modelApi?: string;
+  authProfileStore?: AuthProfileStore;
 }): string | undefined {
+  if (
+    (params.apiKeyInfo?.profileId &&
+      params.authProfileId &&
+      params.apiKeyInfo.profileId !== params.authProfileId) ||
+    (params.apiKeyInfo?.profileId &&
+      params.authProfileStore &&
+      !Object.hasOwn(params.authProfileStore.profiles, params.apiKeyInfo.profileId)) ||
+    ((params.authRequirement === "subscription" ||
+      params.modelApi === "openai-chatgpt-responses") &&
+      params.apiKeyInfo?.mode === "api-key")
+  ) {
+    return undefined;
+  }
   if (params.runtimeAuthState) {
     // Core streaming consumes the provider-prepared runtime credential from
     // authStorage. A transport-owning harness instead needs the original

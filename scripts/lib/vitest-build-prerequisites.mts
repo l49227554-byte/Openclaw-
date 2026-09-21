@@ -268,7 +268,12 @@ const runtimeConsumers = [
     mode: "runtime" as const,
     dir: "",
   })),
+  // The return-covenant fixture boots successive Gateway generations, and each
+  // one starts the broker/state/SQLite workers. Source-mode worker startup costs
+  // seconds apiece, so without a built runtime the first phase chain alone runs
+  // past its 90s budget; with dist present the whole file settles in ~13s.
   ...[
+    "src/gateway/return-covenant-fixture.gateway.test.ts",
     "src/gateway/server-sidecar-retention.test.ts",
     "src/gateway/server.config-patch.test.ts",
   ].map((file) => ({

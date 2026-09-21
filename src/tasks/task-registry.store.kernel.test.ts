@@ -217,12 +217,14 @@ it("isolates supplied connections and rolls back compound task, flow, delivery, 
     { OPENCLAW_STATE_SCHEMA_SQL },
     { runSqliteImmediateTransactionSync },
     { enableNodeSqliteKyselyStatementCache },
+    bindings,
   ] = await Promise.all([
     import("./task-registry.store.kernel.js"),
     import("./task-flow-registry.store.kernel.js"),
     import("../state/openclaw-state-schema.js"),
     import("../infra/sqlite-transaction.js"),
     import("../infra/kysely-sync.js"),
+    import("../audit/execution-owner-lifecycle-binding-store.js"),
   ]);
   const first = new DatabaseSync(":memory:");
   const second = new DatabaseSync(":memory:");
@@ -258,7 +260,14 @@ it("isolates supplied connections and rolls back compound task, flow, delivery, 
   const origin = { channel: "test-channel", to: "synthetic-target" };
   const snapshot = () => ({
     tasks: tasks.readTaskRegistrySnapshot({ db: first, path: ":memory:" }),
-    flows: flows.readTaskFlowRegistrySnapshot(first),
+    flows: {
+      flows: new Map(
+        [flow.flowId]
+          .map((flowId) => flows.readTaskFlowRecord(first, flowId))
+          .filter((record): record is TaskFlowRecord => record !== undefined)
+          .map((record) => [record.flowId, record]),
+      ),
+    },
     bindings: first
       .prepare("SELECT * FROM execution_owner_lifecycle_bindings ORDER BY owner_kind, owner_id")
       .all(),
@@ -324,7 +333,12 @@ it("isolates supplied connections and rolls back compound task, flow, delivery, 
     expect(tasks.listTaskRecordsByOwnerKeyInDatabase(first, task.ownerKey)).toEqual([task]);
     runSqliteImmediateTransactionSync(first, () => {
       tasks.deleteTaskRowsWithDeliveryState(first, otherTask.taskId);
-      flows.deleteTaskFlowRowInDatabase(first, otherFlow.flowId);
+      first.prepare("DELETE FROM flow_runs WHERE flow_id = ?").run(otherFlow.flowId);
+      bindings.deleteExecutionOwnerLifecycleMetadata({
+        db: first,
+        ownerKind: "flow",
+        ownerIds: [otherFlow.flowId],
+      });
     });
 
     const before = snapshot();
@@ -338,7 +352,14 @@ it("isolates supplied connections and rolls back compound task, flow, delivery, 
           { task: replacement, deliveryState: { taskId: task.taskId, lastNotifiedEventAt: 200 } },
         );
         expect(tasks.bindTaskRunExecutionInDatabase(first, task.taskId, binding)).toBe("bound");
-        expect(flows.bindTaskFlowExecutionInDatabase(first, flow.flowId, binding)).toBe("bound");
+        expect(
+          bindings.bindExecutionOwnerLifecycleMetadata({
+            db: first,
+            ownerKind: "flow",
+            ownerId: flow.flowId,
+            binding,
+          }),
+        ).toBe("bound");
         flows.upsertTaskFlowRowInDatabase(first, flows.bindTaskFlowRecord(nextFlow));
       });
     first.exec(`
@@ -356,7 +377,12 @@ it("isolates supplied connections and rolls back compound task, flow, delivery, 
 
     runSqliteImmediateTransactionSync(first, () => {
       tasks.deleteTaskRowsWithDeliveryState(first, task.taskId);
-      flows.deleteTaskFlowRowInDatabase(first, flow.flowId);
+      first.prepare("DELETE FROM flow_runs WHERE flow_id = ?").run(flow.flowId);
+      bindings.deleteExecutionOwnerLifecycleMetadata({
+        db: first,
+        ownerKind: "flow",
+        ownerIds: [flow.flowId],
+      });
     });
     const deleted = snapshot();
     expect(deleted.tasks.tasks.size).toBe(0);

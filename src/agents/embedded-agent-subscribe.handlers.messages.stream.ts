@@ -3,6 +3,7 @@
  */
 import { asOptionalRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { stripContinuationSignal } from "../auto-reply/continuation/signal.js";
 import {
   parseReplyDirectives,
   type ReplyDirectiveParseResult,
@@ -298,6 +299,16 @@ export function resolveAssistantTextChunk(params: {
   return "";
 }
 
+/** Removes a completed continuation signal from text bound for a display stream. */
+export function stripContinuationSignalFromDisplayText(text: string): string {
+  const stripped = stripContinuationSignal(text);
+  if (stripped.signal) {
+    return stripped.text;
+  }
+  const trailing = splitTrailingDirective(text);
+  return /^\s*(?:\[\[\s*)?CONT/iu.test(trailing.tail) ? trailing.text : text;
+}
+
 function hasDirectiveCodePrefixOpportunity(source: string, delta: string): boolean {
   if (!delta) {
     return false;
@@ -446,8 +457,9 @@ export function resolveStreamingReply(params: {
         },
       },
     );
-    text =
-      params.rawDirectiveSource === undefined ? parsed.text : trimTextPreservingCode(parsed.text);
+    text = stripContinuationSignalFromDisplayText(
+      params.rawDirectiveSource === undefined ? parsed.text : trimTextPreservingCode(parsed.text),
+    );
     if (
       params.evtType !== "text_end" &&
       params.appendDelta !== null &&

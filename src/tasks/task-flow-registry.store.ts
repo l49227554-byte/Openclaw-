@@ -15,8 +15,10 @@ import {
   syncTaskMirroredFlowInSqlite,
   updateTaskFlowRegistryRecordInSqlite,
   upsertTaskFlowRegistryRecordToSqlite,
+  upsertTaskFlowRegistryRecordsToSqlite,
 } from "./task-flow-registry.store.sqlite.js";
 import type {
+  TaskFlowRegistryAtomicWrite,
   TaskFlowRegistryMirroredSync,
   TaskFlowRegistryObservedUpdate,
   TaskFlowRegistryStoreSnapshot,
@@ -47,6 +49,7 @@ type TaskFlowRegistryStore = {
       update: TaskFlowRegistryObservedUpdate,
     ) => TaskFlowRegistryUpdatePublication,
   ) => TaskFlowRegistryUpdateResult;
+  upsertFlowsAtomically?: (write: TaskFlowRegistryAtomicWrite) => boolean;
   deleteFlow: (flowId: string) => void;
   close?: () => void;
 };
@@ -96,6 +99,7 @@ const defaultFlowRegistryStore: TaskFlowRegistryStore = {
   upsertFlow: upsertTaskFlowRegistryRecordToSqlite,
   syncMirroredTask: syncTaskMirroredFlowInSqlite,
   updateFlow: updateTaskFlowRegistryRecordInSqlite,
+  upsertFlowsAtomically: upsertTaskFlowRegistryRecordsToSqlite,
   deleteFlow: deleteTaskFlowRegistryRecordFromSqlite,
   close: closeTaskFlowRegistryDatabase,
 };

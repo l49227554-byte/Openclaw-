@@ -1,90 +1,33 @@
-import type { ReplyMediaAttachment } from "../auto-reply/reply-payload.js";
-import type { SourceReplyDeliveryMode } from "../auto-reply/source-reply-delivery-mode.types.js";
-import type { ChatType } from "../channels/chat-type.js";
-import type { InputProvenance } from "../sessions/input-provenance.js";
 import { sha256Hex } from "./crypto-digest.js";
-import type { DeliveryQueueCompletionRetention } from "./delivery-queue-sqlite.types.js";
 import { generateSecureUuid } from "./secure-random.js";
+import type {
+  QueuedSessionDelivery as CoreQueuedSessionDelivery,
+  QueuedSessionDeliveryPayload as CoreQueuedSessionDeliveryPayload,
+} from "./session-delivery-queue-codec.js";
+
+export type {
+  SessionDeliveryContext,
+  SessionDeliveryRoute,
+  SessionDeliverySettledOutcome,
+} from "./session-delivery-queue-codec.js";
+
+export type QueuedSessionDeliveryPayload =
+  | (Extract<CoreQueuedSessionDeliveryPayload, { kind: "systemEvent" }> & {
+      /** Recipient agent that exclusively owns this durable system event. */
+      agentId?: string;
+    })
+  | Exclude<CoreQueuedSessionDeliveryPayload, { kind: "systemEvent" }>;
+
+type SessionDeliveryStorageFields = { retainOnFailure?: true };
+
+export type QueuedSessionDelivery =
+  | (Extract<CoreQueuedSessionDelivery, { kind: "systemEvent" }> &
+      SessionDeliveryStorageFields & { agentId?: string })
+  | (Exclude<CoreQueuedSessionDelivery, { kind: "systemEvent" }> & SessionDeliveryStorageFields);
 
 // Session delivery queue persists session-scoped messages until channel
 // delivery acknowledges them or recovery exhausts retry policy.
 export const SESSION_DELIVERY_QUEUE_NAME = "session";
-
-type SessionDeliveryOwnerReference = {
-  kind: "subagent_completion";
-  runId: string;
-  taskId: string;
-  generation: number;
-  deadlineAt: number;
-};
-
-type SessionDeliveryContext = {
-  channel?: string;
-  to?: string;
-  accountId?: string;
-  threadId?: string | number;
-};
-
-type SessionDeliveryRetryPolicy = {
-  maxRetries?: number;
-  /** Retain terminal ownership when the durable producer can replay forever. */
-  completionRetention?: DeliveryQueueCompletionRetention;
-};
-
-export type SessionDeliveryRoute = {
-  channel: string;
-  to: string;
-  accountId?: string;
-  replyToId?: string;
-  threadId?: string;
-  chatType: ChatType;
-};
-
-export type SessionDeliverySettledOutcome = "recovered" | "moved-to-failed";
-
-/** Payload variants that can be replayed by session delivery recovery. */
-export type QueuedSessionDeliveryPayload =
-  | ({
-      kind: "systemEvent";
-      sessionKey: string;
-      /** Preserves ownership when a durable event targets the literal global session. */
-      agentId?: string;
-      text: string;
-      deliveryContext?: SessionDeliveryContext;
-      idempotencyKey?: string;
-    } & SessionDeliveryRetryPolicy)
-  | ({
-      kind: "agentTurn";
-      sessionKey: string;
-      message: string;
-      messageId: string;
-      expectedSessionId?: string;
-      route?: SessionDeliveryRoute;
-      deliveryContext?: SessionDeliveryContext;
-      inputProvenance?: InputProvenance;
-      sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
-      expectedMediaUrls?: string[];
-      expectedMediaAttachments?: Record<string, ReplyMediaAttachment>;
-      preparedMediaBlocks?: Record<string, Array<Record<string, unknown>>>;
-      suppressTextDelivery?: true;
-      idempotencyKey?: string;
-      owner?: SessionDeliveryOwnerReference;
-    } & SessionDeliveryRetryPolicy);
-
-export type QueuedSessionDelivery = QueuedSessionDeliveryPayload & {
-  id: string;
-  enqueuedAt: number;
-  agentRunAttempt?: number;
-  lastChargedAgentRunAttempt?: number;
-  retryCount: number;
-  lastAttemptAt?: number;
-  lastError?: string;
-  deliveryStartedAt?: number;
-  acknowledgedAt?: number;
-  settlementOutcome?: SessionDeliverySettledOutcome;
-  availableAt?: number;
-  retainOnFailure?: true;
-};
 
 export function prepareClaimedSessionDelivery(
   params: QueuedSessionDeliveryPayload,

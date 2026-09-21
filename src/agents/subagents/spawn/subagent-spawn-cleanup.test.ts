@@ -14,6 +14,37 @@ function sessionChangedError(): Error {
 }
 
 describe("subagent spawn cleanup identity", () => {
+  it("returns truthful one-shot termination confirmation", async () => {
+    const confirmedGateway = vi.fn(async () => ({
+      ok: true,
+      aborted: true,
+      runIds: ["gateway-run"],
+    }));
+    await expect(
+      terminateAcceptedCollectorRun({
+        childSessionKey: "agent:main:subagent:child",
+        gatewayRunId: "gateway-run",
+        retry: false,
+        sessionCleanup: "preserve",
+        callGateway: confirmedGateway,
+      }),
+    ).resolves.toBe(true);
+
+    const unavailableGateway = vi.fn(async () => {
+      throw new Error("gateway unavailable");
+    });
+    await expect(
+      terminateAcceptedCollectorRun({
+        childSessionKey: "agent:main:subagent:child",
+        gatewayRunId: "gateway-run",
+        retry: false,
+        sessionCleanup: "preserve",
+        callGateway: unavailableGateway,
+      }),
+    ).resolves.toBe(false);
+    expect(unavailableGateway).toHaveBeenCalledOnce();
+  });
+
   it("requires both frozen session identities before deletion", async () => {
     const callGateway = vi.fn();
 

@@ -409,10 +409,11 @@ function resolveCachedSqliteStoreTarget(
 
 export function resolveSqliteStoreScope(
   storePath: string,
-  options: { agentId?: string } = {},
+  options: { agentId?: string; env?: NodeJS.ProcessEnv } = {},
 ): ResolvedSqliteScope {
   return resolveSqliteScope({
     ...(options.agentId ? { agentId: options.agentId } : {}),
+    ...(options.env ? { env: options.env } : {}),
     sessionKey: "",
     storePath,
   });

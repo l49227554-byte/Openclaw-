@@ -5,6 +5,7 @@ import {
   createSubagentSpawnTestConfig,
   loadSubagentSpawnModuleForTest,
   setupAcceptedSubagentGatewayMock,
+  setupCommittedSubagentRegistrationMock,
 } from "./subagent-spawn.test-helpers.js";
 
 type TestAgentConfig = {
@@ -152,6 +153,7 @@ describe("spawnSubagentDirect workspace inheritance", () => {
     resetSubagentRegistryForTests();
     hoisted.callGatewayMock.mockClear();
     hoisted.registerSubagentRunMock.mockClear();
+    setupCommittedSubagentRegistrationMock(hoisted.registerSubagentRunMock);
     hoisted.resolveSandboxRuntimeStatusMock.mockReset();
     hoisted.resolveSandboxRuntimeStatusMock.mockImplementation(() => ({ sandboxed: false }));
     hoisted.hookRunner.hasHooks.mockReset();

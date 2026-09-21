@@ -30,7 +30,10 @@ export function withLegacySessionParticipantsSchema(sql: string): string {
 }
 
 export function migrateSessionParticipantsSchema(database: DatabaseSync, pathname: string): void {
-  if (!tableExists(database, "session_participants")) {
+  if (
+    !tableExists(database, "session_participants") ||
+    tableHasColumn(database, "session_participants", "identity_namespace")
+  ) {
     return;
   }
   assertSqliteSchemaContains(database, pathname, LEGACY_PARTICIPANTS_SCHEMA, {

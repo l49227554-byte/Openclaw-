@@ -1,4 +1,6 @@
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
+import { resolveStateDir } from "../paths.js";
 import {
   clearPluginHostCleanupTarget,
   hasPluginHostCleanupTarget,
@@ -9,8 +11,6 @@ import {
 } from "./plugin-host-cleanup.js";
 import { listSessionEntriesCore, patchSessionEntryCore } from "./session-accessor.entry.js";
 import { applySessionEntryBatchProjection } from "./session-accessor.sqlite-batch-projection.js";
-import "./session-accessor.sqlite-lifecycle.js";
-import "./session-accessor.sqlite-projection.js";
 import type {
   SessionPatchProjectionSnapshot,
   SessionPatchProjectionTarget,
@@ -24,13 +24,66 @@ import {
   SessionLabelOwnerIndex,
 } from "./session-entry-selection.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
-export {
-  cleanupSessionLifecycleArtifactsCore,
-  deleteSessionEntryLifecycle,
-  rollbackAgentHarnessSessionEntryLifecycle,
-  rollbackPluginOwnedSessionEntryLifecycle,
-  resetSessionEntryLifecycle,
-} from "./session-accessor.sqlite-lifecycle.js";
+
+type SqliteLifecycleRuntime = typeof import("./session-accessor.sqlite-lifecycle.js");
+
+const loadSqliteLifecycleRuntime = createLazyRuntimeModule<SqliteLifecycleRuntime>(
+  () => import("./session-accessor.sqlite-lifecycle.js"),
+);
+
+/**
+ * Pins the state owner for one lifecycle call.
+ *
+ * Must run in the caller's synchronous frame. The lazy runtime load below is an
+ * await, so a caller that mutates `OPENCLAW_STATE_DIR` after calling would
+ * otherwise redirect work whose owner was already selected — the static import
+ * this replaced resolved the owner before any suspension.
+ */
+function captureLifecycleParams<T extends { env?: NodeJS.ProcessEnv }>(
+  params: T,
+): T & { env: NodeJS.ProcessEnv } {
+  const env = { ...(params.env ?? process.env) };
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  return { ...params, env };
+}
+
+export const cleanupSessionLifecycleArtifactsCore: SqliteLifecycleRuntime["cleanupSessionLifecycleArtifactsCore"] =
+  async (params) => {
+    const captured = captureLifecycleParams(params);
+    const runtime = await loadSqliteLifecycleRuntime();
+    return await runtime.cleanupSessionLifecycleArtifactsCore(captured);
+  };
+
+export const deleteSessionEntryLifecycle: SqliteLifecycleRuntime["deleteSessionEntryLifecycle"] =
+  async (params) => {
+    const captured = captureLifecycleParams(params);
+    const runtime = await loadSqliteLifecycleRuntime();
+    return await runtime.deleteSessionEntryLifecycle(captured);
+  };
+
+export const resetSessionEntryLifecycle: SqliteLifecycleRuntime["resetSessionEntryLifecycle"] =
+  async (params) => {
+    const captured = captureLifecycleParams(params);
+    const runtime = await loadSqliteLifecycleRuntime();
+    return await runtime.resetSessionEntryLifecycle(captured);
+  };
+
+export const rollbackAgentHarnessSessionEntryLifecycle: SqliteLifecycleRuntime["rollbackAgentHarnessSessionEntryLifecycle"] =
+  async (params) => {
+    const captured = captureLifecycleParams(params);
+    const runtime = await loadSqliteLifecycleRuntime();
+    return await runtime.rollbackAgentHarnessSessionEntryLifecycle(captured);
+  };
+
+export const rollbackPluginOwnedSessionEntryLifecycle: SqliteLifecycleRuntime["rollbackPluginOwnedSessionEntryLifecycle"] =
+  async (params) => {
+    const captured = captureLifecycleParams(params);
+    const runtime = await loadSqliteLifecycleRuntime();
+    return await runtime.rollbackPluginOwnedSessionEntryLifecycle(captured);
+  };
+
+// Session lifecycle storage is canonical SQLite; projection exports remain on
+// their actual transaction owner while row-lifecycle work is loaded on demand.
 export {
   applySessionEntryLifecycleMutation,
   applySessionEntryReplacements,

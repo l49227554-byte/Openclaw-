@@ -23,7 +23,13 @@ import {
 } from "../reply-payload.js";
 import { renderPostCompactionModelFailurePayload } from "./agent-runner-failure-reply.js";
 import { recoverBlockReplySources, setBlockReplyDelivery } from "./block-reply-delivery.js";
-import { createBlockReplyContentKey } from "./block-reply-pipeline.js";
+import {
+  blockReplyAttemptSourcesCoverPayload,
+  createBlockReplyContentKey,
+  getBlockReplyAttemptGroups,
+  type RoutedBlockReplyDelivery as BlockDelivery,
+  type RoutedBlockReplyDeliveryAttempt as BlockDeliveryAttempt,
+} from "./block-reply-pipeline.js";
 import {
   DispatchReplyOperationAbortedError,
   runWithDispatchAbortSignal,
@@ -200,14 +206,18 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
   };
   const deferFinalTtsText = shouldDeferFinalTtsText(captionedFinalTtsContext);
   const cleanDeferredFinalDirectives = shouldCleanTtsDirectiveText(captionedFinalTtsContext);
-  type BlockDelivery = { outcome: ReplyDispatchDeliveryOutcome; pending?: boolean };
-  const blockDeliveryOutcomes = new Map<string, Array<Promise<BlockDelivery>>>();
+  const blockDeliveryAttemptsByMessage = new Map<number | undefined, BlockDeliveryAttempt[]>();
   const recordBlockOutcome = (payload: ReplyPayload, outcome: Promise<BlockDelivery>) => {
     setBlockReplyDelivery(outcome, payload);
-    const key = createBlockReplyContentKey(payload);
-    const outcomes = blockDeliveryOutcomes.get(key) ?? [];
-    outcomes.push(outcome);
-    blockDeliveryOutcomes.set(key, outcomes);
+    const assistantMessageIndex = getReplyPayloadMetadata(payload)?.assistantMessageIndex;
+    const attempts = blockDeliveryAttemptsByMessage.get(assistantMessageIndex) ?? [];
+    const reply = resolveSendableOutboundReplyParts(payload);
+    attempts.push({
+      contentKey: createBlockReplyContentKey(payload),
+      source: getReplyPayloadMetadata(payload)?.blockSourceText ?? reply.trimmedText,
+      delivery: outcome,
+    });
+    blockDeliveryAttemptsByMessage.set(assistantMessageIndex, attempts);
   };
   const sendTrackedBlockReply = (operation: ReplyDispatchOperation) => {
     const payload = operation.kind === "prepared" ? operation.plan.payload : operation.payload;
@@ -250,16 +260,42 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
     payload: ReplyPayload,
     abortSignal?: AbortSignal,
   ): Promise<BlockDelivery | undefined> => {
-    const outcomes = blockDeliveryOutcomes.get(createBlockReplyContentKey(payload));
-    if (!outcomes || abortSignal?.aborted) {
+    if (abortSignal?.aborted) {
       return undefined;
     }
-    const settled = await runWithDispatchAbortSignal(abortSignal, () => Promise.all(outcomes));
-    return (
-      settled.find(({ outcome }) => outcome === "delivered") ??
-      settled.find(({ outcome, pending }) => pending || !shouldRetryReplyDispatch(outcome)) ??
-      settled[0]
-    );
+    const contentKey = createBlockReplyContentKey(payload);
+    for (const group of getBlockReplyAttemptGroups(blockDeliveryAttemptsByMessage, payload)) {
+      const exactAttempts = group.filter((attempt) => attempt.contentKey === contentKey);
+      const matchingAttempts =
+        exactAttempts.length > 0
+          ? exactAttempts
+          : blockReplyAttemptSourcesCoverPayload(
+                payload,
+                group.map((attempt) => attempt.source),
+              )
+            ? group
+            : [];
+      if (matchingAttempts.length === 0) {
+        continue;
+      }
+      const settled = await runWithDispatchAbortSignal(abortSignal, () =>
+        Promise.all(matchingAttempts.map((attempt) => attempt.delivery)),
+      );
+      if (exactAttempts.length === 0) {
+        const retryable = settled.find(
+          ({ outcome, pending }) => !pending && shouldRetryReplyDispatch(outcome),
+        );
+        if (retryable) {
+          return retryable;
+        }
+      }
+      return (
+        settled.find(({ outcome }) => outcome === "delivered") ??
+        settled.find(({ outcome, pending }) => pending || !shouldRetryReplyDispatch(outcome)) ??
+        settled[0]
+      );
+    }
+    return undefined;
   };
   const sendFinalPayload = async (
     inputPayload: ReplyPayload,

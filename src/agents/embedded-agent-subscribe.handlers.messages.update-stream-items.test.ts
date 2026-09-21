@@ -134,7 +134,7 @@ describe("handleMessageUpdate text signatures", () => {
 
     expect(flushBlockReplyBuffer.mock.calls).toEqual([
       [{ assistantMessageIndex: 0 }],
-      [{ assistantMessageIndex: 0, final: true }],
+      [{ assistantMessageIndex: 0, deferPendingToolMedia: false, final: true }],
     ]);
     expect(resetAssistantMessageState).toHaveBeenCalledTimes(1);
     expect(onAssistantMessageStart).toHaveBeenCalledTimes(1);

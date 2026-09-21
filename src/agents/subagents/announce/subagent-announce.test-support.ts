@@ -10,6 +10,7 @@ import type { EmbeddedAgentQueueMessageOutcome } from "../../embedded-agent-runn
 
 type DeliveryRuntimeMockOptions = {
   callGateway: (request: unknown) => Promise<unknown>;
+  dispatchGatewayMethodInProcess?: typeof dispatchGatewayMethodInProcess;
   getRuntimeConfig: () => OpenClawConfig;
   loadSessionStore: (storePath: string) => unknown;
   resolveAgentIdFromSessionKey: (sessionKey: string) => string;
@@ -60,17 +61,19 @@ export function createSubagentAnnounceDeliveryRuntimeMock(options: DeliveryRunti
   return {
     callGateway: (async <T = Record<string, unknown>>(request: Parameters<typeof callGateway>[0]) =>
       (await options.callGateway(request)) as T) as typeof callGateway,
-    dispatchGatewayMethodInProcess: (async <T = Record<string, unknown>>(
-      method: string,
-      params: Record<string, unknown>,
-      callOptions?: { expectFinal?: boolean; timeoutMs?: number },
-    ) =>
-      (await options.callGateway({
-        method,
-        params,
-        expectFinal: callOptions?.expectFinal,
-        timeoutMs: callOptions?.timeoutMs,
-      })) as T) as typeof dispatchGatewayMethodInProcess,
+    dispatchGatewayMethodInProcess:
+      options.dispatchGatewayMethodInProcess ??
+      ((async <T = Record<string, unknown>>(
+        method: string,
+        params: Record<string, unknown>,
+        callOptions?: { expectFinal?: boolean; timeoutMs?: number },
+      ) =>
+        (await options.callGateway({
+          method,
+          params,
+          expectFinal: callOptions?.expectFinal,
+          timeoutMs: callOptions?.timeoutMs,
+        })) as T) as typeof dispatchGatewayMethodInProcess),
     getRuntimeConfig: options.getRuntimeConfig,
     loadSessionEntry: (scope: { storePath?: string; sessionKey: string }) =>
       (options.loadSessionStore(scope.storePath ?? "") as Record<string, unknown>)[

@@ -1,18 +1,18 @@
 /** Session update helpers for skill snapshots and completed compaction accounting. */
 import crypto from "node:crypto";
+import { asNonNegativeFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import type { EmbeddedAgentCompactResult } from "../../agents/embedded-agent-runner/types.js";
 import {
   type ExecPolicyOverrides,
   resolveNodeExecEligibility,
 } from "../../agents/exec-defaults.js";
-import type { SessionEntry } from "../../config/sessions.js";
+import { mergeSessionEntry, type SessionEntry } from "../../config/sessions.js";
 import {
   loadSessionEntry,
   patchSessionEntryCore,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { projectCompactionAccountingPatch } from "../../config/sessions/session-entry-projection.js";
-import { projectCanonicalSessionEntryShape } from "../../config/sessions/store-entry-shape.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
@@ -305,6 +305,8 @@ export async function incrementCompactionCount(params: {
   now?: number;
   amount?: number;
   tokensAfter?: number;
+  /** Session id after compaction when a context engine changed identity. */
+  newSessionId?: string;
   compactionKind?: EmbeddedAgentCompactResult["compactionKind"];
   expectedSession?: Pick<
     InternalSessionEntry,
@@ -329,6 +331,11 @@ export async function incrementCompactionCount(params: {
     lifecycleRevision: initial.lifecycleRevision,
     activeWriterRunId: initial.activeWriterRunId,
   };
+  const incrementBy = Math.max(0, params.amount ?? 1);
+  const resolvedTokensAfter = asNonNegativeFiniteNumber(params.tokensAfter);
+  const tokensAfter =
+    resolvedTokensAfter === undefined ? undefined : Math.floor(resolvedTokensAfter);
+  const now = params.now ?? Date.now();
   const update = (current: InternalSessionEntry): Partial<InternalSessionEntry> | null => {
     if (
       !(authorize?.() ?? true) ||
@@ -339,7 +346,15 @@ export async function incrementCompactionCount(params: {
       return null;
     }
     // The writer-serialized row owns the count, not the caller's pre-await cache.
-    return projectCompactionAccountingPatch(current, params);
+    return projectCompactionAccountingPatch(current, {
+      amount: incrementBy,
+      compactionKind: params.compactionKind,
+      now,
+      tokensAfter,
+      newSessionId: params.newSessionId,
+      sessionKey,
+      transcriptByteCompactionLatch: params.transcriptByteCompactionLatch,
+    });
   };
   if (storePath) {
     let committed = false;
@@ -383,7 +398,7 @@ export async function incrementCompactionCount(params: {
   if (!sessionStore || !cachedEntry || !patch) {
     return undefined;
   }
-  const nextEntry = projectCanonicalSessionEntryShape({ ...cachedEntry, ...patch });
+  const nextEntry = mergeSessionEntry(cachedEntry, patch, { now });
   sessionStore[sessionKey] = nextEntry;
   return nextEntry.compactionCount;
 }

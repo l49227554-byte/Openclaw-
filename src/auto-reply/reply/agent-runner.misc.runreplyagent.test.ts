@@ -269,7 +269,9 @@ describe("runReplyAgent auto-compaction token update", () => {
     options?: {
       agentEvents?: Array<{ stream: string; data: Record<string, unknown> }>;
       config?: OpenClawConfig;
+      isHeartbeat?: boolean;
       onBlockReply?: (payload: unknown) => Promise<void> | void;
+      reasoningPayloadsEnabled?: boolean;
       onAgentRunTerminalOutcome?: (outcome: "completed" | "failed") => void;
     },
   ) {
@@ -303,6 +305,9 @@ describe("runReplyAgent auto-compaction token update", () => {
       };
     });
 
+    if (options?.config) {
+      setRuntimeConfigSnapshot(options.config);
+    }
     return createBaseRun({
       run: {
         agentId: "main",
@@ -311,10 +316,20 @@ describe("runReplyAgent auto-compaction token update", () => {
         reasoningLevel: "on",
       },
       reply: {
-        opts: {
-          onBlockReply: options?.onBlockReply,
-          onAgentRunTerminalOutcome: options?.onAgentRunTerminalOutcome,
-        },
+        opts:
+          options?.onBlockReply ||
+          options?.isHeartbeat ||
+          options?.reasoningPayloadsEnabled ||
+          options?.onAgentRunTerminalOutcome
+            ? {
+                ...(options.onBlockReply ? { onBlockReply: options.onBlockReply } : {}),
+                ...(options.isHeartbeat ? { isHeartbeat: true } : {}),
+                ...(options.reasoningPayloadsEnabled ? { reasoningPayloadsEnabled: true } : {}),
+                ...(options.onAgentRunTerminalOutcome
+                  ? { onAgentRunTerminalOutcome: options.onAgentRunTerminalOutcome }
+                  : {}),
+              }
+            : undefined,
         sessionEntry,
         sessionStore: { [sessionKey]: sessionEntry },
         sessionKey,
@@ -324,6 +339,7 @@ describe("runReplyAgent auto-compaction token update", () => {
 
   async function runBaseReplyWithAgentMeta(params: {
     agentMeta: Record<string, unknown>;
+    lastTurnCompactions?: number;
     collectDiagnostics?: boolean;
     config?: OpenClawConfig;
     tmpPrefix: string;
@@ -344,6 +360,9 @@ describe("runReplyAgent auto-compaction token update", () => {
       payloads: [{ text: "ok" }],
       meta: {
         agentMeta: params.agentMeta,
+        ...(params.lastTurnCompactions !== undefined
+          ? { contextManagement: { lastTurnCompactions: params.lastTurnCompactions } }
+          : {}),
       },
     });
 
@@ -717,6 +736,35 @@ describe("runReplyAgent auto-compaction token update", () => {
     expect(onBlockReply).not.toHaveBeenCalled();
   });
 
+  it("keeps continuation-only direct replies silent", async () => {
+    const result = await runEmptyDirectReply(
+      {
+        payloads: [],
+        meta: { agentMeta: {}, finalAssistantRawText: "CONTINUE_WORK:5" },
+      },
+      {
+        config: {
+          agents: {
+            defaults: {
+              continuation: { enabled: true },
+            },
+          },
+        },
+      },
+    );
+
+    expect(result).toBeUndefined();
+  });
+
+  it("keeps empty heartbeat replies silent", async () => {
+    const result = await runEmptyDirectReply(
+      { meta: { agentMeta: {} } },
+      { isHeartbeat: true, reasoningPayloadsEnabled: true },
+    );
+
+    expect(result).toBeUndefined();
+  });
+
   it("surfaces terminal direct failures after runtime compaction progress", async () => {
     const onBlockReply = vi.fn();
     const result = await runEmptyDirectReply(
@@ -809,9 +857,11 @@ describe("runReplyAgent auto-compaction token update", () => {
 
     vi.mocked(scheduleFollowupDrain).mockImplementation((key) => {
       const events = peekSystemEvents(resolveSystemEventQueueKey(key, "main"));
-      expect(events).toHaveLength(1);
+      expect(events).toHaveLength(2);
       expect(events[0]).toContain("Read the queued workspace startup file.");
       expect(events[0]).toContain("Never skip startup context after compaction.");
+      expect(events[1]).toContain("[system:post-compaction] Session compacted");
+      expect(events[1]).toContain("Queued 0 post-compaction delegate(s)");
     });
 
     await createBaseRun({
@@ -1133,6 +1183,7 @@ describe("runReplyAgent auto-compaction token update", () => {
       const { sessionKey, stored } = await runBaseReplyWithAgentMeta({
         tmpPrefix: "openclaw-post-compaction-workspace-root-",
         workspaceDir,
+        lastTurnCompactions: compactionCount,
         config: {
           agents: {
             defaults: {
@@ -1159,11 +1210,13 @@ describe("runReplyAgent auto-compaction token update", () => {
         },
       });
       const events = peekSystemEvents(resolveSystemEventQueueKey(sessionKey, "main"));
-      expect(events).toHaveLength(compactionCount);
+      expect(events).toHaveLength(compactionCount > 0 ? 2 : 0);
       if (compactionCount > 0) {
         expect(events[0]).toContain("Post-compaction context refresh");
         expect(events[0]).toContain("Read the queued workspace startup file.");
         expect(events[0]).toContain("Never use the process cwd for this refresh.");
+        expect(events[1]).toContain("[system:post-compaction] Session compacted");
+        expect(events[1]).toContain("Queued 0 post-compaction delegate(s)");
       }
       // Result metadata can report presentation-only compaction, not durable writer custody.
       expect(stored).toHaveProperty([sessionKey, "sessionId"], "session");

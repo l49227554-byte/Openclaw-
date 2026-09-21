@@ -173,6 +173,7 @@ function createTestContext(): {
       onToolResult: undefined,
     },
     flushBlockReplyBuffer: vi.fn(),
+    getBlockReplyDeliveryGeneration: () => 0,
     hookRunner: undefined,
     log: {
       debug: vi.fn(),

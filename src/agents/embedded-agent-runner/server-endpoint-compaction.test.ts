@@ -246,6 +246,13 @@ describe("attemptServerEndpointCompaction", () => {
     expect(requestPreparedCompactionMock).not.toHaveBeenCalled();
   });
 
+  it("keeps volitional compaction on the manual endpoint policy", async () => {
+    const { result } = attempt({ trigger: "volitional", model: openAIModel });
+
+    await expect(result).resolves.toBeUndefined();
+    expect(requestPreparedCompactionMock).not.toHaveBeenCalled();
+  });
+
   it("leaves a missing canonical checkpoint window to client budget compaction", async () => {
     const session = createSession();
     const owner = session.messages.at(-1);

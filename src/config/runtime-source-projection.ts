@@ -49,7 +49,7 @@ export function projectConfigOntoRuntimeSourceSnapshot(config: OpenClawConfig): 
     runtimeConfigSourceSnapshot,
     runtimeConfigSnapshot,
     config,
-  ) as OpenClawConfig;
+  ) as OpenClawConfig; // SAFETY: projection preserves the validated OpenClawConfig object shape.
 }
 
 /** Projects partial legacy inputs without persisting deleted runtime-only parents. */

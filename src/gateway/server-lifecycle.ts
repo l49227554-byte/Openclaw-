@@ -557,6 +557,7 @@ export async function prepareGatewayLifecycle(params: {
               nodePresenceTimers,
               maintenance: runtimeState.maintenance,
               stopMediaCleanup: stopMediaCleanupForClose,
+              delegateArtifactCleanup: runtimeState.delegateArtifactCleanup,
               agentUnsub: runtimeState.agentUnsub,
               heartbeatUnsub: runtimeState.heartbeatUnsub,
               transcriptUnsub: runtimeState.transcriptUnsub,

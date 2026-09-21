@@ -1,7 +1,6 @@
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
-import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import {
   ensureCompletionState,
   ensureDeliveryState,
@@ -485,10 +484,6 @@ export const startSubagentAnnounceCleanupFlow = (
             // a successor that reused this child session after cleanup yielded.
             suppressChildSessionEffects();
           } else {
-            // This durable boundary prevents a late yield from reviving a run
-            // after deletion may already have reached the gateway.
-            entry.deleteCleanupDispatchedAt ??= Date.now();
-            params.persist(runId);
             const sessionCleanup = await deleteSubagentSessionForCleanup({
               callGateway: params.callGateway,
               gatewayBinding: { resolveGatewayContext: getGatewayContextResolver(entry) },
@@ -497,6 +492,12 @@ export const startSubagentAnnounceCleanupFlow = (
               spawnMode: entry.spawnMode,
               expectedSessionId: cleanupSessionIdentity.sessionId,
               expectedLifecycleRevision: cleanupSessionIdentity.lifecycleRevision,
+              // Fence late yields only after continuation guards settle, at the
+              // exact handoff to sessions.delete.
+              onBeforeDispatch: () => {
+                entry.deleteCleanupDispatchedAt ??= Date.now();
+                params.persist(runId);
+              },
               onError: (error) =>
                 params.warn("sessions.delete failed during subagent cleanup", {
                   error: buildSafeLifecycleErrorMeta(error),
@@ -572,10 +573,11 @@ export const startSubagentAnnounceCleanupFlow = (
 
   const announceParams: Parameters<RunSubagentAnnounceFlow>[0] = {
     childSessionKey: pendingPayload.childSessionKey,
+    childAgentId: pendingPayload.childAgentId,
     childRunId: pendingPayload.childRunId,
     runTimeoutSeconds: entry.runTimeoutSeconds,
     requesterSessionKey: pendingPayload.requesterSessionKey,
-    requesterAgentId: resolveSubagentRequesterAgentId(params.getRuntimeConfig(), entry),
+    requesterAgentId: pendingPayload.requesterAgentId,
     requesterOrigin,
     requesterDisplayKey: pendingPayload.requesterDisplayKey,
     task: pendingPayload.task,

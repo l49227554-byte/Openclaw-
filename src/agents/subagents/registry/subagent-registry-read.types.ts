@@ -6,9 +6,11 @@ import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.j
 
 export type PendingFinalDeliveryPayload = {
   requesterSessionKey: string;
+  requesterAgentId?: string;
   requesterOrigin?: DeliveryContext;
   requesterDisplayKey: string;
   childSessionKey: string;
+  childAgentId?: string;
   childRunId: string;
   task: string;
   label?: string;
@@ -101,6 +103,8 @@ export type SubagentRunReadRecord = {
   requesterSessionKey: string;
   /** Effective requester agent, including cron/hook overrides not encoded in the session key. */
   requesterAgentId?: string;
+  /** Validated child-session owner captured at spawn; never supplied by the model. */
+  agentId?: string;
   requesterStorePath?: string;
   controllerStorePath?: string;
   model?: string;

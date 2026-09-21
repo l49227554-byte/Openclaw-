@@ -354,6 +354,7 @@ const COMPACT_NODE_TEST_OWNER_RUNNERS = new Map([
 const AUTO_REPLY_COMMANDS_STRIPES = 3;
 const AGENTS_CORE_RUNNER_CLI_STRIPES = 3;
 const AGENTIC_GATEWAY_CORE_STRIPES = 3;
+const RETURN_COVENANT_GATEWAY_TEST_FILE = "src/gateway/return-covenant-fixture.gateway.test.ts";
 const CORE_RUNTIME_MEDIA_UI_STRIPES = 3;
 const CORE_UNIT_SRC_SECURITY_STRIPES = 3;
 const UNIT_FAST_NODE_TEST_STRIPES = 2;
@@ -1556,7 +1557,10 @@ function resolveGatewayServerShardName(file: string): string {
 
 function createGatewayServerSplitShards(): NodeTestSplitShard[] {
   const groups = new Map<string, string[]>();
-  for (const file of listTestFiles("src/gateway").filter(isGatewayServerTestFile)) {
+  for (const file of listTestFiles("src/gateway").filter(
+    (candidate) =>
+      candidate !== RETURN_COVENANT_GATEWAY_TEST_FILE && isGatewayServerTestFile(candidate),
+  )) {
     const shardName = resolveGatewayServerShardName(file);
     groups.set(shardName, [...(groups.get(shardName) ?? []), file]);
   }
@@ -1670,6 +1674,7 @@ function resolveInfraShardName(file: string): string {
   if (
     name.startsWith("archive") ||
     name.startsWith("backup") ||
+    name.startsWith("continuation-tracer") ||
     name.startsWith("diagnostic") ||
     name.startsWith("diagnostics")
   ) {
@@ -2041,6 +2046,7 @@ function createAgenticGatewayCoreSplitShards(): NodeTestSplitShard[] {
     ...gatewayDatabaseWorkerTestFiles,
     ...gatewayServerExcludedTestFiles,
     ...gatewayServerIsolatedTestFiles,
+    RETURN_COVENANT_GATEWAY_TEST_FILE,
   ]);
   const gatewayFiles = listTestFiles("src/gateway").filter(
     (file) =>
@@ -2089,6 +2095,12 @@ function createAgenticGatewayCoreSplitShards(): NodeTestSplitShard[] {
           },
         ]
       : []),
+    {
+      configs: ["test/vitest/vitest.gateway-server.config.ts"],
+      includePatterns: [RETURN_COVENANT_GATEWAY_TEST_FILE],
+      requiresDist: false,
+      shardName: "agentic-gateway-return-covenant",
+    },
   ];
 }
 

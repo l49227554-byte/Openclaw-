@@ -11,6 +11,7 @@ import { resolveDiagnosticModelContentCapturePolicy } from "../infra/diagnostic-
 import {
   createChildDiagnosticTraceContext,
   freezeDiagnosticTraceContext,
+  runWithDiagnosticTraceContext,
 } from "../infra/diagnostic-trace-context.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
@@ -48,6 +49,7 @@ import {
   adjustedParamsByToolCallId,
   buildAdjustedParamsKey,
   clearTrackedToolExecution,
+  cloneParamsForAdjustedReplay,
   preExecutionBlockedToolCallIds,
   recordStructuredReplaySafeToolCall,
   recordToolExecutionStarted,
@@ -227,16 +229,6 @@ export function recordAdjustedParamsForToolCall(
   pruneMapToMaxSize(adjustedParamsByToolCallId, MAX_TRACKED_ADJUSTED_PARAMS);
 }
 
-function cloneParamsForAdjustedReplay(
-  params: unknown,
-): { ok: true; value: unknown } | { ok: false } {
-  try {
-    return { ok: true, value: structuredClone(params) };
-  } catch {
-    return { ok: false };
-  }
-}
-
 /** Record that one concrete core-owned tool call may use structured replay classification. */
 export function recordStructuredReplayTrustForToolCall(
   toolCallId: string | undefined,
@@ -306,6 +298,7 @@ export function wrapToolWithBeforeToolCallHook(
   if (!execute) {
     return tool;
   }
+  const forwardedExecute = execute as ForwardedToolExecution;
   const toolName = tool.name || "tool";
   const admitExecution = captureAgentToolExecutionBudget();
   const diagnosticIdentity = resolveToolDiagnosticIdentity(tool);
@@ -549,7 +542,12 @@ export function wrapToolWithBeforeToolCallHook(
         let result: Awaited<ReturnType<ForwardedToolExecution>>;
         try {
           const args = [toolCallId, executeParams, signal, forwardedOnUpdate, ...executionArgs];
-          const invoke = () => liveness.run(() => (execute as ForwardedToolExecution)(...args));
+          const invoke = () =>
+            liveness.run(() =>
+              trace
+                ? runWithDiagnosticTraceContext(trace, () => forwardedExecute(...args))
+                : forwardedExecute(...args),
+            );
           result = outcome.ownerDecision
             ? await invoke()
             : await runWithGenericToolActionDecision(tool, toolCallId, invoke);

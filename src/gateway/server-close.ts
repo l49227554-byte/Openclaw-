@@ -258,6 +258,7 @@ export type GatewayCloseParams = {
   nodePresenceTimers: Map<string, ReturnType<typeof setInterval>>;
   maintenance: GatewayMaintenanceHandles | null;
   stopMediaCleanup: () => Promise<MediaCleanupStopResult>;
+  delegateArtifactCleanup: ReturnType<typeof setInterval> | null;
   agentUnsub: (() => Promise<void> | void) | null;
   heartbeatUnsub: (() => void) | null;
   transcriptUnsub: (() => void) | null;
@@ -489,6 +490,13 @@ async function closeGatewayResources(
         }),
       ]);
     });
+    // Continuation: the delegate-artifact GC interval is owned by
+    // server-runtime-handles, not by the maintenance handles, so upstream's
+    // stopPeriodicTasks() cannot reach it. Everything else this block used to
+    // clear is now inside stopPeriodicTasks / skillUsageCleanup below.
+    if (params.delegateArtifactCleanup) {
+      clearInterval(params.delegateArtifactCleanup);
+    }
     await shutdownStep(
       "periodic-maintenance",
       () => params.maintenance?.stopPeriodicTasks(),

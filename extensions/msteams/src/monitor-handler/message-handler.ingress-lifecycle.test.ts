@@ -266,7 +266,7 @@ describe("Microsoft Teams drain claim ownership", () => {
     expect(lifecycle.abandonedCount()).toBe(0);
   });
 
-  it("preserves abandon retry accounting, backoff, threshold, and restart behavior", async () => {
+  it("retries abandonment with backoff, then dead-letters without restart redispatch", async () => {
     vi.useFakeTimers();
     const now = Date.UTC(2026, 0, 2);
     vi.setSystemTime(now);
@@ -357,24 +357,37 @@ describe("Microsoft Teams drain claim ownership", () => {
       const threshold = createIntegratedIngress();
       threshold.start();
       await threshold.accept(incoming);
-      const thresholdAttempt = await expectPendingAttempt(DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS);
+      await vi.waitFor(async () => {
+        expect(await queue.listFailed?.()).toEqual([
+          expect.objectContaining({
+            id: "activity-abandon",
+            attempts: DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS - 1,
+            reason: "retry-limit-exceeded",
+            message: "turn-abandoned",
+          }),
+        ]);
+      });
+      expect(await queue.listPending()).toEqual([]);
+      expect(await queue.listClaims()).toEqual([]);
       expect(dispatchMock).toHaveBeenCalledTimes(3);
       await threshold.stop();
 
-      vi.setSystemTime(thresholdAttempt.lastAttemptAt + 128_001);
+      vi.setSystemTime(Date.now() + 128_001);
       const beyond = createIntegratedIngress();
       beyond.start();
       await beyond.accept(incoming);
-      const beyondAttempt = await expectPendingAttempt(DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS + 1);
-      expect(dispatchMock).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await queue.listPending()).toEqual([]);
+      expect(await queue.listFailed?.()).toHaveLength(1);
+      expect(dispatchMock).toHaveBeenCalledTimes(3);
       await beyond.stop();
 
-      vi.setSystemTime(beyondAttempt.lastAttemptAt + 1_000);
+      vi.setSystemTime(Date.now() + 1_000);
       const blockedRestart = createIntegratedIngress();
       blockedRestart.start();
       await blockedRestart.accept(incoming);
       await vi.advanceTimersByTimeAsync(0);
-      expect(dispatchMock).toHaveBeenCalledTimes(4);
+      expect(dispatchMock).toHaveBeenCalledTimes(3);
       await blockedRestart.stop();
     } finally {
       dispatchMock.mockReset();

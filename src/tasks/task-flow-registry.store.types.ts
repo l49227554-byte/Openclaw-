@@ -33,3 +33,21 @@ export type TaskFlowRegistryUpdatePublication = {
 export type TaskFlowRegistryStoreSnapshot = {
   flows: Map<string, TaskFlowRecord>;
 };
+
+type TaskFlowRegistryAtomicChange = {
+  flow: TaskFlowRecord;
+  expectedRevision?: number;
+};
+
+export type TaskFlowRegistryAtomicOwnerCondition = {
+  ownerKey: string;
+  controllerId: string;
+  statuses: readonly TaskFlowRecord["status"][];
+  expectedFlows: ReadonlyArray<Pick<TaskFlowRecord, "flowId" | "revision" | "status">>;
+  excludeCancelRequested?: boolean;
+};
+
+export type TaskFlowRegistryAtomicWrite = {
+  changes: readonly TaskFlowRegistryAtomicChange[];
+  ownerCondition?: TaskFlowRegistryAtomicOwnerCondition;
+};

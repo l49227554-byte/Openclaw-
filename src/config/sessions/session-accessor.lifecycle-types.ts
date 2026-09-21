@@ -11,6 +11,8 @@ export type SessionResetBoundaryWrite = SessionResetBoundaryRequest & { cwd: str
 
 export type SessionLifecycleArtifactCleanupParams = {
   agentId?: string;
+  /** Captured caller environment for state-owner resolution across async lazy loading. */
+  env?: NodeJS.ProcessEnv;
   storePath: string;
   archiveRemovedEntryTranscripts?: boolean;
   /** Preserve explicitly foreign plugin-owned state while retaining ownerless legacy rows. */
@@ -55,6 +57,8 @@ export type ResetSessionEntryLifecycleMutation = Omit<
 export type ResetSessionEntryLifecycleParams = {
   /** Revalidate caller authority before preparation and synchronous reset commit. */
   commitGuard?: () => void;
+  /** Captured caller environment for state-owner resolution across async lazy loading. */
+  env?: NodeJS.ProcessEnv;
   /** Preserve legacy rotation archival unless the caller appended an in-log boundary. */
   archivePreviousTranscript?: boolean;
   /** Runs after the persisted entry changes and any requested archival completes. */
@@ -88,6 +92,8 @@ export type DeleteSessionEntryLifecycleParams = {
    * Must not write the deleting agent database: its Worker may hold the transaction lock.
    */
   commitGuard?: () => void;
+  /** Captured caller environment for state-owner resolution across async lazy loading. */
+  env?: NodeJS.ProcessEnv;
   /** Agent owner used to resolve backend transcript artifacts. */
   agentId?: string;
   /** Whether transcript artifacts should be archived/deleted with the entry. */

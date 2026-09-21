@@ -352,9 +352,14 @@ describe("test runtime prerequisites", () => {
     ["gateway-core", ["gateway-*.test.ts"], undefined],
     ["gateway-server", ["server-sidecar-retention.test.ts"], "runtime"],
     ["gateway-server", ["server.config-patch.test.ts"], "runtime"],
+    ["gateway-server", ["return-covenant-fixture.gateway.test.ts"], "runtime"],
     [
       "gateway-server",
-      ["server-sidecar-retention.test.ts", "server.config-patch.test.ts"],
+      [
+        "return-covenant-fixture.gateway.test.ts",
+        "server-sidecar-retention.test.ts",
+        "server.config-patch.test.ts",
+      ],
       undefined,
     ],
     ["gateway", ["gateway-*.test.ts"], "runtime"],

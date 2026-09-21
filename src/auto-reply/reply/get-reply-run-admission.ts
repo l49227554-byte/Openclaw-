@@ -58,7 +58,11 @@ import {
   isSlackDirectRoutedThreadTurn,
   resolveRoutedDeliveryThreadId,
 } from "./routed-delivery-thread.js";
-import { drainFormattedSystemEvents } from "./session-system-events.js";
+import {
+  resolveFinalSystemEventAdoption,
+  type PreparedManagedSystemEventDelivery,
+} from "./session-system-event-adoption.js";
+import { prepareFormattedSystemEvents } from "./session-system-events.js";
 import { getReplySystemEventContext } from "./system-event-session-key.js";
 
 export async function prepareReplyRunAdmission(context: PreparedReplyRunContext) {
@@ -144,7 +148,9 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     : !isNewSession && threadStarterBody
       ? `[Thread starter - for context]\n${threadStarterBody}`
       : undefined;
-  const drainedSystemEventBlocks: string[] = [];
+  const drainedSystemEventBlocks: Array<{ key?: string; text: string }> = [];
+  const seenSystemEventBlockKeys = new Set<string>();
+  const managedSystemEventDeliveries = new Map<string, PreparedManagedSystemEventDelivery>();
   const drainSystemEventBlocks = async () => {
     if (useFastReplyRuntime) {
       return;
@@ -158,7 +164,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         : [sessionKey];
     for (const systemEventSessionKey of systemEventSessionKeys) {
       const isCurrentSession = systemEventSessionKey === sessionKey;
-      const eventsBlock = await drainFormattedSystemEvents({
+      const prepared = await prepareFormattedSystemEvents({
         cfg,
         agentId,
         sessionKey: systemEventSessionKey,
@@ -168,8 +174,34 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         // dedicated reminders or arrivals that were not part of this turn.
         events: context.isHeartbeat ? (eventContext?.events ?? []) : undefined,
       });
-      if (eventsBlock) {
-        drainedSystemEventBlocks.push(eventsBlock);
+      let adoption = resolveFinalSystemEventAdoption({ prepared: [prepared] });
+      while (adoption.kind === "settle-stale") {
+        await adoption.settle();
+        adoption = resolveFinalSystemEventAdoption({ prepared: [prepared] });
+      }
+      const managedDeliveryIds = [...adoption.managedDeliveries.keys()];
+      const recorderAccepted =
+        !opts?.userTurnTranscriptRecorder ||
+        opts.userTurnTranscriptRecorder.replaceSessionDeliveryAckIds?.(managedDeliveryIds) === true;
+      const deferredManagedBlockKeys = recorderAccepted
+        ? undefined
+        : new Set(managedDeliveryIds.map((id) => `session-delivery:${id}`));
+      if (recorderAccepted) {
+        for (const [id, delivery] of adoption.managedDeliveries) {
+          managedSystemEventDeliveries.set(id, delivery);
+        }
+      }
+      for (const block of adoption.blocks) {
+        if (block.key && deferredManagedBlockKeys?.has(block.key)) {
+          continue;
+        }
+        if (block.key) {
+          if (seenSystemEventBlockKeys.has(block.key)) {
+            continue;
+          }
+          seenSystemEventBlockKeys.add(block.key);
+        }
+        drainedSystemEventBlocks.push(block);
       }
     }
   };
@@ -192,7 +224,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       inboundEventKind,
       sourceReplyDeliveryMode,
       threadContextNote,
-      systemEventBlocks: drainedSystemEventBlocks,
+      systemEventBlocks: drainedSystemEventBlocks.map((block) => block.text),
       media: opts?.media,
     });
   };
@@ -625,10 +657,16 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       return { kind: "reply", reply: queueState.reply } as const;
     }
   }
-  if (activeRunQueueAction !== "drop") {
-    await traceRunPhase("reply.drain_system_events", () => drainSystemEventBlocks());
-    promptBodies = await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies());
-  }
+  const refreshSystemEventPromptBodies = async () => {
+    if (activeRunQueueAction !== "drop") {
+      await traceRunPhase("reply.drain_system_events", () => drainSystemEventBlocks());
+      promptBodies = await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies());
+    }
+    return {
+      ...promptBodies,
+      managedSystemEventDeliveries,
+    };
+  };
 
   const {
     prefixedCommandBody,
@@ -654,6 +692,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     promptMedia,
     inboundMediaIndexes,
     currentInboundContext,
+    managedSystemEventDeliveries,
     isRoomEvent,
     providedReplyOperation,
     sessionIdFinal,
@@ -670,6 +709,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     isActive,
     authProfileId,
     authProfileIdSource,
+    refreshSystemEventPromptBodies,
   } as const;
 }
 

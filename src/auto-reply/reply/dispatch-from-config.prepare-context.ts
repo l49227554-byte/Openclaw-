@@ -439,14 +439,24 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
   const releaseInboundDedupeIfClaimed = () => inboundDedupeClaim.release?.();
   const lifecycle = params.replyOptions?.turnAdoptionLifecycle;
   if (lifecycle && inboundDedupeClaim.status === "claimed") {
-    const onAbandoned = lifecycle.onAbandoned;
-    lifecycle.onAbandoned = () => {
-      // Release before ingress retries, including abandonment before commit.
+    const releaseUnadoptedInboundDedupe = () => {
+      // Release before ingress retries, including cancellation or abandonment before commit.
       if (!state.inboundDedupeReplayUnsafe && !state.turnAdoptionState?.adopted) {
         inboundDedupeClaim.release();
       }
+    };
+    const onAbandoned = lifecycle.onAbandoned;
+    lifecycle.onAbandoned = () => {
+      releaseUnadoptedInboundDedupe();
       onAbandoned?.();
     };
+    const onCancelled = lifecycle.onCancelled;
+    if (onCancelled) {
+      lifecycle.onCancelled = () => {
+        releaseUnadoptedInboundDedupe();
+        return onCancelled();
+      };
+    }
   }
   const finishReplyOperationBusyDispatch = (opts?: {
     dedupeDisposition?: "commit" | "release";

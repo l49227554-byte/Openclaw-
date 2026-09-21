@@ -6,6 +6,7 @@ export {
   assertDirectoryIdentitySync,
   assertNoSymlinkParents,
   assertNoSymlinkParentsSync,
+  isUnsafeDeviceReadPath,
   buildRandomTempFilePath,
   probePathCaseInsensitiveSync,
   probePathSuffixAliasesSync,

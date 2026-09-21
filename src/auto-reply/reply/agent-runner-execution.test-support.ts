@@ -13,7 +13,6 @@ import {
   initialModelFallbackAttemptOptions,
   type TestModelFallbackRunnerParams,
 } from "../../agents/test-helpers/model-fallback-runner.test-support.js";
-import type { ModelDefinitionConfig } from "../../config/types.models.js";
 import {
   createUserTurnTranscriptRecorder,
   type PersistedUserTurnMessage,
@@ -36,7 +35,7 @@ type RunEntryDelegate = (params: RunEntryParams) => Promise<RunEntryResult>;
 type RunCliAgent = typeof import("../../agents/cli-runner.js").runCliAgent;
 
 export const PROVIDER_AUTHENTICATION_ERROR_USER_MESSAGE = `⚠️ ${AUTH_INVALID_TOKEN_USER_TEXT}`;
-export { createMockReplyOperation } from "./test-helpers.js";
+export { createMockReplyOperation, makeTestModel } from "./test-helpers.js";
 export const PROVIDER_RATE_LIMIT_OR_QUOTA_ERROR_USER_MESSAGE =
   "⚠️ The model provider returned HTTP 429 before replying. This can mean rate limiting, exhausted quota, or an account balance/billing issue. Check the selected provider/model, API key, and provider billing/quota dashboard, then try again.";
 export const PROVIDER_INTERNAL_ERROR_USER_MESSAGE =
@@ -84,18 +83,6 @@ const state = vi.hoisted(() => ({
 
 export const GENERIC_RUN_FAILURE_TEXT =
   "⚠️ Something went wrong while processing your request. Please try again, or use /new to start a fresh session.";
-export function makeTestModel(id: string, contextTokens: number): ModelDefinitionConfig {
-  return {
-    id,
-    name: id,
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: contextTokens,
-    contextTokens,
-    maxTokens: 4096,
-  };
-}
 
 vi.mock("../../agents/embedded-agent.js", () => ({
   runEmbeddedAgent: (params: unknown) => state.runEmbeddedAgentMock(params),
@@ -351,6 +338,9 @@ export async function getExecuteAgentTurnForTest() {
         fallbackAttempts: outcome.fallback.attempts,
         didLogHeartbeatStrip: outcome.didLogHeartbeatStrip,
         autoCompactionCount: outcome.autoCompactionCount,
+        compactionTraceparent: outcome.compactionTraceparent,
+        continueWorkRequests: outcome.continueWorkRequests,
+        rawContinuationText: outcome.rawContinuationText,
         hasDirectlySentBlockReply: outcome.hasDirectlySentBlockReply,
         directBlockDeliveries: outcome.directBlockDeliveries,
         terminalFailurePayload: outcome.terminalFailurePayload,

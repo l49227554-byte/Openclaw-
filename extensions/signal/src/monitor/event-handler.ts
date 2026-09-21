@@ -781,6 +781,10 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         try {
           await flushSignalInboundEntries(entries, admissionLifecycle, settle);
         } catch (err) {
+          if (lifecycle?.abortSignal.aborted) {
+            await lifecycle.onFailed?.(err);
+            return;
+          }
           if (!isSignalReplySessionInitConflictError(err)) {
             throw err;
           }

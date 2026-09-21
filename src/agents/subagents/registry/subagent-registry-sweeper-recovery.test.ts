@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
+import {
+  stagePostCompactionDelegate,
+  stagedPostCompactionDelegateCount,
+} from "../../../auto-reply/continuation/delegate-store-post-compaction.js";
+import { cancelPendingDelegates } from "../../../auto-reply/continuation/delegate-store.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions.js";
 import {
   deleteSessionEntryLifecycle,
@@ -189,6 +194,61 @@ describe("subagent registry recovery scheduling", () => {
       });
   });
 
+  it("canonically completes a stale orphan instead of pruning its task owner", async () => {
+    recoverRow.mockResolvedValue({ status: "ignored" });
+    const { entry, runs, completeSubagentRunWithRecovery, sweeper } = createHarness({
+      current: {} as GatewayRecoveryRuntime,
+    });
+    entry.childSessionKey = "";
+    entry.taskRunId = entry.runId;
+    killSessionEntry.current = undefined;
+
+    await sweeper.sweepOnce();
+
+    expect(completeSubagentRunWithRecovery).toHaveBeenCalledWith(
+      {
+        runId: entry.runId,
+        expectedEntry: entry,
+        endedAt: expect.any(Number),
+        outcome: {
+          status: "error",
+          error: "subagent run orphaned: missing-session-entry",
+        },
+        reason: "subagent-error",
+        sendFarewell: true,
+        accountId: undefined,
+        triggerCleanup: true,
+      },
+      "sweeper-lost-context",
+    );
+    expect(runs.get(entry.runId)).toBe(entry);
+  });
+
+  it("retries stale-orphan completion after task persistence rejects", async () => {
+    recoverRow.mockResolvedValue({ status: "ignored" });
+    const { entry, runs, completeSubagentRunWithRecovery, sweeper } = createHarness({
+      current: {} as GatewayRecoveryRuntime,
+    });
+    entry.childSessionKey = "";
+    entry.taskRunId = entry.runId;
+    killSessionEntry.current = undefined;
+    completeSubagentRunWithRecovery
+      .mockRejectedValueOnce(new Error("task persistence rejected"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(sweeper.sweepOnce()).rejects.toThrow("task persistence rejected");
+    expect(runs.get(entry.runId)).toBe(entry);
+
+    await expect(sweeper.sweepOnce()).resolves.toBeUndefined();
+    expect(completeSubagentRunWithRecovery).toHaveBeenCalledTimes(2);
+    expect(
+      completeSubagentRunWithRecovery.mock.calls.every(
+        ([params]) => params.expectedEntry === entry,
+      ),
+    ).toBe(true);
+    expect(runs.get(entry.runId)).toBe(entry);
+  });
+
   it.each(["lifecycle", "runtime"] as const)(
     "does not finalize interrupted work after its Gateway %s changes during classification",
     async (change) => {
@@ -289,6 +349,11 @@ describe("subagent registry recovery scheduling", () => {
               }
               return deleted;
             });
+            stagePostCompactionDelegate(sibling.childSessionKey, {
+              task: "successor-owned work",
+              createdAt: Date.now(),
+              silent: true,
+            });
             try {
               await sweeper.sweepOnce();
               expect(
@@ -300,7 +365,9 @@ describe("subagent registry recovery scheduling", () => {
                 sessionId: sibling.runId,
                 lifecycleRevision: "reset-revision",
               });
+              expect(stagedPostCompactionDelegateCount(sibling.childSessionKey)).toBe(1);
             } finally {
+              cancelPendingDelegates(sibling.childSessionKey);
               sweeper.reset();
             }
           });

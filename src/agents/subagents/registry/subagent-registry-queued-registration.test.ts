@@ -306,9 +306,23 @@ it("preserves an intervening terminal tombstone when creation reports no task", 
 
 it("preserves synchronous optional queued registration", () => {
   const f = fixture();
-  expect(
-    f.manager.registerSubagentRun({ ...f.registration, taskRowOwnership: undefined }),
-  ).toBeUndefined();
+  const ownership = f.manager.registerSubagentRun({
+    ...f.registration,
+    taskRowOwnership: undefined,
+  });
+  // Optional queued registration settles synchronously with its committed row's
+  // ownership identity instead of deferring to persistence.
+  expect(ownership).not.toBeInstanceOf(Promise);
+  const entry = f.runs.get(f.registration.runId)!;
+  expect(ownership).toEqual({
+    status: "new-row-committed",
+    attempted: {
+      runId: f.registration.runId,
+      childSessionKey: f.registration.childSessionKey,
+      generation: entry.generation,
+      createdAt: entry.createdAt,
+    },
+  });
   expect(mocks.createTask).toHaveBeenCalledOnce();
   expect(f.options.persistOrThrow).toHaveBeenCalledOnce();
   expect(f.writes).toHaveLength(0);

@@ -6,6 +6,7 @@
  * group config, then returns sender/route/command/activation projections plus
  * the ordered ingress graph.
  */
+import { runIngressCancelCompat } from "../channels/message/ingress-drain-lifecycle.js";
 import {
   createChannelIngressMonitor,
   type ChannelIngressMonitorDrainOptions,
@@ -181,7 +182,13 @@ export function fanInChannelIngressLifecycles(
       (lifecycle) => (lifecycle.onFailed ? lifecycle.onFailed(error) : lifecycle.onAbandoned()),
       targets,
     );
-  const failAll = (error: unknown) => settleOnce(() => failEach(lifecycles, error));
+  const failAll = (error: unknown) =>
+    settleOnce(() =>
+      failEach(
+        lifecycles.filter((lifecycle) => !lifecycle.abortSignal.aborted),
+        error,
+      ),
+    );
   // Adoption runs in claim order so each durable source settles in the order it
   // was taken. Handoff is already marked by the time this runs, so a caller's
   // abandon after a rejection here is a no-op; release the claim that threw and
@@ -209,9 +216,12 @@ export function fanInChannelIngressLifecycles(
   // can then use settle/abandon without an acknowledged-but-unsettled claim.
   const cancelAll = () =>
     settleOnce(() =>
-      fanOut((lifecycle) =>
-        lifecycle.onCancelled ? lifecycle.onCancelled() : lifecycle.onAbandoned(),
-      ),
+      fanOut((lifecycle) => {
+        if (lifecycle.onCancelled) {
+          return lifecycle.onCancelled();
+        }
+        return runIngressCancelCompat(() => lifecycle.onAbandoned());
+      }),
     );
   return {
     lifecycle: {
@@ -256,7 +266,12 @@ export function fanInChannelIngressLifecycles(
         : {}),
       onAbandoned: async () => {
         handedOff = true;
-        await abandonAll();
+        await settleOnce(() =>
+          fanOut(
+            (lifecycle) => lifecycle.onAbandoned(),
+            lifecycles.filter((lifecycle) => !lifecycle.abortSignal.aborted),
+          ),
+        );
       },
     },
     // A gated or deliberately skipped turn still consumed every source claim.

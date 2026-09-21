@@ -104,9 +104,12 @@ describe("legacy file queue migration to recovery", () => {
     }
     expect.soft(send.mock.calls.map(([text]) => text)).toEqual(["below"]);
     expect(
-      deliverSession.mock.calls.map(([entry]) =>
-        entry.kind === "agentTurn" ? entry.message : entry.text,
-      ),
+      deliverSession.mock.calls.map(([entry]) => {
+        if (entry.kind !== "agentTurn") {
+          throw new Error(`Expected migrated agent-turn delivery, received ${entry.kind}`);
+        }
+        return entry.message;
+      }),
     ).toEqual(["below"]);
   });
   it.each(["outbound", "session"])(

@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { APIMessage } from "discord-api-types/v10";
+import { ChannelType, type APIMessage } from "discord-api-types/v10";
 import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
@@ -266,6 +266,107 @@ describe("Discord durable ingress", () => {
           const verdict = await queue.enqueue("1005", payloadFor(rawMessage));
           expect(verdict.kind).toBe("failed");
         });
+      } finally {
+        await monitor.stop();
+      }
+    });
+  });
+
+  it("dead-letters stale ambient guild backlog before dispatch", async () => {
+    await withQueue(async (queue) => {
+      const rawMessage = createRawMessage("1006", "channel-ambient");
+      await queue.enqueue(
+        rawMessage.id,
+        {
+          version: 1,
+          receivedAt: Date.now() - 6 * 60 * 1000,
+          rawMessage,
+        },
+        {
+          receivedAt: Date.now() - 6 * 60 * 1000,
+          laneKey: "channel:channel-ambient",
+        },
+      );
+      const dispatch = vi.fn();
+      const monitor = createDiscordIngressMonitor({
+        accountId: "default",
+        client: {
+          fetchChannel: vi.fn(async () => ({ type: ChannelType.GuildText })),
+        } as never,
+        runtime: runtime(),
+        queue,
+        dispatch,
+      });
+      monitor.start();
+      try {
+        await vi.waitFor(
+          async () => {
+            const verdict = await queue.enqueue("1006", payloadFor(rawMessage));
+            expect(verdict.kind).toBe("failed");
+          },
+          { timeout: 3_000 },
+        );
+        expect(dispatch).not.toHaveBeenCalled();
+      } finally {
+        await monitor.stop();
+      }
+    });
+  });
+
+  it("preserves stale thread backlog for dispatch", async () => {
+    await withQueue(async (queue) => {
+      const rawMessage = createRawMessage("1007", "channel-thread");
+      const receivedAt = Date.now() - 6 * 60 * 1000;
+      await queue.enqueue(
+        rawMessage.id,
+        { version: 1, receivedAt, rawMessage },
+        { receivedAt, laneKey: "channel:channel-thread" },
+      );
+      const dispatch = vi.fn(async (_event, lifecycle: DiscordIngressLifecycle) => {
+        await lifecycle.onAdopted();
+      });
+      const monitor = createDiscordIngressMonitor({
+        accountId: "default",
+        client: {
+          fetchChannel: vi.fn(async () => ({ type: ChannelType.PublicThread })),
+        } as never,
+        runtime: runtime(),
+        queue,
+        dispatch,
+      });
+      monitor.start();
+      try {
+        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+      } finally {
+        await monitor.stop();
+      }
+    });
+  });
+
+  it("preserves stale backlog when channel classification is unavailable", async () => {
+    await withQueue(async (queue) => {
+      const rawMessage = createRawMessage("1008", "channel-unknown");
+      const receivedAt = Date.now() - 6 * 60 * 1000;
+      await queue.enqueue(
+        rawMessage.id,
+        { version: 1, receivedAt, rawMessage },
+        { receivedAt, laneKey: "channel:channel-unknown" },
+      );
+      const dispatch = vi.fn(async (_event, lifecycle: DiscordIngressLifecycle) => {
+        await lifecycle.onAdopted();
+      });
+      const monitor = createDiscordIngressMonitor({
+        accountId: "default",
+        client: {
+          fetchChannel: vi.fn(async () => null),
+        } as never,
+        runtime: runtime(),
+        queue,
+        dispatch,
+      });
+      monitor.start();
+      try {
+        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1), { timeout: 3_000 });
       } finally {
         await monitor.stop();
       }

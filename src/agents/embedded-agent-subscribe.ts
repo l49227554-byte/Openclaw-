@@ -4,9 +4,7 @@ import { createInlineCodeState } from "../../packages/markdown-core/src/code-spa
  * Subscribes to embedded-agent sessions and streams formatted replies/events.
  */
 import { formatToolAggregate } from "../auto-reply/tool-meta.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseInlineDirectives } from "../utils/directive-tags.js";
-import { isDeliverableMessageChannel, normalizeMessageChannel } from "../utils/message-channel.js";
 import { EmbeddedBlockChunker } from "./embedded-agent-block-chunker.js";
 import { MAX_MESSAGING_HISTORY_ENTRIES } from "./embedded-agent-messaging-history.js";
 import { hasCommittedMessagingToolDeliveryEvidence } from "./embedded-agent-runner/delivery-evidence.js";
@@ -14,6 +12,7 @@ import { mergeEmbeddedRunReplayState } from "./embedded-agent-runner/replay-stat
 import { consumeEmbeddedToolReceipt } from "./embedded-agent-runner/tool-send-receipts.js";
 import type { EmbeddedRunLivenessState } from "./embedded-agent-runner/types.js";
 import { runBestEffortCallback } from "./embedded-agent-subscribe.callback.js";
+import { createCompactionRetryTracker } from "./embedded-agent-subscribe.compaction-retry.js";
 import { createEmbeddedAgentSessionEventHandler } from "./embedded-agent-subscribe.handlers.js";
 import { readPendingToolMediaReply } from "./embedded-agent-subscribe.handlers.messages.replies.js";
 import { cleanupRunToolStartData } from "./embedded-agent-subscribe.handlers.tools.js";
@@ -21,6 +20,7 @@ import type {
   EmbeddedAgentSubscribeContext,
   EmbeddedAgentSubscribeState,
 } from "./embedded-agent-subscribe.handlers.types.js";
+import { resolveEmbeddedAgentSessionLogger } from "./embedded-agent-subscribe.logger.js";
 import { createEmbeddedModelState } from "./embedded-agent-subscribe.model-state.js";
 import { createReplyDelivery } from "./embedded-agent-subscribe.reply-delivery.js";
 import { createEmbeddedAgentSubscribeState } from "./embedded-agent-subscribe.run-state.js";
@@ -33,16 +33,6 @@ import {
 } from "./embedded-agent-tool-media.js";
 import { stripDowngradedToolCallText } from "./embedded-agent-utils.js";
 import { setSessionModelUsageSink } from "./sessions/session-model-usage.js";
-
-const embeddedLog = createSubsystemLogger("agent/embedded");
-
-function resolveEmbeddedAgentSessionLogger(messageChannel?: string) {
-  const normalizedChannel = normalizeMessageChannel(messageChannel);
-  if (normalizedChannel && isDeliverableMessageChannel(normalizedChannel)) {
-    return createSubsystemLogger(`gateway/channels/${normalizedChannel}`);
-  }
-  return embeddedLog;
-}
 
 export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSessionParams) {
   const log = resolveEmbeddedAgentSessionLogger(params.messageChannel);
@@ -113,11 +103,6 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     }
   };
 
-  const noteCompactionRetry = () => {
-    state.pendingCompactionRetry += 1;
-    ensureCompactionPromise();
-  };
-
   const resolveCompactionPromiseIfIdle = () => {
     if (state.pendingCompactionRetry !== 0 || state.compactionInFlight) {
       return;
@@ -128,13 +113,12 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     state.compactionRetryPromise = null;
   };
 
-  const resolveCompactionRetry = () => {
-    if (state.pendingCompactionRetry <= 0) {
-      return;
-    }
-    state.pendingCompactionRetry -= 1;
-    resolveCompactionPromiseIfIdle();
-  };
+  const { noteCompactionReplacementActivity, noteCompactionRetry, resolveCompactionRetry } =
+    createCompactionRetryTracker({
+      state,
+      ensureCompactionPromise,
+      resolveCompactionPromiseIfIdle,
+    });
 
   const maybeResolveCompactionWait = () => {
     resolveCompactionPromiseIfIdle();
@@ -246,12 +230,28 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     blockChunker,
     emitBlockReply: replyDelivery.emitBlockReply,
     flushAssistantStream,
-    pendingBlockReplyTasks: replyDelivery.pendingBlockReplyTasks,
+    settleBlockReplyDeliveries: replyDelivery.settleBlockReplyDeliveries,
+    currentPendingBlockReplyTasks: replyDelivery.currentPendingBlockReplyTasks,
     pushAssistantText: replyDelivery.pushAssistantText,
     shouldSkipAssistantText: replyDelivery.shouldSkipAssistantText,
   });
 
-  const resetForCompactionRetry = () => {
+  const invalidateBlockReplyDeliveries = () => {
+    replyDelivery.invalidateBlockReplyDeliveries();
+    clearDeferredBlockReplies();
+  };
+
+  const invalidateBlockReplyDeliveriesForCompactionRetry = () => {
+    invalidateBlockReplyDeliveries();
+    return replyDelivery.getBlockReplyDeliveryGeneration();
+  };
+
+  const resetForCompactionRetry = (invalidatedDeliveryGeneration?: number) => {
+    if (invalidatedDeliveryGeneration === undefined) {
+      invalidateBlockReplyDeliveries();
+    }
+    replyDelivery.resetBlockReplyFailures();
+
     state.hadDeterministicSideEffect =
       state.hadDeterministicSideEffect === true ||
       hasCommittedMessagingToolDeliveryEvidence({
@@ -363,6 +363,9 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     releaseDeferredReplies,
     clearAssistantStream,
     clearDeferredBlockReplies,
+    getBlockReplyDeliveryGeneration: replyDelivery.getBlockReplyDeliveryGeneration,
+    settleBlockReplyDeliveries: replyDelivery.settleBlockReplyDeliveries,
+    invalidateBlockReplyDeliveriesForCompactionRetry,
     resetForCompactionRetry,
     finalizeAssistantTexts,
     trimMessagingToolSent,
@@ -370,6 +373,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
       consumeEmbeddedToolReceipt(params.session.sessionManager, toolCallId),
     ensureCompactionPromise,
     noteCompactionRetry,
+    noteCompactionReplacementActivity,
     resolveCompactionRetry,
     maybeResolveCompactionWait,
     captureModelEvent,
@@ -381,6 +385,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     getLastCompactionTokensAfter: () => state.lastCompactionTokensAfter,
   };
 
+  const runToolLifecycle = createEmbeddedToolLifecycleRunner(ctx);
   const sessionUnsubscribe = params.session.subscribe(createEmbeddedAgentSessionEventHandler(ctx));
   setSessionModelUsageSink(params.session.sessionManager, recordAuxiliaryUsage);
 
@@ -434,7 +439,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
       state.latestMcpAppChannelView ? { ...state.latestMcpAppChannelView } : undefined,
     getLatestMcpConnectAction: () =>
       state.latestMcpConnectAction ? { ...state.latestMcpConnectAction } : undefined,
-    runToolLifecycle: createEmbeddedToolLifecycleRunner(ctx),
+    runToolLifecycle,
     unsubscribe,
     setTerminalLifecycleMeta: (meta: {
       replayInvalid?: boolean;

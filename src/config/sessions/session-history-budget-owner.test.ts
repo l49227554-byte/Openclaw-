@@ -2,7 +2,9 @@ import { channel } from "node:diagnostics_channel";
 import fs from "node:fs";
 import path from "node:path";
 import type { SQLInputValue } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import type { Worker } from "node:worker_threads";
+import ts from "typescript";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
@@ -62,6 +64,92 @@ afterEach(async () => {
   for (const state of states.splice(0).toReversed()) {
     await state.cleanup();
   }
+});
+
+const sqliteLifecycleSpecifier = "./session-accessor.sqlite-lifecycle.js";
+
+function isTypeOnlyImportDeclaration(node: ts.ImportDeclaration): boolean {
+  const clause = node.importClause;
+  return Boolean(
+    clause &&
+    (clause.isTypeOnly ||
+      (!clause.name &&
+        clause.namedBindings &&
+        ts.isNamedImports(clause.namedBindings) &&
+        clause.namedBindings.elements.length > 0 &&
+        clause.namedBindings.elements.every((element) => element.isTypeOnly))),
+  );
+}
+
+function isTypeOnlyExportDeclaration(node: ts.ExportDeclaration): boolean {
+  const clause = node.exportClause;
+  return (
+    node.isTypeOnly ||
+    Boolean(
+      clause &&
+      ts.isNamedExports(clause) &&
+      clause.elements.length > 0 &&
+      clause.elements.every((element) => element.isTypeOnly),
+    )
+  );
+}
+
+function readRuntimeImports(relativePath: string): {
+  dynamicImports: Set<string>;
+  staticImports: Set<string>;
+} {
+  const sourcePath = fileURLToPath(new URL(relativePath, import.meta.url));
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    fs.readFileSync(sourcePath, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const dynamicImports = new Set<string>();
+  const staticImports = new Set<string>();
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      !isTypeOnlyImportDeclaration(node)
+    ) {
+      staticImports.add(node.moduleSpecifier.text);
+    }
+    if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      !isTypeOnlyExportDeclaration(node)
+    ) {
+      staticImports.add(node.moduleSpecifier.text);
+    }
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length === 1
+    ) {
+      const argument = node.arguments[0];
+      if (
+        argument &&
+        (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))
+      ) {
+        dynamicImports.add(argument.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { dynamicImports, staticImports };
+}
+
+it.each([
+  ["session lifecycle facade", "./session-accessor.lifecycle.ts"],
+  ["legacy main-session migration operations", "./legacy-main-session-migration-operations.ts"],
+  ["history entry eviction runtime", "./session-history-entry-eviction.runtime.ts"],
+] as const)("keeps SQLite lifecycle owner lazy for %s", (_label, relativePath) => {
+  const imports = readRuntimeImports(relativePath);
+  expect(imports.staticImports.has(sqliteLifecycleSpecifier)).toBe(false);
+  expect(imports.dynamicImports.has(sqliteLifecycleSpecifier)).toBe(true);
 });
 
 function readRow(databasePath: string, sql: string, ...values: SQLInputValue[]) {

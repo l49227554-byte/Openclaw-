@@ -1,6 +1,7 @@
 import { executeSqliteQuerySync, sqliteStringSet } from "../../infra/kysely-sync.js";
 import { readSqliteDataVersion } from "../../infra/node-sqlite.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import { createLazyRuntimeNamedExport } from "../../shared/lazy-runtime.js";
 import {
   isOpenClawAgentDatabasePathCurrent,
   readOpenClawAgentDatabaseIdentity,
@@ -47,7 +48,6 @@ import {
   rehomeSqliteSessionGenerationWindow,
 } from "./session-accessor.sqlite-generation-copy.js";
 import type { SqliteSessionGenerationClaim } from "./session-accessor.sqlite-generation.types.js";
-import { deleteSessionEntryLifecycle } from "./session-accessor.sqlite-lifecycle.js";
 import { invalidateSessionEntryMaintenanceAgeFact } from "./session-accessor.sqlite-maintenance-age.js";
 import { copySessionNodeArtifactsForRepair } from "./session-accessor.sqlite-node-artifacts.js";
 import { replaceSessionOwnerInTransaction } from "./session-accessor.sqlite-owner.js";
@@ -58,6 +58,11 @@ import {
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 import type { SessionEntry } from "./types.js";
+
+const loadDeleteSessionEntryLifecycle = createLazyRuntimeNamedExport(
+  () => import("./session-accessor.sqlite-lifecycle.js"),
+  "deleteSessionEntryLifecycle",
+);
 
 export function samePhysicalStore(left: PhysicalStore, right: PhysicalStore): boolean {
   return isSameOpenClawAgentDatabasePath(left.path, right.path);
@@ -368,10 +373,13 @@ async function copyClaimCrossStore(params: {
 
 async function deleteExpectedClaim(
   claim: SessionClaim,
+  env: NodeJS.ProcessEnv,
   commitGuard?: () => void,
 ): Promise<boolean> {
+  const deleteSessionEntryLifecycle = await loadDeleteSessionEntryLifecycle();
   const result = await deleteSessionEntryLifecycle({
     commitGuard,
+    env,
     agentId: claim.store.databaseAgentId,
     archiveTranscript: false,
     deleteTranscriptWithoutArchive: true,
@@ -463,7 +471,7 @@ async function deleteCopiedClaims(params: {
     };
     assertCopied();
     for (const claim of sources) {
-      if (!(await deleteExpectedClaim(claim, assertCopied))) {
+      if (!(await deleteExpectedClaim(claim, params.env, assertCopied))) {
         return claim;
       }
     }

@@ -20,12 +20,17 @@ const ORPHAN_PREDICATE =
 type OrphanDeliveryRow = {
   rowid: bigint;
   task_id: string;
-  requester_origin_json: string | null;
+  requester_origin_json: Uint8Array | null;
   last_notified_event_at: bigint | null;
 };
 
 function orphanRows(database: DatabaseSync): Iterable<OrphanDeliveryRow> {
-  const statement = database.prepare(`SELECT rowid, * FROM task_delivery_state
+  const statement = database.prepare(`SELECT
+      rowid,
+      task_id,
+      CAST(requester_origin_json AS BLOB) AS requester_origin_json,
+      last_notified_event_at
+    FROM task_delivery_state
     WHERE ${ORPHAN_PREDICATE} ORDER BY rowid`);
   statement.setReadBigInts(true);
   // SAFETY: The caller checks the supported schema; encodeOrphanRow validates every legacy value before preservation or removal.
@@ -36,12 +41,21 @@ function encodeOrphanRow(row: OrphanDeliveryRow): string {
   if (
     typeof row.rowid !== "bigint" ||
     typeof row.task_id !== "string" ||
-    (row.requester_origin_json !== null && typeof row.requester_origin_json !== "string") ||
+    (row.requester_origin_json !== null && !(row.requester_origin_json instanceof Uint8Array)) ||
     (row.last_notified_event_at !== null && typeof row.last_notified_event_at !== "bigint")
   ) {
     throw new Error("Orphan task delivery values do not match the supported recovery contract.");
   }
-  return `${JSON.stringify(row, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value))}\n`;
+  const requesterOriginBytes = row.requester_origin_json;
+  const exportRow = {
+    ...row,
+    requester_origin_json:
+      requesterOriginBytes === null ? null : Buffer.from(requesterOriginBytes).toString("utf8"),
+    ...(requesterOriginBytes === null
+      ? {}
+      : { requester_origin_json_base64: Buffer.from(requesterOriginBytes).toString("base64") }),
+  };
+  return `${JSON.stringify(exportRow, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value))}\n`;
 }
 
 function assertRecoveryShape(database: DatabaseSync): void {

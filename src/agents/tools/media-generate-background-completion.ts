@@ -23,6 +23,7 @@ export type MediaGenerationTaskHandle = {
   requesterAgentId?: string;
   requesterOrigin?: DeliveryContext;
   taskLabel: string;
+  traceparent?: string;
 };
 
 export type MediaGenerationCompletionWakeOutcome =
@@ -135,6 +136,8 @@ export async function wakeMediaGenerationTaskCompletion(params: {
     expectsCompletionMessage: true,
     bestEffortDeliver: true,
     directIdempotencyKey: announceId,
+    continuationTriggerOverride: "work-wake",
+    ...(params.handle.traceparent ? { traceparent: params.handle.traceparent } : {}),
   });
   if (delivery.delivered) {
     return { status: "delivered" };

@@ -12,12 +12,13 @@ import { resolveAgentWorkspaceDir, resolveSessionAgentIds } from "./agent-scope.
 import { finalizeAgentToolAvailability } from "./agent-tool-availability.js";
 import { bindAssembledAgentToolActionDescriptor } from "./agent-tool-metadata.js";
 import {
-  type HookContext,
   isToolWrappedWithBeforeToolCallHook,
   wrapToolWithBeforeToolCallHook,
 } from "./agent-tools.before-tool-call.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 import { filterToolsByClientCaps } from "./openclaw-tools.client-caps.js";
+import { createOpenClawContinuationTools } from "./openclaw-tools.continuation.js";
+import { resolveOpenClawToolsHookContext } from "./openclaw-tools.hook-context.js";
 import {
   isToolExplicitlyAllowedByFactoryPolicy,
   mergeFactoryPolicyList,
@@ -36,11 +37,11 @@ import { createOpenClawSwarmToolGroups } from "./openclaw-tools.swarm.js";
 import { resolveTranscriptsTool } from "./openclaw-tools.transcripts.js";
 import type { OpenClawToolsOptions } from "./openclaw-tools.types.js";
 import { resolveWidgetPresentationForRun } from "./openclaw-tools.widget-presentation.js";
-import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import { createAskUserTool } from "./tools/ask-user-tool.js";
 import type { AnyAgentTool } from "./tools/common.js";
 import { createComputerTool } from "./tools/computer-tool.js";
+import { buildInventoryContinuationToolOpts } from "./tools/continuation-inventory-opts.js";
 import {
   createConversationsListTool,
   createConversationsSendTool,
@@ -125,6 +126,13 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
   const spawnWorkspaceDir = resolveWorkspaceRoot(options?.spawnWorkspaceDir ?? workspaceDir);
   options?.recordToolPrepStage?.("openclaw-tools:session-workspace");
   const widgetPresentation = resolveWidgetPresentationForRun(options);
+  const inventoryContinuationOpts = options?.beforeToolCallHookContext?.skillCommand
+    ? buildInventoryContinuationToolOpts(
+        resolvedConfig?.agents?.defaults?.continuation?.enabled === true,
+      )
+    : {};
+  // Scheduled turns keep delivery routing live, but Gateway authorization remains bound to the
+  // authenticated creator account captured in the immutable scheduled authority envelope.
   const inlineWidgetClientAvailable = options?.clientCaps?.includes("inline-widgets") === true;
   const sessionKey = normalizeOptionalString(options?.runSessionKey ?? options?.agentSessionKey);
   const gatewayCallerAccountId = options?.gatewayCallerAccountId ?? options?.agentAccountId;
@@ -665,6 +673,22 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
       },
     }),
     ...collectPresentOpenClawTools([webSearchTool, webFetchTool, imageTool, pdfTool]),
+    ...createOpenClawContinuationTools({
+      config: resolvedConfig,
+      agentSessionKey: options?.agentSessionKey,
+      runSessionKey: options?.runSessionKey,
+      sessionId: options?.sessionId,
+      runId: options?.runId,
+      workspaceDir,
+      sandboxRoot: options?.sandboxRoot,
+      sandboxFsBridge: options?.sandboxFsBridge,
+      sandboxWritable: options?.sandboxWritable,
+      drainsContinuationDelegateQueue: options?.drainsContinuationDelegateQueue,
+      disableContinuationTools: options?.disableContinuationTools,
+      continueWorkOpts: options?.continueWorkOpts ?? inventoryContinuationOpts.continueWorkOpts,
+      requestCompactionOpts:
+        options?.requestCompactionOpts ?? inventoryContinuationOpts.requestCompactionOpts,
+    }),
   ];
   options?.recordToolPrepStage?.("openclaw-tools:core-tool-list");
   let allTools = tools;
@@ -695,15 +719,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
   if (options?.wrapBeforeToolCallHook === false) {
     return allTools.map(wrapGatewayCallerIdentity);
   }
-  const defaultHookContext: HookContext = {
-    ...(hookAgentId ? { agentId: hookAgentId } : {}),
-    ...(resolvedConfig ? { config: resolvedConfig } : {}),
-    ...(options?.agentSessionKey ? { sessionKey: options.agentSessionKey } : {}),
-    ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
-    ...(options?.currentChannelId ? { channelId: options.currentChannelId } : {}),
-    loopDetection: resolveToolLoopDetectionConfig({ cfg: resolvedConfig, agentId: hookAgentId }),
-  };
-  const hookContext = { ...defaultHookContext, ...options?.beforeToolCallHookContext };
+  const hookContext = resolveOpenClawToolsHookContext({ hookAgentId, resolvedConfig, options });
   options?.recordToolPrepStage?.("openclaw-tools:tool-hooks");
   return allTools
     .map((tool) =>

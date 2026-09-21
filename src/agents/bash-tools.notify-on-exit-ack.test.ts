@@ -8,7 +8,7 @@ import {
 } from "../infra/heartbeat-runner.test-utils.js";
 import {
   consumeSelectedSystemEventEntries,
-  enqueueSystemEventEntry,
+  enqueueSystemEventEntryRaw as enqueueSystemEventEntry,
   peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "../infra/system-events.js";

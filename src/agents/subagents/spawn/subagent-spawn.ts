@@ -3,24 +3,33 @@
  *
  * Validates spawn requests, prepares child sessions, stages attachments, binds delivery context, and registers runs.
  */
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
 import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
-import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
 import { getCanonicalGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { recordSessionCreated } from "../../../sessions/session-created.js";
 import { recordSessionParticipantBestEffort } from "../../../sessions/session-participant-recording.js";
 import { recordSubagentSpawned } from "../../../sessions/session-state-events.js";
+import { parseInlineAttachmentMountPath } from "../../../shared/inline-attachments.js";
 import { hasDeliveryTargetFields } from "../../../utils/delivery-context.shared.js";
-import { hasPromptUnsafeControlCharacter } from "../../sanitize-for-prompt.js";
 import {
   runSpawnPipeline,
   type SpawnBackendAdapter,
   summarizeSpawnError,
 } from "../../spawn-pipeline.js";
+import {
+  deriveContinuationDelegateChildRunId,
+  deriveContinuationDelegateChildSessionKey,
+} from "../../subagent-continuation-ids.js";
+import { registerSubagentTraceparentHandoff } from "../../subagent-traceparent-handoff.js";
 import { getGatewayToolCallerIdentity } from "../../tools/gateway-caller-context.js";
-import { cleanupMaterializedSubagentAttachments } from "../subagent-attachment-cleanup.js";
+import {
+  buildContinuationSessionPatch,
+  type ContinuationSpawnParams,
+} from "../announce/subagent-announce.runtime.js";
+import {
+  recordAcceptedSubagentSpawnRollback,
+  rollbackSubagentRunRegistration,
+} from "../registry/subagent-registry.js";
 import { activateSwarmRun, holdQueuedSwarmRun } from "../swarm/swarm-scheduler.js";
 import { readParentExecutionIdentity } from "./execution-identity-spawn-context.js";
 import { materializeSubagentAttachments } from "./subagent-attachments.js";
@@ -28,7 +37,6 @@ import { resolveSubagentChildPlan } from "./subagent-spawn-child-plan.js";
 import {
   cleanupFailedSpawnBeforeAgentStart,
   cleanupProvisionalSession,
-  terminateAcceptedCollectorRun,
 } from "./subagent-spawn-cleanup.js";
 import { createCollectorLaunchCallbacks } from "./subagent-spawn-collector.js";
 import {
@@ -38,11 +46,13 @@ import {
   type PreparedContextEngineSubagentSpawn,
 } from "./subagent-spawn-context.js";
 import type {
-  SpawnSubagentContext,
-  SpawnSubagentParams,
-  SpawnSubagentResult,
+  SpawnSubagentContext as BaseSpawnSubagentContext,
+  SpawnSubagentParams as BaseSpawnSubagentParams,
+  SpawnSubagentResult as BaseSpawnSubagentResult,
 } from "./subagent-spawn-contract.js";
+import { isSpawnSubagentAdmissionCancelledError } from "./subagent-spawn-contract.js";
 import { setSubagentSpawnDepsForTest } from "./subagent-spawn-deps.js";
+import { prepareSubagentSpawnEnvelope } from "./subagent-spawn-envelope.js";
 import {
   buildSubagentExecutionSessionSpawnContext,
   withSubagentGatewayExecutionIdentity,
@@ -51,24 +61,16 @@ import { callNativeSubagentGateway, readGatewayRunId } from "./subagent-spawn-ga
 import { buildSubagentLaunchRequest } from "./subagent-spawn-launch-request.js";
 import { createSubagentSpawnLifecycleEmitter } from "./subagent-spawn-lifecycle.js";
 import { resolveSubagentSpawnRequest } from "./subagent-spawn-request.js";
+import { cleanupAcceptedSubagentSpawnFailure } from "./subagent-spawn-rollback.js";
 import { createInitialSubagentSession } from "./subagent-spawn-session-patch.js";
 import { bindThreadForSubagentSpawn } from "./subagent-spawn-thread-binding.js";
 import { emitSessionLifecycleEvent, mergeDeliveryContext } from "./subagent-spawn.runtime.js";
-import { buildSubagentSpawnEnvelope } from "./subagent-system-prompt.js";
 
 export { SUBAGENT_SPAWN_CONTEXT_MODES, SUBAGENT_SPAWN_MODES } from "./subagent-spawn.types.js";
 
-function sanitizeMountPathHint(value?: string): string | undefined {
-  const trimmed = normalizeOptionalString(value);
-  if (
-    !trimmed ||
-    hasPromptUnsafeControlCharacter(trimmed) ||
-    !/^[A-Za-z0-9._\-/:]+$/.test(trimmed)
-  ) {
-    return undefined;
-  }
-  return trimmed;
-}
+export type SpawnSubagentParams = BaseSpawnSubagentParams & ContinuationSpawnParams;
+export type SpawnSubagentContext = BaseSpawnSubagentContext;
+export type SpawnSubagentResult = BaseSpawnSubagentResult;
 
 export async function spawnSubagentDirect(
   params: SpawnSubagentParams,
@@ -76,11 +78,17 @@ export async function spawnSubagentDirect(
 ): Promise<SpawnSubagentResult> {
   const assertActive = ctx.assertActive;
   const promptedAt = Date.now();
-  const task = params.task;
   const label = params.label?.trim() || "";
+  const task = params.task;
   const requestThreadBinding = params.thread === true;
   const sandboxMode = params.sandbox === "require" ? "require" : "inherit";
   const requesterSessionKey = ctx.agentSessionKey;
+  if (params.drainsContinuationDelegateQueue && !params.continuationChainState) {
+    return {
+      status: "error",
+      error: "continuationChainState is required when drainsContinuationDelegateQueue is true",
+    };
+  }
   const gatewayContextResolver = getGatewayToolCallerIdentity()?.gatewayContextResolver;
   const requestResolution = resolveSubagentSpawnRequest(params, ctx);
   if (!requestResolution.ok) {
@@ -118,9 +126,15 @@ export async function spawnSubagentDirect(
       reservation: admissionReservation,
       childDepth,
       maxSpawnDepth,
+      continuationTargetSessionKeys,
+      continuationRecipientAuthorityBinding,
     },
-    childIdem,
+    childIdem: resolvedChildIdem,
   } = requestResolution.resolved;
+  const childIdem = params.continuationDelegateFlowId
+    ? deriveContinuationDelegateChildRunId(params.continuationDelegateFlowId)
+    : resolvedChildIdem;
+
   let threadBindingReady = false;
   let hasBoundThreadDeliveryOrigin = false;
   let childRunId: string = childIdem;
@@ -153,7 +167,7 @@ export async function spawnSubagentDirect(
       spawnedWorkspaceDir,
       requesterOrigin,
       incognito,
-      childSessionKey,
+      childSessionKey: resolvedChildSessionKey,
       childRuntimeSandboxed,
       creationPolicy,
       targetAgentDir,
@@ -161,6 +175,9 @@ export async function spawnSubagentDirect(
       launchAuthorization,
       resolvedModelMetadata,
     } = childPlan.resolved;
+    const childSessionKey = params.continuationDelegateFlowId
+      ? deriveContinuationDelegateChildSessionKey(targetAgentId, params.continuationDelegateFlowId)
+      : resolvedChildSessionKey;
     let { childSessionOrigin } = childPlan.resolved;
     const spawnedByKey = requesterInternalKey;
     const { resolvedModel, thinkingOverride } = plan;
@@ -181,9 +198,11 @@ export async function spawnSubagentDirect(
       inheritedToolAllowlist: ctx.inheritedToolAllowlist,
       inheritedToolDenylist: ctx.inheritedToolDenylist,
       modelPatch: plan.initialSessionPatch,
+      continuationPatch: buildContinuationSessionPatch(params),
       swarmGroupId,
       collect: params.collect === true,
       outputSchema: params.outputSchema,
+      continuationDelegateAdmission: ctx.continuationDelegateAdmission,
     });
     if (initialSession.status === "error") {
       return {
@@ -258,41 +277,32 @@ export async function spawnSubagentDirect(
       childSessionOrigin =
         mergeDeliveryContext(bindResult.deliveryOrigin, childSessionOrigin) ?? childSessionOrigin;
     }
-    const mountPathHint = sanitizeMountPathHint(params.attachMountPath);
+    const parsedMountPath = parseInlineAttachmentMountPath(params.attachMountPath);
+    const mountPathHint =
+      parsedMountPath.status === "valid" ? parsedMountPath.mountPath : undefined;
 
-    // Binding owns direct delivery. Resolve once afterward so the launch, child
-    // instructions, and requester receipt cannot disagree about completion.
-    const completionMode = params.collect
-      ? "collector"
-      : requestThreadBinding && spawnMode === "session" && hasBoundThreadDeliveryOrigin
-        ? "thread-direct"
-        : expectsCompletionMessage
-          ? "announce"
-          : "quiet";
-    const envelope = buildSubagentSpawnEnvelope({
-      completionMode,
+    const preparedEnvelope = prepareSubagentSpawnEnvelope({
+      cfg,
+      collect: params.collect === true,
+      requestThreadBinding,
       completionTarget: params.completionTarget,
-      soleCollectorChild: soleImplicitMember,
       spawnMode,
+      hasBoundThreadDeliveryOrigin,
+      expectsCompletionMessage,
+      soleCollectorChild: soleImplicitMember,
       task,
       requesterSessionKey,
       requesterOrigin: childSessionOrigin,
       childSessionKey,
       label: label || undefined,
-      acpEnabled: isAcpRuntimeSpawnAvailable({
-        config: cfg,
-        sandboxed: childRuntimeSandboxed,
-      }),
-      nativeCommandGuidanceLines: listRegisteredPluginAgentPromptGuidance({
-        surface: "subagent",
-      }),
+      childRuntimeSandboxed,
       childDepth,
       maxSpawnDepth,
+      drainsContinuationDelegateQueue: params.drainsContinuationDelegateQueue === true,
+      outputSchema: params.outputSchema,
     });
-    let childSystemPrompt = envelope.systemPrompt;
-    if (params.outputSchema) {
-      childSystemPrompt = `${childSystemPrompt}\n\nCall structured_output with {"result": <your final result>} until one payload is accepted, with at most one retry after a rejected attempt. The result value must match the requested JSON Schema. Do not call structured_output again after acceptance.`;
-    }
+    const { completionMode, envelope } = preparedEnvelope;
+    let { childSystemPrompt } = preparedEnvelope;
 
     let retainOnSessionKeep = false;
     let attachmentsReceipt: SpawnSubagentResult["attachments"];
@@ -306,6 +316,7 @@ export async function spawnSubagentDirect(
       sandboxed: childRuntimeSandboxed,
       attachments: params.attachments,
       mountPathHint,
+      redactContinuationErrorDetails: params.drainsContinuationDelegateQueue === true,
     });
     if (materializedAttachments && materializedAttachments.status !== "ok") {
       await cleanupCreatedSession(threadBindingReady);
@@ -345,12 +356,11 @@ export async function spawnSubagentDirect(
         swarmSchedulerGroupKey,
         swarmMaxConcurrent: swarmConfig.maxConcurrent,
       });
-    if (childEntry) {
-      recordSessionCreated(cfg, {
-        sessionKey: childSessionKey,
-        agentId: targetAgentId,
-        entry: childEntry,
-      });
+    if (params.drainsContinuationDelegateQueue) {
+      childLaunch.request.drainsContinuationDelegateQueue = true;
+    }
+    if (params.traceparent) {
+      childLaunch.request.traceparent = params.traceparent;
     }
     recordSubagentSpawned({
       childSessionKey,
@@ -366,8 +376,14 @@ export async function spawnSubagentDirect(
         sessionKey: childSessionKey,
         storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId }),
       });
-    const launchChildRun = async (assertDispatchCurrent?: () => void) =>
-      await callNativeSubagentGateway(
+    const launchChildRun = async (assertDispatchCurrent?: () => void) => {
+      ctx.continuationDelegateAdmission?.assertCurrent("gateway-dispatch");
+      registerSubagentTraceparentHandoff({
+        idempotencyKey: childIdem,
+        sessionKey: childSessionKey,
+        traceparent: params.traceparent,
+      });
+      return await callNativeSubagentGateway(
         withSubagentGatewayExecutionIdentity(
           {
             method: "agent",
@@ -395,6 +411,7 @@ export async function spawnSubagentDirect(
         childLaunch.authorization,
         gatewayContextResolver,
       );
+    };
 
     const emitSpawnLifecycleHooks = createSubagentSpawnLifecycleEmitter({
       hookRunner,
@@ -452,44 +469,12 @@ export async function spawnSubagentDirect(
         recordRequesterParticipation();
         return { runId: acceptedChildRunId };
       },
-      async cleanupOnFailure({ phase, state, registrationScope }) {
+      async cleanupOnFailure({ phase, state, error, registrationScope }) {
         canCleanupCreatedSession = registrationScope?.canCleanupSession;
         canRetireReservation = registrationScope?.canRetireReservation;
         if (phase === "initialize") {
           await cleanupFailedSpawn();
           return;
-        }
-        // The gateway skips its fallback CLI task row because this launch claims
-        // the run's row, and registration is what delivers it. A register failure
-        // means no owner ever recorded the run, so abort the run the gateway
-        // already accepted instead of leaving it executing unrecorded.
-        if (
-          phase === "register" &&
-          acceptedChildRunId &&
-          taskRowOwnership === "required" &&
-          canCleanupCreatedSession?.() !== false
-        ) {
-          await terminateAcceptedCollectorRun({
-            childSessionKey,
-            gatewayRunId: acceptedChildRunId,
-            ...provisionalSessionIdentity,
-          });
-        }
-        if (canCleanupCreatedSession?.() === false) {
-          await state?.contextEnginePreparation?.dispose().catch(() => {});
-        } else {
-          await rollbackPreparedContextEngine(state?.contextEnginePreparation);
-        }
-        if (attachmentId && canCleanupCreatedSession?.() !== false) {
-          try {
-            await cleanupMaterializedSubagentAttachments({
-              childSessionKey,
-              attachmentId,
-              isCurrent: canCleanupCreatedSession,
-            });
-          } catch {
-            // Best-effort cleanup only.
-          }
         }
         let emitLifecycleHooks = threadBindingReady;
         if (phase === "dispatch" && threadBindingReady) {
@@ -520,7 +505,20 @@ export async function spawnSubagentDirect(
           }
           emitLifecycleHooks = !endedHookEmitted;
         }
-        await cleanupCreatedSession(emitLifecycleHooks);
+        await cleanupAcceptedSubagentSpawnFailure({
+          phase,
+          error,
+          runId: childIdem,
+          childSessionKey,
+          acceptedChildRunId,
+          taskRowOwnership,
+          contextEnginePreparation: state?.contextEnginePreparation,
+          attachmentId,
+          ...provisionalSessionIdentity,
+          emitLifecycleHooks,
+          cleanupCreatedSession,
+          isCurrent: canCleanupCreatedSession,
+        });
       },
     };
     const pipelineResult = await runSpawnPipeline({
@@ -576,8 +574,108 @@ export async function spawnSubagentDirect(
           ...(gatewayContextResolver ? { gatewayContextResolver } : {}),
           attachmentId,
           retainAttachmentsOnKeep: retainOnSessionKeep,
+          ...(params.silentAnnounce ? { silentAnnounce: true } : {}),
+          ...(params.wakeOnReturn ? { wakeOnReturn: true } : {}),
+          ...(params.drainsContinuationDelegateQueue
+            ? { drainsContinuationDelegateQueue: true }
+            : {}),
+          ...(params.continuationTargetSessionKey
+            ? { continuationTargetSessionKey: params.continuationTargetSessionKey }
+            : {}),
+          ...(continuationTargetSessionKeys?.length ? { continuationTargetSessionKeys } : {}),
+          ...(params.continuationFanoutMode
+            ? { continuationFanoutMode: params.continuationFanoutMode }
+            : {}),
+          ...(continuationRecipientAuthorityBinding
+            ? { continuationRecipientAuthorityBinding }
+            : {}),
+          ...(params.traceparent ? { traceparent: params.traceparent } : {}),
         };
       },
+      assertRegistrationAdmission: () =>
+        ctx.continuationDelegateAdmission?.assertCurrent("registry-acceptance"),
+      assertPostPublicationAdmission: () =>
+        ctx.continuationDelegateAdmission?.assertCurrent("final-acceptance"),
+      publishRegistration: () => {
+        if (childEntry) {
+          recordSessionCreated(cfg, {
+            sessionKey: childSessionKey,
+            agentId: targetAgentId,
+            entry: childEntry,
+          });
+        }
+        recordSubagentSpawned({
+          childSessionKey,
+          childRunId,
+          requesterSessionKey: requesterInternalKey,
+          agentId: targetAgentId,
+        });
+      },
+      afterRegistration: async (state, runId, registrationScope) => {
+        ctx.continuationDelegateAdmission?.assertCurrent("lifecycle-publication");
+        canCleanupCreatedSession = registrationScope?.canCleanupSession;
+        canRetireReservation = registrationScope?.canRetireReservation;
+        if (params.collect && swarmGroupId && swarmSchedulerGroupKey) {
+          for (
+            let claim = registrationScope?.waitForClaim();
+            claim;
+            claim = registrationScope?.waitForClaim()
+          ) {
+            await claim;
+          }
+          const canLaunch = registrationScope?.canLaunch() !== false;
+          if (swarmReservation?.isCurrent() !== false) {
+            // The scheduler also settles registrations that have lost launch authority.
+            activateSwarmRun({
+              groupId: swarmSchedulerGroupKey,
+              runId,
+              lifecycleOwner: gatewayContextResolver
+                ? getCanonicalGatewayContextResolver(gatewayContextResolver)
+                : undefined,
+              ...createCollectorLaunchCallbacks({
+                childRunId: runId,
+                childSessionKey,
+                requesterSessionKey: requesterInternalKey,
+                gatewayContextResolver,
+                registrationScope,
+                preparation: state.contextEnginePreparation,
+                provisionalSessionIdentity,
+                launchChildRun,
+                recordParticipant: recordRequesterParticipation,
+                emitSpawnLifecycleHooks,
+                cleanupFailedSpawn,
+              }),
+            });
+          } else {
+            if (canRetireReservation?.() !== false) {
+              swarmReservation?.withdraw();
+            }
+            if (!canLaunch && canCleanupCreatedSession?.() !== false) {
+              await rollbackPreparedContextEngine(contextEnginePreparation);
+            } else {
+              await contextEnginePreparation?.dispose().catch(() => {});
+            }
+          }
+          contextEnginePreparation = undefined;
+        } else {
+          await emitSpawnLifecycleHooks(runId);
+        }
+        emitSessionLifecycleEvent({
+          sessionKey: childSessionKey,
+          reason: "create",
+          parentSessionKey: requesterInternalKey,
+          label: label || undefined,
+        });
+      },
+      rollbackRegistration: rollbackSubagentRunRegistration,
+      recordAcceptedRollback: (registration, error) =>
+        recordAcceptedSubagentSpawnRollback({
+          ...registration,
+          gatewayRunId: acceptedChildRunId ?? registration.runId,
+          reason: error instanceof Error ? error.message : String(error),
+          expectedRegistration: registration.expectedRegistration,
+          ...provisionalSessionIdentity,
+        }),
     });
     if (!pipelineResult.ok) {
       const runId = pipelineResult.runId ?? childIdem;
@@ -586,7 +684,11 @@ export async function spawnSubagentDirect(
           ? (pipelineResult.error as { spawnStatus?: unknown }).spawnStatus
           : undefined;
       return {
-        status: spawnStatus === "forbidden" ? "forbidden" : "error",
+        status: isSpawnSubagentAdmissionCancelledError(pipelineResult.error)
+          ? "cancelled"
+          : spawnStatus === "forbidden"
+            ? "forbidden"
+            : "error",
         error:
           pipelineResult.phase === "register" && spawnStatus !== "forbidden"
             ? `Failed to register subagent run: ${summarizeSpawnError(pipelineResult.error)}`
@@ -598,67 +700,21 @@ export async function spawnSubagentDirect(
     childRunId = pipelineResult.runId;
     canCleanupCreatedSession = pipelineResult.registrationScope?.canCleanupSession;
     canRetireReservation = pipelineResult.registrationScope?.canRetireReservation;
-    let collectorSessionKey: string | undefined;
-    if (params.collect && swarmGroupId && swarmSchedulerGroupKey) {
-      for (
-        let claim = pipelineResult.registrationScope?.waitForClaim();
-        claim;
-        claim = pipelineResult.registrationScope?.waitForClaim()
-      ) {
-        await claim;
-      }
-      const canLaunch = pipelineResult.registrationScope?.canLaunch() !== false;
-      if (swarmReservation?.isCurrent() !== false) {
-        // The scheduler also settles registrations that have lost launch authority.
-        activateSwarmRun({
-          groupId: swarmSchedulerGroupKey,
-          runId: childRunId,
-          lifecycleOwner: gatewayContextResolver
-            ? getCanonicalGatewayContextResolver(gatewayContextResolver)
-            : undefined,
-          ...createCollectorLaunchCallbacks({
-            childRunId,
-            childSessionKey,
-            requesterSessionKey: requesterInternalKey,
-            gatewayContextResolver,
-            registrationScope: pipelineResult.registrationScope,
-            preparation: pipelineResult.state.contextEnginePreparation,
-            provisionalSessionIdentity,
-            launchChildRun,
-            recordParticipant: recordRequesterParticipation,
-            emitSpawnLifecycleHooks,
-            cleanupFailedSpawn,
-          }),
-        });
-      } else {
-        if (canRetireReservation?.() !== false) {
-          swarmReservation?.withdraw();
-        }
-        if (!canLaunch && canCleanupCreatedSession?.() !== false) {
-          await rollbackPreparedContextEngine(contextEnginePreparation);
-        } else {
-          await contextEnginePreparation?.dispose().catch(() => {});
-        }
-      }
-      contextEnginePreparation = undefined;
+    const collectorAccepted = params.collect && swarmGroupId && swarmSchedulerGroupKey;
+    if (collectorAccepted) {
       swarmReservationPending = false;
-      collectorSessionKey = childSessionKey;
-    } else {
-      await emitSpawnLifecycleHooks(childRunId);
     }
 
-    // Emit lifecycle event so the gateway can broadcast sessions.changed to SSE subscribers.
     emitSessionLifecycleEvent({
       sessionKey: childSessionKey,
       reason: "create",
       parentSessionKey: requesterInternalKey,
       label: label || undefined,
     });
-
     return {
       status: "accepted",
       childSessionKey,
-      ...(collectorSessionKey ? { sessionKey: collectorSessionKey } : {}),
+      ...(collectorAccepted ? { sessionKey: childSessionKey } : {}),
       runId: childRunId,
       mode: spawnMode,
       expectsCompletionMessage: completionMode === "announce",
@@ -672,6 +728,11 @@ export async function spawnSubagentDirect(
       modelApplied: plan.modelApplied || undefined,
       attachments: attachmentsReceipt,
     };
+  } catch (error) {
+    if (isSpawnSubagentAdmissionCancelledError(error)) {
+      return { status: "cancelled", error: error.message };
+    }
+    throw error;
   } finally {
     admissionReservation?.release();
     if (swarmReservationPending && canRetireReservation?.() !== false) {

@@ -14,6 +14,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { AgentMessage } from "../runtime/index.js";
 import { buildAssistantMessage, buildUsageWithNoCost } from "../stream-message-shared.js";
+import { sanitizeTranscriptToolCallBlock } from "../tool-call-shared.js";
 
 const log = createSubsystemLogger("agents/embedded-cli-dispatch");
 
@@ -147,12 +148,12 @@ export function createCliDispatchTranscriptRecorder(params: {
         enqueue(() =>
           buildZeroUsageAssistantMessage(
             [
-              {
-                type: "toolCall",
+              sanitizeTranscriptToolCallBlock({
+                type: "toolCall" as const,
                 id: toolCallId,
                 name: event.toolName,
                 arguments: event.args ?? {},
-              },
+              }),
             ],
             "toolUse",
             taintedAtStart,

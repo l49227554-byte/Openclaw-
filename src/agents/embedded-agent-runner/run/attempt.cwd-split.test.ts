@@ -236,6 +236,25 @@ describe("runEmbeddedAttempt cwd/workspace split", () => {
     });
   });
 
+  it("forwards explicit continuation-tool disablement into runtime tools", async () => {
+    await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey: "agent:main:cron:job:run:attempt",
+      tempPaths,
+      attemptOverrides: {
+        disableTools: false,
+        disableContinuationTools: true,
+      },
+    });
+
+    // Assert the forwarded options, not the call arity: the factory is invoked
+    // with (options, skillReadResources), so a single-argument
+    // `toHaveBeenCalledWith` never matches.
+    expect(hoisted.createOpenClawCodingToolsMock.mock.calls[0]?.[0]).toMatchObject({
+      disableContinuationTools: true,
+    });
+  });
+
   it("skips runtime tool construction when the selected model does not support tools", async () => {
     hoisted.supportsModelToolsMock.mockReturnValueOnce(false);
 

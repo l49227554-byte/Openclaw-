@@ -1,8 +1,19 @@
-import { expectDefined } from "@openclaw/normalization-core";
 /**
  * Tests follow-up session send status transitions and broadcasts.
  */
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import { expectSubagentFollowupReactivation } from "./subagent-followup.test-helpers.js";
@@ -48,6 +59,9 @@ vi.mock("./chat-send-external-entry.js", () => ({
   handleDirectExternalChatSend: (...args: unknown[]) => chatSendWithAdmissionOwnedMock(...args),
 }));
 
+import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
+import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import { createSessionRowProjectionFixture } from "../session-row-projection.test-support.js";
 import { flushPendingSessionsChangedEvents } from "./session-change-event.js";
 import { sessionMessagingHandlers } from "./sessions-messaging.js";
@@ -65,8 +79,37 @@ function createRequestContext(overrides: Record<string, unknown> = {}): GatewayR
   } as unknown as GatewayRequestContext;
 }
 
+// A store path is not inert here: the row projection reads a real transcript, and
+// the sanctioned resolver maps a custom `sessions.json` to its sibling
+// `openclaw-agent.sqlite`. A shared `/tmp/sessions.json` therefore resolves to
+// `/tmp/openclaw-agent.sqlite`, whatever stale database a host happens to keep
+// there. Own the root so every resolution lands inside this suite instead.
+const tempRoots = createSuiteTempRootTracker({ prefix: "sessions-send-followup-" });
+let fixtureRoot = "";
+let fixtureStorePath = "";
+let workStorePath = "";
+
 describe("sessions.send completed subagent follow-up status", () => {
   afterEach(() => flushPendingSessionsChangedEvents());
+
+  beforeAll(async () => {
+    fixtureRoot = await tempRoots.setup();
+    fixtureStorePath = path.join(fixtureRoot, "sessions.json");
+    workStorePath = path.join(fixtureRoot, "work", "sessions.json");
+  });
+
+  afterAll(async () => {
+    // Release any agent database a read opened before the root is removed.
+    closeOpenClawAgentDatabasesForTest();
+    await tempRoots.cleanup();
+  });
+
+  it("resolves every fixture store path inside this suite's root", () => {
+    for (const storePath of [fixtureStorePath, workStorePath]) {
+      const resolved = resolveUnsuffixedSqliteTargetFromSessionStorePath(storePath).path;
+      expect(resolved.startsWith(`${fixtureRoot}${path.sep}`)).toBe(true);
+    }
+  });
 
   beforeEach(() => {
     loadSessionEntryMock.mockReset();
@@ -93,7 +136,7 @@ describe("sessions.send completed subagent follow-up status", () => {
       loadSessionEntryMock.mockReturnValue({
         cfg: {},
         canonicalKey: orphanKey,
-        storePath: "/tmp/sessions.json",
+        storePath: fixtureStorePath,
         entry: { sessionId: "sess-orphan" },
       });
       resolveDeletedAgentIdFromSessionKeyMock.mockReturnValue("deleted-agent");
@@ -140,7 +183,7 @@ describe("sessions.send completed subagent follow-up status", () => {
     loadSessionEntryMock.mockReturnValue({
       cfg: {},
       canonicalKey: childSessionKey,
-      storePath: "/tmp/sessions.json",
+      storePath: fixtureStorePath,
       entry: { sessionId: "sess-followup" },
     });
     getLatestSubagentRunByChildSessionKeyMock.mockReturnValue(completedRun);
@@ -155,7 +198,7 @@ describe("sessions.send completed subagent follow-up status", () => {
     const projection = createSessionRowProjectionFixture({
       cfg: {},
       agentId: "main",
-      storePath: "/tmp/sessions.json",
+      storePath: fixtureStorePath,
       store: {
         [childSessionKey]: {
           sessionId: "sess-followup",
@@ -214,7 +257,7 @@ describe("sessions.send completed subagent follow-up status", () => {
     loadSessionEntryMock.mockReturnValue({
       cfg: {},
       canonicalKey: childSessionKey,
-      storePath: "/tmp/sessions.json",
+      storePath: fixtureStorePath,
       entry: { sessionId: "sess-followup-rejected" },
     });
     getLatestSubagentRunByChildSessionKeyMock.mockReturnValue({
@@ -309,7 +352,7 @@ describe("sessions.send completed subagent follow-up status", () => {
     loadSessionEntryMock.mockReturnValue({
       cfg: {},
       canonicalKey: sessionKey,
-      storePath: "/tmp/sessions.json",
+      storePath: fixtureStorePath,
       entry: { sessionId: "sess-unrelated-run" },
     });
     // An unrelated run started after the original steer completed.
@@ -352,7 +395,7 @@ describe("sessions.send completed subagent follow-up status", () => {
     loadSessionEntryMock.mockReturnValue({
       cfg: {},
       canonicalKey: sessionKey,
-      storePath: "/tmp/sessions.json",
+      storePath: fixtureStorePath,
       entry: { sessionId: "sess-active" },
     });
     chatSendMock.mockImplementation(async ({ respond }: { respond: RespondFn }) => {
@@ -393,7 +436,7 @@ describe("sessions.send completed subagent follow-up status", () => {
     loadSessionEntryMock.mockReturnValue({
       cfg: {},
       canonicalKey: sessionKey,
-      storePath: "/tmp/sessions.json",
+      storePath: fixtureStorePath,
       entry: { sessionId: "sess-in-flight" },
     });
     chatSendMock.mockImplementation(async ({ respond }: { respond: RespondFn }) => {
@@ -439,7 +482,7 @@ describe("sessions.send completed subagent follow-up status", () => {
       loadSessionEntryMock.mockReturnValue({
         cfg,
         canonicalKey: "global",
-        storePath: "/tmp/work/sessions.json",
+        storePath: workStorePath,
         entry: { sessionId: "sess-work-global" },
       });
       chatSendMock.mockImplementation(async ({ respond }: { respond: RespondFn }) => {

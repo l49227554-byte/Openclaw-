@@ -26,6 +26,16 @@ Keep an explicit update request open through busy deferral, failure, rollback, a
 
 Inspect the exact invocation and reconcile its journal before continuing through the same owner. Before ending a turn with work pending, establish an active observation/completion path or a supported continuation through the existing owner, and return with acceptance or the exact blocker without another user prompt. A cadence alone is not proof that this request will resume. If no continuation path is available, report that specific blocker; do not promise unattended follow-through. Preserve safeguards and evidence rather than retrying blindly or creating another scheduler.
 
+## Notify only around actual downtime
+
+Keep Team notifications to two concise notices for an actual interruption: immediately before the canonical owner begins planned downtime, after preparation and cutover gates permit it; and once service is verified back. Starting an update request, preflight, or drain is not itself downtime. Coordinate with the owner's existing notification path so observers do not duplicate notices. If no safe notification boundary is available, report that limitation privately rather than announce speculative downtime or bypass the owner.
+
+Do not post to Team for preflight failures, blocked or deferred attempts, no-op attempts, diagnosis, or other non-actions. Report their outcome, next action, and concrete blockers privately to the requesting user. Quiet Team reporting does not end ownership of the update or waive follow-through, acceptance, recovery, or safety requirements.
+
+For an accepted update, the back-online notice includes concise highlights of changes landed on official `main` between the previous accepted serving commit and the newly accepted serving commit. Resolve both endpoints from the owner's accepted serving records and inspect that exact Git range; do not summarize from request time, a failed candidate, a release label, or moving `main`. Mention only changes included in the accepted range. If that history cannot be verified, say the highlights are unavailable rather than invent them.
+
+If service returns through rollback or same-release recovery, say it is restored on the previous version and the requested update has not succeeded; do not advertise candidate changes as deployed. Send the back-online notice only after the owner's applicable recovery/readiness verification, keep unresolved update blockers private, and continue the requested update through the canonical owner unless paused, canceled, or externally blocked. Keep detailed receipts, logs, private access details, and full hashes out of Team notices.
+
 ## Cross schemas safely
 
 Before stopping writers, identify the exact incumbent/candidate reader contracts, supported Doctor migration, and durable phase/recovery owner. Package versions and numeric schema ceilings alone are insufficient. Require the owner to prove these gates before mutation:

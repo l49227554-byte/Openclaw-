@@ -715,6 +715,7 @@ private actor SessionSubscribeGate {
     }
 }
 
+@MainActor
 private final class WeakReference<Value: AnyObject> {
     weak var value: Value?
 
@@ -723,6 +724,7 @@ private final class WeakReference<Value: AnyObject> {
     }
 }
 
+@MainActor
 private func weakReference<Value: AnyObject>(to value: Value?) throws -> WeakReference<Value> {
     let value = try #require(value)
     return WeakReference(value)
@@ -1665,7 +1667,6 @@ private actor SwarmCapabilityScript {
     }
 }
 
-@Suite(.serialized)
 struct ChatViewModelTests {
     @Test func `legacy plan renders only when progress card store is unavailable`() async throws {
         let (_, vm) = await makeViewModel(
@@ -2891,8 +2892,8 @@ struct ChatViewModelTests {
         try await waitUntil("question event reconciliation") { await race.calls == 2 }
         await race.resumeFirst(with: [chatQuestionRecord(id: "ask_done")])
         await initialRefresh.value
-        for _ in 0..<100 where viewModel.questionCards.map(\.id) != ["ask_other"] {
-            await Task.yield()
+        try await waitUntil("resolved question event applies canonical cards") {
+            await MainActor.run { viewModel.questionCards.map(\.id) == ["ask_other"] }
         }
         #expect(viewModel.questionCards.map(\.id) == ["ask_other"])
     }
@@ -3639,16 +3640,16 @@ struct ChatViewModelTests {
         var viewModel: OpenClawChatViewModel? = OpenClawChatViewModel(
             sessionKey: "main",
             transport: transport)
+        let discardedViewModel = try weakReference(to: viewModel)
         transport.emit(.health(ok: true))
-        for _ in 0..<100 where viewModel?.healthOK != true {
-            await Task.yield()
+        try await waitUntil("event listener receives health") {
+            await MainActor.run { discardedViewModel.value?.healthOK == true }
         }
         #expect(viewModel?.healthOK == true)
-        let discardedViewModel = try weakReference(to: viewModel)
 
         viewModel = nil
-        for _ in 0..<100 where discardedViewModel.value != nil {
-            await Task.yield()
+        try await waitUntil("event listener releases discarded view model") {
+            await MainActor.run { discardedViewModel.value == nil }
         }
 
         #expect(discardedViewModel.value == nil)

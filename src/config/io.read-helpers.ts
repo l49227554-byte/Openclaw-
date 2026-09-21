@@ -17,6 +17,7 @@ import {
 } from "./config-env-vars.js";
 import {
   type EnvSubstitutionWarning,
+  type EnvUnsupportedExpressionWarning,
   containsEnvVarReference,
   resolveConfigEnvVars,
 } from "./env-substitution.js";
@@ -278,6 +279,7 @@ type ConfigReadResolution = {
   resolvedConfigRaw: unknown;
   envSnapshotForRestore: Record<string, string | undefined>;
   envWarnings: EnvSubstitutionWarning[];
+  envUnsupportedExpressionWarnings: EnvUnsupportedExpressionWarning[];
   resolutionFacts: ConfigResolutionFacts;
 };
 
@@ -290,10 +292,12 @@ export function resolveConfigForRead(
     applyConfigEnvVars(resolvedIncludes as OpenClawConfig, env, { lowerPrecedenceEnv });
   }
   const envWarnings: EnvSubstitutionWarning[] = [];
+  const envUnsupportedExpressionWarnings: EnvUnsupportedExpressionWarning[] = [];
   const pendingEnvSecretRefs = new Map<string, string>();
   const resolvedEnvSecretRefs = new Map<string, string>();
   const resolvedConfigRaw = resolveConfigEnvVars(resolvedIncludes, env, {
     onMissing: (warning) => envWarnings.push(warning),
+    onUnsupportedExpression: (warning) => envUnsupportedExpressionWarnings.push(warning),
     onPendingEnvSecretRef: (id, configPath) => pendingEnvSecretRefs.set(configPath, id),
     onResolvedEnvSecretRef: (id, configPath) => resolvedEnvSecretRefs.set(configPath, id),
   });
@@ -301,6 +305,7 @@ export function resolveConfigForRead(
     resolvedConfigRaw,
     envSnapshotForRestore: { ...env } as Record<string, string | undefined>,
     envWarnings,
+    envUnsupportedExpressionWarnings,
     resolutionFacts: createConfigResolutionFacts(
       envWarnings,
       pendingEnvSecretRefs,

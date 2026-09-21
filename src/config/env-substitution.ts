@@ -27,6 +27,13 @@ import { isPlainObject } from "../utils.js";
 import { parseEnvTemplateSecretRef } from "./types.secrets.js";
 
 const ENV_VAR_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
+// Matches an env-var-shaped prefix followed by a shell parameter-expansion operator
+// (:-, :=, :?, :+, or their bare forms), e.g. "VAR:-default" or "VAR-default".
+// The prefix deliberately mirrors ENV_VAR_NAME_PATTERN's uppercase-only grammar: only a
+// name the user could plausibly have meant as an env var is worth a diagnostic. Widening
+// it to any identifier warns on ordinary placeholders from other template dialects
+// (`${my-service}`, `${count+1}`), which this warning has no way to silence.
+const SHELL_EXPANSION_OPERATOR_PATTERN = /^[A-Z_][A-Z0-9_]*:?[-=?+]/;
 
 /** Error thrown when a config value references a missing or empty environment variable. */
 export class MissingEnvVarError extends Error {
@@ -85,9 +92,21 @@ export type EnvSubstitutionWarning = {
   configPath: string;
 };
 
+/** Warning emitted when a `${...}` expression uses shell parameter-expansion syntax that is not supported and is left literal. */
+export type EnvUnsupportedExpressionWarning = {
+  /**
+   * The variable name and operator only, rendered as `${NAME:-...}`. Never the authored
+   * fallback text: it can contain a secret, and consumers of this warning are not redacted.
+   */
+  expression: string;
+  configPath: string;
+};
+
 type SubstituteOptions = {
   /** When set, missing vars call this instead of throwing and the original placeholder is preserved. */
   onMissing?: (warning: EnvSubstitutionWarning) => void;
+  /** When set, unsupported shell parameter-expansion expressions call this instead of being silently left literal. */
+  onUnsupportedExpression?: (warning: EnvUnsupportedExpressionWarning) => void;
   /** Records exact env SecretRef shorthand that substitution did not materialize. */
   onPendingEnvSecretRef?: (id: string, configPath: string) => void;
   /** Records the source of an exact env SecretRef shorthand that substitution materialized. */
@@ -146,7 +165,26 @@ function substituteString(
       continue;
     }
 
-    // Leave untouched if not a recognized pattern
+    // Leave untouched if not a recognized pattern. Skip the second "$" of an
+    // escaped "$${...}" so a deliberately escaped shell expression does not warn.
+    if (value[i + 1] === "{" && !(i > 0 && value[i - 1] === "$")) {
+      const start = i + 2;
+      const end = value.indexOf("}", start);
+      if (end !== -1) {
+        const inner = value.slice(start, end);
+        const operatorMatch = SHELL_EXPANSION_OPERATOR_PATTERN.exec(inner);
+        if (!ENV_VAR_NAME_PATTERN.test(inner) && operatorMatch) {
+          opts?.onUnsupportedExpression?.({
+            // Report the variable name and operator only. Everything after the operator is
+            // an author-supplied fallback that can hold a secret, and these warnings are not
+            // redacted downstream: redactConfigSnapshot leaves snapshot.warnings untouched
+            // and io.load.ts logs them. Never put the fallback payload in this string.
+            expression: `\${${operatorMatch[0]}...}`,
+            configPath,
+          });
+        }
+      }
+    }
     chunks.push(char);
   }
 

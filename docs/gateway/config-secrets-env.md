@@ -51,6 +51,16 @@ Reference env vars in any config string with `${VAR_NAME}`:
 - Missing/empty vars stay visibly unresolved, emit a warning, and are unavailable to consumers that require the value.
 - Escape with `$${VAR}` to produce a literal `${VAR}` value.
 - Works with `$include`.
+- Shell parameter-expansion operators are not supported: `${VAR:-default}`, `${VAR:=x}`, `${VAR:?x}`, `${VAR:+x}`, and `${VAR-x}` are not references. The expression is left exactly as written, and config load now emits a warning pointing at the alternative below.
+- For a default value, set it in `env.vars` (applied only when the process env is missing the key), then reference the bare name as `${SERVICE_TIMEOUT}` wherever the value is consumed:
+
+```json5
+{
+  env: {
+    vars: { SERVICE_TIMEOUT: "60" },
+  },
+}
+```
 
 ---
 

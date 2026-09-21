@@ -177,6 +177,11 @@ function* loadConfigWithEffects(
         `Config (${configPath}): missing env var "${warning.varName}" at ${warning.configPath} - feature using this value will be unavailable`,
       );
     }
+    for (const warning of readResolution.envUnsupportedExpressionWarnings) {
+      deps.logger.warn(
+        `Config (${configPath}): shell parameter expansion "${warning.expression}" at ${warning.configPath} is not supported - set a default in env.vars and reference the bare \${VAR} instead`,
+      );
+    }
     for (const diagnostic of [
       ...contextBudgetMigration.changes.map(({ message }) => message),
       ...contextBudgetMigration.warnings.map(({ message }) => message),

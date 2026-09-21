@@ -250,6 +250,12 @@ async function readConfigSnapshotWithPreparation(
       path: warning.configPath,
       message: `Missing env var "${warning.varName}" - feature using this value will be unavailable`,
     }));
+    envVarWarnings.push(
+      ...readResolution.envUnsupportedExpressionWarnings.map((warning) => ({
+        path: warning.configPath,
+        message: `Shell parameter expansion "${warning.expression}" is not supported - set a default in env.vars and reference the bare \${VAR} instead`,
+      })),
+    );
     const contextBudgetMigration = migrateLegacyContextBudgetConfig(
       readResolution.resolvedConfigRaw,
     );

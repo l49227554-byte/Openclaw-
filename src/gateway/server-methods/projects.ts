@@ -1,4 +1,5 @@
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
@@ -35,7 +36,6 @@ import {
   removeProjectRegistry,
   resolveProjectRegistry,
 } from "../../projects/project-registry.js";
-import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { isTrustedSecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { readCurrentUserProfileAliases } from "../../state/user-profile-list.js";
@@ -180,10 +180,11 @@ function indexPathProjects(projects: readonly ProjectRegistryEntry[]) {
 }
 
 function listProjectRecents(
-  store: ReturnType<typeof loadCombinedSessionStoreForGatewayCore>["store"],
+  combinedStore: Awaited<ReturnType<typeof loadCombinedSessionStoreForGatewayCoreAsync>>,
   profileIds: ReadonlySet<string>,
   projects: readonly ProjectRegistryEntry[],
 ): ProjectRecent[] {
+  const { store, targetsBySessionKey } = combinedStore;
   const candidates = Object.entries(store)
     .filter(
       ([, entry]) =>
@@ -199,13 +200,15 @@ function listProjectRecents(
   const recents: ProjectRecent[] = [];
   let pathProjects: ReturnType<typeof indexPathProjects> | undefined;
   for (const [sessionKey, entry] of candidates) {
+    // Reserved rows such as `global` carry no owner in their logical key. Keep the prepared
+    // combined-store owner so repository and project recents resolve to the session's agent.
+    const owner = expectDefined(targetsBySessionKey.get(sessionKey), "recent session owner");
     if (entry.repositoryWorkspaceId) {
       const repository = getSessionRepositoryWorkspaceStore().get(entry.repositoryWorkspaceId);
-      const sessionAgentId = parseAgentSessionKey(sessionKey)?.agentId;
       if (
         !repository ||
         repository.sessionKey !== sessionKey ||
-        (sessionAgentId && repository.agentId !== sessionAgentId) ||
+        repository.agentId !== owner.agentId ||
         seen.has(repository.url)
       ) {
         continue;
@@ -229,9 +232,8 @@ function listProjectRecents(
     const folder = worktreeRoot ?? spawnedCwd ?? execCwd;
     let project = explicitProject;
     if (!project && folder) {
-      const agentId = parseAgentSessionKey(sessionKey)?.agentId;
       const indexed = (pathProjects ??= indexPathProjects(projects));
-      const workspace = indexed.byAgent.get(agentId);
+      const workspace = indexed.byAgent.get(owner.agentId);
       project = workspace?.repoRoot === folder ? workspace : indexed.byPath.get(folder);
     }
     const key = project
@@ -485,12 +487,17 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
           WRITE_SCOPE,
           Array.isArray(client?.connect.scopes) ? client.connect.scopes : [],
         ).allowed;
+      let combinedStore:
+        | Awaited<ReturnType<typeof loadCombinedSessionStoreForGatewayCoreAsync>>
+        | undefined;
       let store: ReturnType<typeof loadCombinedSessionStoreForGatewayCore>["store"] = {};
       let observedProjects: ProjectSummary[] | undefined;
       try {
         if (client?.authenticatedUserProfile?.profileId || (params.includeObserved && canWrite())) {
-          store = (await loadCombinedSessionStoreForGatewayCoreAsync(cfg, { projection: "list" }))
-            .store;
+          combinedStore = await loadCombinedSessionStoreForGatewayCoreAsync(cfg, {
+            projection: "list",
+          });
+          store = combinedStore.store;
           assertCurrent();
         }
         if (params.includeObserved && canWrite()) {
@@ -503,9 +510,10 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
       }
       const profileId = client?.authenticatedUserProfile?.profileId;
       const recentProfileIds = profileId ? readCurrentUserProfileAliases(profileId) : undefined;
-      const recents = recentProfileIds
-        ? listProjectRecents(store, recentProfileIds, registryProjects)
-        : undefined;
+      const recents =
+        recentProfileIds && combinedStore
+          ? listProjectRecents(combinedStore, recentProfileIds, registryProjects)
+          : undefined;
       if (canWrite()) {
         respond(
           true,

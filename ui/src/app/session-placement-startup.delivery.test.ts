@@ -314,7 +314,7 @@ describe("application placement delivery recovery", () => {
     { order: "recovery-first", receipt: "pending" },
     { order: "recovery-first", receipt: "consumed" },
   ] as const)(
-    "keeps exactly one initial prompt when $receipt custody arrives $order",
+    "keeps the initial prompt until custody settles without projecting $receipt custody $order",
     async ({ order, receipt }) => {
       const history = createDeferred<unknown>();
       const request = vi.fn(() => history.promise);
@@ -376,7 +376,7 @@ describe("application placement delivery recovery", () => {
         publications.length = 0;
         if (order === "pane-first") {
           applyChatPendingInputs(pane, page);
-          expect(visibleMessages()).toHaveLength(1);
+          expect(visibleMessages()).toHaveLength(receipt === "pending" ? 0 : 1);
         }
         history.resolve({
           sessionId: pane.currentSessionId,
@@ -391,13 +391,18 @@ describe("application placement delivery recovery", () => {
           ],
         });
         await vi.waitFor(() => expect(startup.get(pane.sessionKey)).toBeNull());
-        expect(visibleMessages()).toHaveLength(1);
+        const pendingCustodyAlreadyApplied = receipt === "pending" && order === "pane-first";
+        expect(visibleMessages()).toHaveLength(pendingCustodyAlreadyApplied ? 0 : 1);
         expect(publications.length).toBeGreaterThan(0);
         for (const messages of publications) {
-          expect(messages).toHaveLength(1);
-          expect(messages[0]).toMatchObject({
-            content: [{ type: "text", text: input.recovery.message }],
-          });
+          if (pendingCustodyAlreadyApplied) {
+            expect(messages).toEqual([]);
+          } else {
+            expect(messages).toHaveLength(1);
+            expect(messages[0]).toMatchObject({
+              content: [{ type: "text", text: input.recovery.message }],
+            });
+          }
         }
         if (receipt === "consumed") {
           const aggregate = {
@@ -415,7 +420,7 @@ describe("application placement delivery recovery", () => {
           expect(visibleMessages()).toEqual([aggregate]);
         } else {
           applyChatPendingInputs(pane, page);
-          expect(visibleMessages()).toEqual(page.items.map((item) => item.message));
+          expect(visibleMessages()).toEqual([]);
           expect(pane.chatMessages).toEqual([]);
         }
         expect(request).toHaveBeenCalledOnce();

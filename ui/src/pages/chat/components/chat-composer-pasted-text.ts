@@ -121,13 +121,11 @@ export function renderComposerPastedText(att: ChatAttachment, props: ChatAttachm
         </button>`,
     });
   };
-  return html`<div class="chat-composer-pasted-text">
-    <openclaw-chat-pasted-text
-      .src=${getChatAttachmentDataUrl(att)}
-      .sizeBytes=${att.sizeBytes}
-      .scope=${att.id}
-      .onOpen=${open}
-    ></openclaw-chat-pasted-text>
-    ${renderRestoreAction()}
-  </div>`;
+  return html`<openclaw-chat-pasted-text
+    .src=${getChatAttachmentDataUrl(att)}
+    .sizeBytes=${att.sizeBytes}
+    .scope=${att.id}
+    .onOpen=${open}
+    .composerAction=${renderRestoreAction()}
+  ></openclaw-chat-pasted-text>`;
 }

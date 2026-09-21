@@ -157,7 +157,7 @@ describe("web_fetch proxy doctor diagnostic", () => {
 });
 
 describe("managed proxy loopback doctor diagnostic", () => {
-  const proxyUrl = "http://user:private-value@proxy.example:8080";
+  const proxyUrl = "http://proxy.example.test:8080";
   const webFetchDisabled = { web: { fetch: { enabled: false } } };
 
   it.each([

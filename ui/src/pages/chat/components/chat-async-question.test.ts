@@ -495,7 +495,7 @@ it("leaves an answer with ambiguous embedded question headings pending", () => {
 });
 
 it("projects answer delivery from the outbox, retries its payload, and waits for canonical confirmation", () => {
-  const state = presentationState();
+  const state: Parameters<typeof createAsyncQuestionPresentation>[0] = presentationState();
   const retry = vi.fn();
   const queue: ChatQueueItem[] = [
     {

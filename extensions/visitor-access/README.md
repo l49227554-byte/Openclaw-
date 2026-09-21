@@ -76,6 +76,12 @@ invitation policy. A missing or unsuitable default refuses the invitation before
 writing the grant or adding the email to Cloudflare. Keep existing staff roles
 and their assignments when configuring the guest default.
 
+Activate the guest default only after the deployed Gateway's session and tool
+routes, required sandboxing, and shared-session read limits have been qualified.
+Visitor Access validates the configured role; the Gateway provides those
+capabilities. Preserve existing staff assignments and apply the guest
+configuration as the final rollout step.
+
 ## Invite, inspect, and revoke visitors
 
 | Tool             | Input                                                 | Result                                                                                     |

@@ -31,8 +31,12 @@ async function execute<T>(
   let dispatched = false;
   try {
     const context = captureOpenClawStateWorkerContext({ path: databasePath, env });
-    const { runOpenClawStateWorkerOperation } =
-      await import("../state/openclaw-state-worker-store.js");
+    // A write-only await here would let later reads overtake it before broker admission.
+    const [{ runOpenClawStateWorkerOperation }, { createSqliteWorkerWriteAdmission }] =
+      await Promise.all([
+        import("../state/openclaw-state-worker-store.js"),
+        import("../infra/sqlite-worker-store.js"),
+      ]);
     const operation = async (scope: Scope) => {
       dispatched = true;
       const result = await dispatch(scope);
@@ -49,9 +53,7 @@ async function execute<T>(
       assertActive?.();
       return result === undefined ? missing() : result;
     }
-    const createAdmission = (
-      await import("../infra/sqlite-worker-store.js")
-    ).createSqliteWorkerWriteAdmission(() => {
+    const createAdmission = createSqliteWorkerWriteAdmission(() => {
       context.admission.assertCurrent();
       assertActive?.();
     }, [databasePath]);

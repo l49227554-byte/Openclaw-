@@ -47,7 +47,11 @@ it("submits the docked answer after editing its draft without unrelated chat upd
   await Promise.resolve();
   container.querySelector<HTMLButtonElement>(".chat-question-panel__advance")!.click();
   await vi.waitFor(() =>
-    expect(submit).toHaveBeenCalledExactlyOnceWith("> Which audience?\n\nNew contributors"),
+    expect(submit).toHaveBeenCalledExactlyOnceWith(
+      "> Which audience?\n\nNew contributors",
+      "audience",
+      undefined,
+    ),
   );
   await vi.waitFor(() => expect(container.querySelector(".agent-chat__question-dock")).toBeNull());
   expect(container.querySelector(".chat-question-summary")?.textContent).toContain(

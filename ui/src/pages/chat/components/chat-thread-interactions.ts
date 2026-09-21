@@ -74,7 +74,11 @@ export type ChatThreadState = {
   transcriptRenderContext: {
     onSetReply?: (target: MessageReplyTarget) => void;
     onOpenReply?: (replyToId: string) => void;
-    onAsyncQuestionSubmit?: (message: string) => Promise<boolean>;
+    onAsyncQuestionSubmit?: (
+      message: string,
+      itemId?: string,
+      sourceMessageId?: string,
+    ) => Promise<boolean>;
   };
 };
 

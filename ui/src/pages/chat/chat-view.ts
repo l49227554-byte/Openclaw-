@@ -91,7 +91,11 @@ export type ChatProps = Omit<
   ChatTaskSuggestionTrayProps &
   ChatPlacementStartupNoticeProps & {
     transcript: ChatTranscriptController;
-    onAsyncQuestionSubmit?: (message: string) => Promise<boolean>;
+    onAsyncQuestionSubmit?: (
+      message: string,
+      itemId?: string,
+      sourceMessageId?: string,
+    ) => Promise<boolean>;
     presented?: boolean;
     historyState?: ChatState;
     onSessionKeyChange: (next: string) => void;

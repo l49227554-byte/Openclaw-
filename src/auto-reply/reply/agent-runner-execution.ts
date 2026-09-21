@@ -499,14 +499,12 @@ async function executeAgentTurnInternalLoop(
   await modelPatch.finish(!terminalRunFailed && !patchedModelNeedsRevert);
   let terminalFailurePayload: ReplyPayload | undefined;
   if (terminalRunFailed) {
-    const useHeartbeatFailureCopy = shouldUseHeartbeatFailureCopy({
-      isHeartbeat: params.isHeartbeat,
-      sessionCtx: params.sessionCtx,
-    });
     const replyExpectation = resolveReplyExpectation(params.followupRun.run);
     terminalFailurePayload = buildTerminalAgentRunFailureReplyPayload({
       isHeartbeat: params.isHeartbeat,
-      useHeartbeatFailureCopy,
+      useHeartbeatFailureCopy: shouldUseHeartbeatFailureCopy({
+        isHeartbeat: params.isHeartbeat, sessionCtx: params.sessionCtx,
+      }),
       replyExpectation,
       visibleReplyDelivered:
         replyExpectation === "optional"

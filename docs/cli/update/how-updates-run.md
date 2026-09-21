@@ -578,8 +578,17 @@ instructions.
 If restart cannot run, the command prints `Gateway: restart skipped (...)` or
 `Gateway: restart failed: ...` with guidance to inspect the service and restart manually.
 With `--no-restart`, package replacement or git rebuild still runs, but the
-managed service is not stopped or restarted, so the running Gateway keeps old
-code until you restart it manually.
+updater does not stop or restart the Gateway. A running Gateway can still exit
+when it detects that its installation was replaced; restart it through its
+service or foreground process owner afterward.
+
+When updater-owned Doctor reaches maintenance before that foreground Gateway
+finishes shutting down, it waits for the same process to release state, up to
+the existing five-minute lifecycle allowance. Doctor retains the updater's live
+authority and still acquires its normal maintenance locks before repairing state.
+A different Gateway owner, lost update authority, or unresolved contention stops
+maintenance with recovery guidance. Ordinary Doctor commands and older update
+drivers without delegated Doctor authority retain their immediate refusal.
 
 ### Control-plane response shape
 

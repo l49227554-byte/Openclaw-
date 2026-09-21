@@ -11,7 +11,7 @@ import { readGatewayServiceState, resolveGatewayService } from "../../daemon/ser
 import { formatErrorMessage } from "../../infra/errors.js";
 import { readGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import { CLI_NAME } from "../cli-name.js";

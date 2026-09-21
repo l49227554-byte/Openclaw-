@@ -4,7 +4,7 @@ import { expect } from "vitest";
 import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../packages/gateway-protocol/src/capability-consent-error-details.js";
 import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
 import type { UpdateRunRecord } from "../infra/update-run-record.js";
-import type { UpdateRunResult } from "../infra/update-runner.js";
+import type { UpdateRunResult } from "../infra/update-runner-types.js";
 import { ExitError } from "../runtime.js";
 import type { UpdateCommandOptions } from "./update-cli/shared.js";
 

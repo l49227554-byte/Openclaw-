@@ -18,7 +18,7 @@ import {
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { isFailedUpdateStep } from "../../infra/update-run-step.js";
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
@@ -626,7 +626,6 @@ export async function executeMutableUpdate(
         startedAt: params.startedAt,
         progress: params.progress,
         channel: params.channel,
-        tag: params.tag,
         devTarget: params.devTarget,
         assertCurrent: assertExecutionCurrent,
         inspectGitTarget: async (target) => {
@@ -664,20 +663,15 @@ export async function executeMutableUpdate(
             );
           }
         },
-        beforeGitMutation:
-          params.updateInstallKind === "git"
-            ? createBeforeGitMutation({
-                updateRun: opts.run,
-                roots: gitMutationRoots ?? [params.root],
-                stopManagedService: beforeActivate,
-                getPreManagedServiceStop: () => preManagedServiceStop,
-                checkTargetSchemas: recheckSchemas,
-                prepareMutableUpdate: () =>
-                  prepareMutableUpdate(ownedManagedUpdateContext?.env ?? admission?.managedEnv),
-              })
-            : undefined,
-        allowGatewayServiceRepair: false,
-        allowGatewayActivation: false,
+        beforeGitMutation: createBeforeGitMutation({
+          updateRun: opts.run,
+          roots: gitMutationRoots ?? [params.root],
+          stopManagedService: beforeActivate,
+          getPreManagedServiceStop: () => preManagedServiceStop,
+          checkTargetSchemas: recheckSchemas,
+          prepareMutableUpdate: () =>
+            prepareMutableUpdate(ownedManagedUpdateContext?.env ?? admission?.managedEnv),
+        }),
       });
     }
   } catch (err) {

@@ -23,7 +23,7 @@ import {
   recordUpdateRunRepairAttempt,
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";

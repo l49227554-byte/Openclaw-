@@ -7,7 +7,7 @@ import {
 } from "../../infra/update-control-plane-sentinel.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import { classifyUpdateOutcome, isVerifiedUpdateRollback } from "../../shared/update-outcome.js";

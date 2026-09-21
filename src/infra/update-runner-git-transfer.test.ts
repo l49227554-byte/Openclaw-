@@ -119,13 +119,14 @@ it
   .each([
     "none",
     "inventory",
+    "inventory-closed",
     "missing-pack",
     "retry",
     "missing-before",
     "legacy-git",
     "configured-limit",
   ] as const)("stages complete Git transfers (failure=%s)", async (failure) => {
-  const overflow = failure === "inventory";
+  const overflow = failure === "inventory" || failure === "inventory-closed";
   const missingPack = failure === "missing-pack";
   const root = temporary.make("git-transfer-bounds-");
   const source = path.join(root, "source");
@@ -197,7 +198,20 @@ it
     if (failure === "legacy-git" && argv.includes("--no-lazy-fetch") && argv.includes("version")) {
       return { code: 129, stdout: "", stderr: "unknown option: --no-lazy-fetch" };
     }
-    if (overflow && argv.includes("rev-list")) {
+    if (overflow && argv.includes("rev-list") && argv.includes(candidateSha)) {
+      if (failure === "inventory-closed") {
+        const result = await runCommandWithTimeout(argv, {
+          ...options,
+          env,
+          maxOutputBytes: 1024 * 1024,
+          terminateOnOutputLimit: false,
+        });
+        expect(result.code).toBe(0);
+        expect(result.stdout.length).toBeGreaterThan(41 * 12);
+        boundedExitObserved = true;
+        // A bounded transport may report incomplete output after normal child closure.
+        return { ...result, stdout: result.stdout.slice(0, 41 * 12), outputLimitExceeded: true };
+      }
       // The child emits real Git output and handles termination with exit zero.
       // This is legal process behavior; exit status alone cannot admit its tail.
       const script = `const { spawnSync } = require("node:child_process");

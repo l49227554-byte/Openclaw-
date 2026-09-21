@@ -27,7 +27,7 @@ import {
 } from "../../infra/update-requester-authority.js";
 import { recordPostCoreUpdateEvidence } from "../../infra/update-run-interruption.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { readPersistedInstalledPluginIndex } from "../../plugins/installed-plugin-index-store.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
@@ -189,9 +189,10 @@ export async function resumePostCoreUpdate(params: ResumePostCoreUpdateParams): 
     } else {
       completed = await resumePostCoreUpdateInternal(resumed);
     }
-    const { pluginUpdate, result } = completed;
+    const { pluginUpdate, result, assertRequesterCurrent } = completed;
     // Shipped parents may stop this child as soon as this file appears. Publish
     // only after the executor has joined its Doctor and released native custody.
+    assertRequesterCurrent();
     if (process.env[POST_CORE_UPDATE_RESULT_PATH_ENV]) {
       await writePostCorePluginUpdateResultFile(
         process.env[POST_CORE_UPDATE_RESULT_PATH_ENV],
@@ -215,10 +216,15 @@ export async function resumePostCoreUpdate(params: ResumePostCoreUpdateParams): 
   defaultRuntime.exit(0);
 }
 
-async function resumePostCoreUpdateInternal(
-  params: ResumePostCoreUpdateParams,
-): Promise<{ pluginUpdate: PostCorePluginUpdateResult; result: UpdateRunResult }> {
-  const { assertCurrent } = createUpdateCommandAuthority({ opts: params.opts }, "Post-core update");
+async function resumePostCoreUpdateInternal(params: ResumePostCoreUpdateParams): Promise<{
+  pluginUpdate: PostCorePluginUpdateResult;
+  result: UpdateRunResult;
+  assertRequesterCurrent: () => void;
+}> {
+  const { assertCurrent, assertRequesterCurrent } = createUpdateCommandAuthority(
+    { opts: params.opts },
+    "Post-core update",
+  );
   assertCurrent?.();
   if (
     params.channel !== "stable" &&
@@ -396,7 +402,7 @@ async function resumePostCoreUpdateInternal(
     }
   }
   assertCurrent?.();
-  return { pluginUpdate, result };
+  return { pluginUpdate, result, assertRequesterCurrent };
 }
 
 /** Candidate code owns this phase whether reached by CLI resume or migrated finalization. */

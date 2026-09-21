@@ -127,19 +127,22 @@ it.each(["running", "queued", "capacity-wait"] as const)(
           const history = projection.state.rowContext.subagentRuns.latestRunsByChildSessionKey;
           const iterate = history[Symbol.iterator].bind(history);
           let visited = 0;
-          using _history = vi.spyOn(history, Symbol.iterator).mockImplementation(function* () {
-            for (const entry of iterate()) {
-              visited++;
-              yield entry;
-            }
-            return undefined;
-          });
+          const historyIterator = vi
+            .spyOn(history, Symbol.iterator)
+            .mockImplementation(function* () {
+              for (const entry of iterate()) {
+                visited++;
+                yield entry;
+              }
+              return undefined;
+            });
           replaceSessionEntrySync(
             { agentId: "main", sessionKey: movedParent },
             { sessionId: movedParent, updatedAt: endedAt + 1, label: "Unrelated update" },
           );
           expect((await list()).sessions[0]?.hasActiveSubagentRun).toBe(true);
           expect(visited).toBeLessThan(16);
+          historyIterator.mockRestore();
         }
         const presentation = prepareProjectedSessionPresentation(
           projection,
@@ -192,8 +195,8 @@ it.each(["running", "queued", "capacity-wait"] as const)(
         for (const key of [child, grandchild]) {
           subagentRuns.delete(`original:${key}`);
         }
-        for (const runId of retainedRunIds) {
-          subagentRuns.delete(runId);
+        for (const retainedRunId of retainedRunIds) {
+          subagentRuns.delete(retainedRunId);
         }
       }
     });

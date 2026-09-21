@@ -32,8 +32,11 @@ it("enumerates active session keys only for their encoded owner and current life
       lifecycleGeneration: "previous",
     },
   ];
+  for (const context of contexts) {
+    context.lifecycleGeneration ??= "current";
+  }
   const index = buildAgentRunProjectionIndex({
-    contexts: contexts.map((context) => ({ lifecycleGeneration: "current", ...context })),
+    contexts,
     lifecycleGeneration: "current",
   });
   expect([...iterateProjectedAgentRunSessionKeys(index)]).toEqual([

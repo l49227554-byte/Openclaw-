@@ -10,8 +10,10 @@ import { expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { resolveTestNodeExecPath } from "../../test-utils/node-process.js";
+import { updateExecutorEntrypoints } from "../cli-entrypoint.test-support.js";
 import {
   gateFixtureHandoffPublication,
   observeFixtureHelper,
@@ -19,7 +21,8 @@ import {
 } from "./run-loop-package-helper.test-support.js";
 import type { UpdateRespawnFixtures } from "./run-loop.test-support.js";
 
-const sourceUrl = (file: string) => JSON.stringify(new URL(`../../${file}`, import.meta.url).href);
+const sourceUrl = (key: keyof typeof updateExecutorEntrypoints) =>
+  JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorEntrypoints[key]).href);
 
 /** Real package staging, helper IPC and run-loop Stop share one held script. */
 export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixtures): void {
@@ -58,17 +61,19 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
       const bootstrap = `
         import fs from "node:fs/promises";
         import path from "node:path";
-        const { register } = await import(${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)});
-        register({ tsconfig: ${JSON.stringify(path.resolve("tsconfig.json"))} });
-        const { registerSealedRuntime } = await import(${sourceUrl("infra/sealed-runtime-registry.ts")});
+        if (${sourceUrl("sealedRegistry")}.endsWith(".ts")) {
+          const { register } = await import(${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href)});
+          register({ tsconfig: ${JSON.stringify(path.resolve("tsconfig.json"))} });
+        }
+        const { registerSealedRuntime } = await import(${sourceUrl("sealedRegistry")});
         registerSealedRuntime({ json5: undefined, resolveSecureTempRoot: () => ${JSON.stringify(control)} });
       `;
       await fs.writeFile(
         path.join(root, "dist", "cli", "daemon-cli.js"),
         `${bootstrap}
-        const ledger = await import(${sourceUrl("infra/update-run-ledger.ts")});
+        const ledger = await import(${sourceUrl("ledger")});
         export const { adoptUpdateRun, finishUpdateRun, getUpdateRun, recordUpdateRunStep, recordUpdateRunVerification } = ledger;
-        const handoff = await import(${sourceUrl("infra/update-managed-service-handoff.ts")});
+        const handoff = await import(${sourceUrl("handoff")});
         export const { assertForegroundUpdateOrigin } = handoff;
         `,
       );
@@ -80,12 +85,12 @@ export function registerPackageLifecycleStopTests(fixtures: UpdateRespawnFixture
         if (process.argv[2] === "triage") {
           process.stdout.write(JSON.stringify({ diagnostic: "isolated lifecycle fixture" }));
         } else {
-          const handoff = await import(${sourceUrl("infra/update-managed-service-handoff.ts")});
-          const { readControlPlaneUpdateSentinelMeta } = await import(${sourceUrl("infra/update-control-plane-sentinel.ts")});
-          const { runGlobalPackageUpdateSteps } = await import(${sourceUrl("infra/package-update-steps.ts")});
-          const { createNpmTarget, createRootRunner } = await import(${sourceUrl("infra/package-update-steps.test-support.ts")});
-          const { writePackageDistInventory } = await import(${JSON.stringify(new URL("../../../scripts/lib/package-dist-inventory.ts", import.meta.url).href)});
-          const { runCommandWithTimeout } = await import(${sourceUrl("process/exec.ts")});
+          const handoff = await import(${sourceUrl("handoff")});
+          const { readControlPlaneUpdateSentinelMeta } = await import(${sourceUrl("sentinel")});
+          const { runGlobalPackageUpdateSteps } = await import(${sourceUrl("packageSteps")});
+          const { createNpmTarget, createRootRunner } = await import(${sourceUrl("packageFixture")});
+          const { writePackageDistInventory } = await import(${sourceUrl("inventory")});
+          const { runCommandWithTimeout } = await import(${sourceUrl("exec")});
           const meta = await readControlPlaneUpdateSentinelMeta();
           const run = { runId: meta.runId, env: process.env };
           let outcome;

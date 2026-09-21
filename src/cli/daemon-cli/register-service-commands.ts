@@ -175,7 +175,7 @@ export function addGatewayServiceCommands(parent: Command, opts?: { statusDescri
     )
     .description("Restart the Gateway service (launchd/systemd/schtasks)")
     .option("--preserve-definition", "Keep the native service definition", false)
-    .option("--force", "Restart immediately without waiting for active gateway work", false)
+    .option("--force", "Begin restart now; drain admitted work within the shutdown budget", false)
     .option(
       "--safe",
       "Request an OpenClaw-aware restart after active work drains " +

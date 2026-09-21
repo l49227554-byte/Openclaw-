@@ -37,7 +37,9 @@ export async function runSafeGatewayRestart(
   target?: SafeRestartTarget,
 ): Promise<boolean> {
   if (opts.force) {
-    throw new Error("--safe cannot be combined with --force; omit --safe to force restart now");
+    throw new Error(
+      "--safe cannot be combined with --force; omit --safe to begin a forced restart",
+    );
   }
   if (opts.wait !== undefined) {
     throw new Error("--safe cannot be combined with --wait; safe restart uses gateway deferral");

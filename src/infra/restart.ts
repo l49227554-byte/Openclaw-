@@ -753,7 +753,7 @@ export function deferGatewayRestartUntilIdle(opts: {
     void emitPreparedGatewayRestart(
       opts.emitHooks,
       opts.reason,
-      timedOut ? opts.timeoutIntent : undefined,
+      timedOut ? { ...opts.timeoutIntent, drainBudgetExhausted: true } : undefined,
       timedOut
         ? undefined
         : () => {

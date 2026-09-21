@@ -161,9 +161,7 @@ async function stopGatewayWithoutServiceManager(
 
 async function resolveRestartListenerHealthWait(restartIntent: GatewayRestartIntent | undefined) {
   let drainTimeoutMs: number | undefined;
-  if (restartIntent?.force) {
-    drainTimeoutMs = 0;
-  } else if (typeof restartIntent?.waitMs === "number" && Number.isFinite(restartIntent.waitMs)) {
+  if (typeof restartIntent?.waitMs === "number" && Number.isFinite(restartIntent.waitMs)) {
     drainTimeoutMs = restartIntent.waitMs > 0 ? Math.floor(restartIntent.waitMs) : undefined;
   } else {
     drainTimeoutMs = resolveGatewayRestartDeferralTimeoutMs();

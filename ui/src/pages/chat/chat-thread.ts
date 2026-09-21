@@ -81,6 +81,8 @@ function sameMessageGroup(previous: MessageGroup, next: MessageGroup): boolean {
       messageClientSourcesKey(next.sourceClients ?? []) &&
     JSON.stringify(previous.sender) === JSON.stringify(next.sender) &&
     JSON.stringify(previous.replyToSender) === JSON.stringify(next.replyToSender) &&
+    previous.replyToMessage?.key === next.replyToMessage?.key &&
+    previous.replyToMessage?.message === next.replyToMessage?.message &&
     previous.isStreaming === next.isStreaming &&
     previous.visibleContent === next.visibleContent &&
     previous.runId === next.runId &&
@@ -92,6 +94,10 @@ function sameMessageGroup(previous: MessageGroup, next: MessageGroup): boolean {
         entry.key === candidate.key &&
         entry.message === candidate.message &&
         entry.duplicateCount === candidate.duplicateCount &&
+        entry.replyTarget?.kind === candidate.replyTarget?.kind &&
+        (entry.replyTarget?.kind !== "id" ||
+          (candidate.replyTarget?.kind === "id" &&
+            entry.replyTarget.id === candidate.replyTarget.id)) &&
         entry.hasVisibleContent === candidate.hasVisibleContent
       );
     })
@@ -138,6 +144,8 @@ function sameChatItem(previous: RenderChatItem, next: RenderChatItem): boolean {
         previous.startedAt === next.startedAt &&
         previous.isStreaming === next.isStreaming &&
         JSON.stringify(previous.replyToSender) === JSON.stringify(next.replyToSender) &&
+        previous.replyToMessage?.key === next.replyToMessage?.key &&
+        previous.replyToMessage?.message === next.replyToMessage?.message &&
         previous.runId === next.runId &&
         previous.boundaryId === next.boundaryId
       );

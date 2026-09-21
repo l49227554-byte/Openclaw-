@@ -55,9 +55,11 @@ function stampReplyAttribution(
   }
 
   let latestUserSender: MessageGroup["sender"];
+  let latestUserMessage: MessageGroup["replyToMessage"];
   for (const item of items) {
     if (item.kind === "stream") {
       item.replyToSender = latestUserSender;
+      item.replyToMessage = latestUserMessage;
       continue;
     }
     if (item.kind !== "group") {
@@ -67,11 +69,14 @@ function stampReplyAttribution(
       // A sender-less user group clears attribution: no chip is safer than
       // mislabeling the reply as addressed to the previous participant.
       latestUserSender = item.sender;
+      latestUserMessage = item.sender ? item.messages.at(-1) : undefined;
     } else if (item.role === "assistant" && hasForwardedSource(item)) {
       // Forwarded input starts a turn without a local human reply recipient.
       latestUserSender = undefined;
+      latestUserMessage = undefined;
     } else if (item.role === "assistant" && latestUserSender) {
       item.replyToSender = latestUserSender;
+      item.replyToMessage = latestUserMessage;
     }
   }
   return items;
@@ -80,6 +85,7 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
   const result: Array<ChatItem | MessageGroup> = [];
   let currentGroup: MessageGroup | null = null;
   let currentUserTurnIdentity: string | null = null;
+  let currentReplyTargetKey: string | null = null;
 
   for (const prepared of prepareMessagesForGrouping(items)) {
     if (prepared.kind !== "message") {
@@ -100,6 +106,7 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
       message: item.message,
       key: item.key,
       duplicateCount: item.duplicateCount,
+      ...(normalized.replyTarget ? { replyTarget: normalized.replyTarget } : {}),
       hasVisibleContent:
         visibleContent === "non-text" ||
         Boolean(resolveMessageDisplayMarkdown(item.message, normalized).trim()),
@@ -115,6 +122,8 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
     // user runIds onto groups: reply-less activity pooling uses that field.
     const steerTarget = role === "user" ? persistedSteerTargetRunId(item.message) : null;
     const userTurnIdentity = role === "user" ? (steerTarget ?? userTurnRunId(item.message)) : null;
+    const replyTargetKey =
+      role === "assistant" ? JSON.stringify(normalized.replyTarget ?? null) : null;
     const shouldSplitBySender = role === "user" || role === "assistant";
     const startsProjectedTurn =
       asRecord(asRecord(item.message)?.["__openclaw"])?.turnBoundary === true;
@@ -130,6 +139,7 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
       currentGroup.role !== role ||
       currentGroup.runId !== runId ||
       currentUserTurnIdentity !== userTurnIdentity ||
+      (role === "assistant" && currentReplyTargetKey !== replyTargetKey) ||
       splitsAssistantKind ||
       messageClientSourcesKey(currentGroup.sourceClients ?? []) !==
         messageClientSourcesKey(normalized.sourceClients ?? []) ||
@@ -143,6 +153,7 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
         result.push(currentGroup);
       }
       currentUserTurnIdentity = userTurnIdentity;
+      currentReplyTargetKey = replyTargetKey;
       currentGroup = {
         kind: "group",
         key: `group:${role}:${item.key}`,
@@ -178,6 +189,7 @@ export type StreamRunRenderItem = {
   runId?: string;
   boundaryId?: string;
   replyToSender?: MessageGroup["replyToSender"];
+  replyToMessage?: MessageGroup["replyToMessage"];
   parts: Array<Extract<ChatItem, { kind: "stream" | "reading-indicator" }>>;
 };
 export function coalesceStreamRuns(
@@ -194,6 +206,7 @@ export function coalesceStreamRuns(
         key: `stream-run:${first.key}`,
         parts: run,
         replyToSender: run.find((part) => part.kind === "stream")?.replyToSender,
+        replyToMessage: run.find((part) => part.kind === "stream")?.replyToMessage,
         ...(runId ? { runId } : {}),
         ...(boundaryId ? { boundaryId } : {}),
       });

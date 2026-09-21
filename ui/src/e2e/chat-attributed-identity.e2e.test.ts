@@ -35,7 +35,7 @@ async function captureProof(page: Page, name: string) {
 }
 
 async function readFooterGeometry(group: Locator) {
-  return group.locator(".chat-group-footer").evaluate((footer) => {
+  return group.locator(":scope > .chat-group-footer").evaluate((footer) => {
     const actions = footer.querySelector<HTMLElement>(".chat-group-footer-actions");
     const identity = footer.querySelector<HTMLElement>(".chat-group-footer__meta");
     const name = footer.querySelector<HTMLElement>(".chat-sender-name");
@@ -53,11 +53,11 @@ async function readFooterGeometry(group: Locator) {
         top: actionsRect.top,
       },
       identity: {
-        bottom: identityRect.bottom,
+        top: identityRect.top,
         left: identityRect.left,
         right: identityRect.right,
       },
-      footer: { right: footerRect.right },
+      footer: { height: footerRect.height },
       name: { left: nameRect.left - footerRect.left, top: nameRect.top - footerRect.top },
     };
   });
@@ -373,7 +373,10 @@ suite.define(() => {
     });
 
     await page.goto(controlUiSessionUrl(suite.server.baseUrl, "agent:main:main"));
-    await page.getByText("This is much easier to scan in a team conversation.").waitFor();
+    await page
+      .locator('[data-entry-id="colin-message"] .chat-text')
+      .getByText("This is much easier to scan in a team conversation.")
+      .waitFor();
 
     const userGroups = page.locator(".chat-group.user");
     await expect(userGroups).toHaveCount(3);
@@ -387,7 +390,7 @@ suite.define(() => {
     await expect(
       page.locator(".chat-group-footer--persistent-identity .chat-sender-name"),
     ).toHaveText(["Riley", "Colin", "Alexandria Montgomery-Winter"]);
-    await expect(page.locator(".chat-author-avatar")).toHaveCount(0);
+    await expect(page.locator(".chat-group-footer .chat-author-avatar")).toHaveCount(0);
     const peerGroup = userGroups.nth(1);
     const longNamePeerGroup = userGroups.last();
     const hoverDetails = peerGroup.locator(".chat-group-timestamp");
@@ -397,7 +400,7 @@ suite.define(() => {
     const restingPeerGeometry = await readFooterGeometry(peerGroup);
     await peerGroup.hover();
     await expect(hoverDetails).toHaveCSS("opacity", "1");
-    await expect(page.locator(".chat-author-avatar")).toHaveCount(0);
+    await expect(page.locator(".chat-group-footer .chat-author-avatar")).toHaveCount(0);
     await captureProof(page, "after-hover.png");
     const hoveredPeerGeometry = await readFooterGeometry(peerGroup);
     expectStableNamePosition(hoveredPeerGeometry.name, restingPeerGeometry.name);
@@ -419,10 +422,11 @@ suite.define(() => {
     const focusedPeerGeometry = await readFooterGeometry(peerGroup);
     expectStableNamePosition(focusedPeerGeometry.name, restingPeerGeometry.name);
     expect(focusedPeerGeometry.actions.left - focusedPeerGeometry.identity.right).toBeCloseTo(8, 0);
-    await expect(peerReply).toHaveCSS("opacity", "1");
+    await expect(peerReply).toHaveCSS("opacity", "0.6");
 
     await page.evaluate(() => {
       document.documentElement.dir = "rtl";
+      document.documentElement.lang = "ar";
       document.body.tabIndex = -1;
       document.body.focus();
     });
@@ -437,6 +441,7 @@ suite.define(() => {
 
     await page.evaluate(() => {
       document.documentElement.dir = "ltr";
+      document.documentElement.lang = "en";
     });
     await page.setViewportSize({ height: 760, width: 390 });
     await page.mouse.move(0, 0);
@@ -449,15 +454,90 @@ suite.define(() => {
     const revealedTouchGeometry = await readFooterGeometry(longNamePeerGroup);
     const revealedTouchHeight = (await longNamePeerGroup.boundingBox())?.height;
     expectStableNamePosition(revealedTouchGeometry.name, restingTouchGeometry.name);
-    expect(revealedTouchGeometry.actions.top).toBeGreaterThanOrEqual(
-      revealedTouchGeometry.identity.bottom,
+    expect(revealedTouchGeometry.actions.top).toBeCloseTo(revealedTouchGeometry.identity.top, 0);
+    expect(revealedTouchGeometry.actions.left - revealedTouchGeometry.identity.right).toBeCloseTo(
+      8,
+      0,
     );
-    expect(revealedTouchGeometry.actions.right).toBeCloseTo(revealedTouchGeometry.footer.right, 0);
+    expect(revealedTouchGeometry.footer.height).toBe(44);
     await expect(longNamePeerGroup.getByRole("button", { name: "Reply to message" })).toHaveCSS(
       "opacity",
-      "1",
+      "0.6",
     );
-    expect(revealedTouchHeight).toBeGreaterThan(restingTouchHeight ?? 0);
+    expect(revealedTouchHeight).toBe(restingTouchHeight);
+
+    // Revealing metadata must not resize virtual rows or move the transcript.
+    for (const group of [
+      userGroups.first(),
+      peerGroup,
+      page.locator(".chat-group.assistant").first(),
+    ]) {
+      await group.scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      for (const interaction of ["touch", "focus"] as const) {
+        const frames = await group.evaluate(async (element, gesture) => {
+          if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+          element.classList.remove("chat-group--meta-revealed");
+          const thread = element.closest<HTMLElement>(".chat-thread")!;
+          const lastMessage = element.querySelectorAll<HTMLElement>(".chat-bubble");
+          const last = lastMessage[lastMessage.length - 1];
+          const sample = () => ({
+            top: last.getBoundingClientRect().top,
+            scrollTop: thread.scrollTop,
+            height: element.getBoundingClientRect().height,
+          });
+          await new Promise(requestAnimationFrame);
+          await new Promise(requestAnimationFrame);
+          const samples = [sample()];
+          if (gesture === "touch") {
+            last.dispatchEvent(
+              new PointerEvent("pointerup", { bubbles: true, pointerType: "touch" }),
+            );
+          } else {
+            element
+              .querySelector<HTMLButtonElement>(".chat-reply-btn")!
+              .focus({ preventScroll: true });
+          }
+          for (let frame = 0; frame < 12; frame++) {
+            await new Promise(requestAnimationFrame);
+            samples.push(sample());
+          }
+          return samples;
+        }, interaction);
+        for (const frame of frames.slice(1)) {
+          expect(frame).toEqual(frames[0]);
+        }
+        await expect(group.locator(".chat-group-timestamp")).toHaveCSS("opacity", "1");
+        const actionLayout = await group.evaluate((element) => {
+          const footer = element.querySelector<HTMLElement>(":scope > .chat-group-footer")!;
+          const meta = footer.querySelector<HTMLElement>(".chat-group-footer__meta")!;
+          const time = footer.querySelector<HTMLElement>(".chat-group-timestamp")!;
+          const button = footer.querySelector<HTMLButtonElement>(".chat-reply-btn")!;
+          const bounds = button.getBoundingClientRect();
+          const centerX = bounds.left + bounds.width / 2;
+          return {
+            footerHeight: footer.getBoundingClientRect().height,
+            metaHeight: meta.getBoundingClientRect().height,
+            afterMeta: footer.getBoundingClientRect().bottom - meta.getBoundingClientRect().bottom,
+            lineOffset: bounds.top - meta.getBoundingClientRect().top,
+            afterText: bounds.left - time.getBoundingClientRect().right,
+            capturesBubble: button.contains(document.elementFromPoint(centerX, bounds.top - 4)),
+            hitEdges: [1, 43].map((offset) =>
+              button.contains(document.elementFromPoint(centerX, bounds.top + offset)),
+            ),
+          };
+        });
+        expect(actionLayout.footerHeight).toBe(44);
+        expect(actionLayout.metaHeight).toBe(24);
+        expect(actionLayout.afterMeta).toBe(20);
+        expect(Math.abs(actionLayout.lineOffset)).toBeLessThanOrEqual(2);
+        expect(actionLayout.afterText).toBeGreaterThanOrEqual(0);
+        expect(actionLayout.hitEdges).toEqual([true, true]);
+        expect(actionLayout.capturesBubble).toBe(false);
+      }
+    }
 
     await page.setViewportSize({ height: 760, width: 1180 });
     // Own-message footer: the always-visible name must stay put when hover

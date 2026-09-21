@@ -17,7 +17,7 @@ import {
   parseAgentSessionKey,
   resolveUiGlobalAliasAgentId,
 } from "../../../lib/sessions/session-key.ts";
-import { agentRunFrameActiveStatusParts } from "../chat-agent-run-grouping.ts";
+import { agentRunFrameActiveStatusParts, agentRunFrameGroups } from "../chat-agent-run-grouping.ts";
 import { messageRecoveryKey } from "../chat-message-recovery.ts";
 import { resolveTurnRecap, type TurnRecap } from "../chat-progress.ts";
 import {
@@ -322,6 +322,10 @@ export function projectChatTranscript(
   const streamGroupOptions = {
     ...sharedMessageRenderOptions,
     assistant: assistantIdentity,
+    resolveReplyPreview,
+    onResolveReply: props.replyMessageAccess?.request,
+    onOpenReply: (replyToId: string) => state.transcriptRenderContext.onOpenReply?.(replyToId),
+    replyNavigationId: props.replyMessageAccess?.navigationId,
     startupLabel: props.startupLabel,
     waitingApproval: props.waitingApproval,
     runOutputTokens,
@@ -427,7 +431,27 @@ export function projectChatTranscript(
       item.key === latestAssistantItemKey ? "latest-assistant" : ""
     }`;
   };
-  const renderItem = guardChatRenderItems(state, liveStatusSignature, (item) => {
+  const rowPresentationDependencies = (item: ChatRenderItem): readonly unknown[] => {
+    const dependencies: unknown[] = [liveStatusSignature(item)];
+    const groups =
+      item.kind === "group"
+        ? [item]
+        : item.kind === "agent-run-frame"
+          ? agentRunFrameGroups(item)
+          : item.kind === "work-group" || item.kind === "activity-run"
+            ? item.groups
+            : [];
+    for (const group of groups) {
+      for (const source of group.messages) {
+        if (source.replyTarget?.kind === "id") {
+          const loaded = loadedReplySources.get(source.replyTarget.id);
+          dependencies.push(source.replyTarget.id, loaded?.message, loaded?.senderLabel);
+        }
+      }
+    }
+    return dependencies;
+  };
+  const renderItem = guardChatRenderItems(state, rowPresentationDependencies, (item) => {
     if (item.kind === "divider") {
       return renderChatDivider(item, props.onOpenSessionCheckpoints);
     }

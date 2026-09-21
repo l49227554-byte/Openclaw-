@@ -3,6 +3,8 @@ import {
   OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST,
 } from "../../../context-engine/host-compat.js";
 import { resolveContextEngineOwnerPluginId } from "../../../context-engine/registry.js";
+import { runWithAsyncWorkResources } from "../../../shared/async-work-resources.js";
+import { getAsyncWorkSignal } from "../../../shared/async-work-scope.js";
 import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import { createBundleLspToolRuntime } from "../../agent-bundle-lsp-runtime.js";
 import { materializeBundleMcpToolsForRun } from "../../agent-bundle-mcp-tools.js";
@@ -57,6 +59,23 @@ import type {
 
 export async function runEmbeddedAttempt(
   input: EmbeddedRunAttemptParams,
+): Promise<EmbeddedRunAttemptResult> {
+  const parentSignal = getAsyncWorkSignal();
+  const abortSignal = parentSignal
+    ? input.abortSignal
+      ? AbortSignal.any([input.abortSignal, parentSignal])
+      : parentSignal
+    : input.abortSignal;
+  return await runWithAsyncWorkResources((onAcquired) =>
+    runEmbeddedAttemptOwned({ ...input, abortSignal }, (release) =>
+      onAcquired({ release, releaseBeforeResultWhenIdle: true }),
+    ),
+  );
+}
+
+async function runEmbeddedAttemptOwned(
+  input: EmbeddedRunAttemptParams,
+  retainToolCleanup: (release: () => Promise<void>) => void,
 ): Promise<EmbeddedRunAttemptResult> {
   let params = input;
   const runAbortController = new AbortController();
@@ -490,27 +509,42 @@ export async function runEmbeddedAttempt(
     }
     throw error;
   } finally {
-    const cleanupTerminal = projectAgentRunAttemptTerminal(executionState.terminal);
-    const cleanupReason =
-      cleanupTerminal.timedOut ||
-      cleanupTerminal.timedOutDuringCompaction ||
-      cleanupTerminal.timedOutDuringToolExecution
+    const resolveCleanupReason = () => {
+      const terminal = projectAgentRunAttemptTerminal(executionState.terminal);
+      return terminal.timedOut ||
+        terminal.timedOutDuringCompaction ||
+        terminal.timedOutDuringToolExecution
         ? "timeout"
-        : cleanupTerminal.aborted
+        : terminal.aborted
           ? "cancel"
-          : cleanupTerminal.failed
+          : terminal.failed
             ? "error"
             : "completion";
+    };
     const cleanups = runCleanups.splice(0);
-    await cleanupStep("embedded-registered-resources", async () => {
-      const settled = await Promise.allSettled(
-        cleanups.map(async (cleanup) => await cleanup(cleanupReason)),
-      );
-      if (settled.some((result) => result.status === "rejected")) {
-        recordAgentCleanupFailure();
+    const releaseTools = async () => {
+      const cleanupReason = resolveCleanupReason();
+      try {
+        await cleanupStep("embedded-registered-resources", async () => {
+          const settled = await Promise.allSettled(
+            cleanups.map(async (cleanup) => await cleanup(cleanupReason)),
+          );
+          if (settled.some((result) => result.status === "rejected")) {
+            recordAgentCleanupFailure();
+          }
+        });
+      } finally {
+        externalAbortController.dispose();
       }
-    });
-    externalAbortController.dispose();
+    };
+    if (resolveCleanupReason() === "completion") {
+      // Accepted tool work can still own a caller-authorized commit after the
+      // native reply. Keep its generation and genuine abort listener live until
+      // that work settles, without joining the independently owned payload.
+      retainToolCleanup(releaseTools);
+    } else {
+      await releaseTools();
+    }
     clearToolActivityRun(params.runId);
     try {
       await cleanupStep("embedded-preparation", cleanupEmbeddedPrepResourcesAfterEarlyExit);

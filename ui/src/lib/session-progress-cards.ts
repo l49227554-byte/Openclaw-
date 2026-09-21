@@ -44,7 +44,11 @@ type ProgressCardEntry = {
   target: ProgressCardGetParams;
   wireKey: string;
   generation: number;
+  /** Invalidates conditional dismissals when newer numbered progress arrives. */
+  dismissalGeneration: number;
   dirty: boolean;
+  /** Latest invalidation observed while a read is already in flight. */
+  pendingRefreshRevision?: number | null;
   card?: ProgressCard | null;
   error?: SessionProgressCardLoadError;
   load?: Promise<ProgressCard | null>;
@@ -240,6 +244,27 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
   const available = () =>
     gateway.snapshot.phase === "connected" && gateway.snapshot.client !== null;
 
+  const queueRefresh = (entry: ProgressCardEntry, revision: number | null) => {
+    if (entry.pendingRefreshRevision === null || revision === null) {
+      entry.pendingRefreshRevision = null;
+      return;
+    }
+    if (entry.pendingRefreshRevision === undefined || revision > entry.pendingRefreshRevision) {
+      entry.pendingRefreshRevision = revision;
+    }
+  };
+
+  const satisfiesPendingRefresh = (entry: ProgressCardEntry) => {
+    const revision = entry.pendingRefreshRevision;
+    return (
+      revision !== undefined &&
+      revision !== null &&
+      entry.card !== null &&
+      entry.card !== undefined &&
+      entry.card.revision >= revision
+    );
+  };
+
   const load = async (target: ProgressCardGetParams): Promise<ProgressCard | null> => {
     const resolved = resolveTarget(target);
     if (!resolved.target.sessionKey || !available()) {
@@ -249,6 +274,7 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
       target: resolved.target,
       wireKey: resolved.wireKey,
       generation: 0,
+      dismissalGeneration: 0,
       dirty: true,
     };
     remember(resolved.key, entry);
@@ -280,7 +306,7 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
           return null;
         }
         entry.card = card;
-        entry.dirty = false;
+        entry.dirty = entry.pendingRefreshRevision !== undefined && !satisfiesPendingRefresh(entry);
         delete entry.error;
         reconcileRefresh(entry);
         notify();
@@ -297,8 +323,12 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
           delete entry.load;
           if (entries.get(resolved.key) === entry) {
             remember(resolved.key, entry);
-            // Invalidations survive a hidden watch that resumes before this read settles.
-            if (entry.generation !== generation && watchedTargets(true).has(resolved.key)) {
+            const needsRefresh =
+              entry.pendingRefreshRevision !== undefined && !satisfiesPendingRefresh(entry);
+            delete entry.pendingRefreshRevision;
+            // Coalesced invalidations survive a hidden watch that resumes before
+            // this read settles, but only one follow-up read is needed.
+            if (needsRefresh && watchedTargets(true).has(resolved.key)) {
               void load(entry.target).catch(() => undefined);
             }
           }
@@ -328,6 +358,9 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
       for (const entry of entries.values()) {
         entry.dirty = true;
         delete entry.load;
+        // Reconnect refreshes are authoritative for all events observed before
+        // the new connection is ready; do not replay those invalidations again.
+        delete entry.pendingRefreshRevision;
       }
     }
     knownAvailable = nextAvailable;
@@ -384,11 +417,27 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
     // Loading rewrites LRU order, so capture the matching entries before starting requests.
     const matching = [...entries].filter(([, entry]) => entry.wireKey === sessionKey);
     for (const [key, entry] of matching) {
-      // Distinct canonical rows can share a wire key. Even a null revision is
-      // only a refresh hint; the captured owner request alone may clear a card.
-      entry.generation += 1;
+      // Distinct canonical rows can share a wire key. A numbered event that is
+      // already represented by the cache is redundant; a null revision remains
+      // an unconditional refresh hint.
+      if (
+        !entry.load &&
+        !entry.dirty &&
+        revision !== null &&
+        entry.card !== null &&
+        entry.card !== undefined &&
+        entry.card.revision >= revision
+      ) {
+        continue;
+      }
       entry.dirty = true;
       delete entry.error;
+      entry.dismissalGeneration += 1;
+      if (entry.load) {
+        queueRefresh(entry, revision);
+        continue;
+      }
+      entry.generation += 1;
       if (!entry.load && watched.has(key)) {
         void load(entry.target).catch(() => undefined);
       }
@@ -532,6 +581,7 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
         return false;
       }
       const generation = entry.generation;
+      const dismissalGeneration = entry.dismissalGeneration;
       const current = () =>
         entries.get(resolved.key) === entry &&
         connection.isCurrent(scope) &&
@@ -542,7 +592,11 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
           expectedRevision: card.revision,
         })
         .catch((error: unknown) => {
-          if (current() && entry.generation === generation) {
+          if (
+            current() &&
+            entry.generation === generation &&
+            entry.dismissalGeneration === dismissalGeneration
+          ) {
             recordRequestError(entry, error);
           }
           throw error;
@@ -553,7 +607,11 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
       }
       const dismissed = resultCard === null;
       // Its own invalidation may precede the reply; a clear still owns the captured revision.
-      if (resultCard ? entry.generation === generation : entry.card?.revision === card.revision) {
+      if (
+        resultCard
+          ? entry.generation === generation && entry.dismissalGeneration === dismissalGeneration
+          : entry.card?.revision === card.revision
+      ) {
         entry.card = resultCard;
         entry.dirty = false;
         delete entry.error;

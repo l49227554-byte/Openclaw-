@@ -671,6 +671,93 @@ describe("session progress card Gateway response boundary", () => {
     store.unwatch(owner);
   });
 
+  it("coalesces numbered change events while a progress read is pending", async () => {
+    const { gateway, request, emitChange } = createGateway("agent:main:main");
+    const target = { sessionKey };
+    const initial = { ...createProgressCard(1), markdown: "Initial" };
+    const refreshed = { ...initial, revision: 3, markdown: "Latest" };
+    const refresh = createDeferred<{ card: typeof refreshed }>();
+    request.mockResolvedValueOnce({ card: initial }).mockReturnValueOnce(refresh.promise);
+
+    const store = sessionProgressCardsForGateway(gateway);
+    const owner = {};
+    store.watch(owner, [target]);
+    onTestFinished(() => store.unwatch(owner));
+
+    await expect(store.load(target)).resolves.toEqual(initial);
+    emitChange(sessionKey, 2);
+    emitChange(sessionKey, 3);
+    expect(request).toHaveBeenCalledTimes(2);
+
+    refresh.resolve({ card: refreshed });
+    await expect(store.load(target)).resolves.toEqual(refreshed);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("performs one follow-up read when an in-flight response is older than the latest event", async () => {
+    const { gateway, request, emitChange } = createGateway("agent:main:main");
+    const target = { sessionKey };
+    const initial = { ...createProgressCard(1), markdown: "Initial" };
+    const stale = { ...initial, revision: 2, markdown: "Stale" };
+    const latest = { ...initial, revision: 3, markdown: "Latest" };
+    const refresh = createDeferred<{ card: typeof stale }>();
+    request
+      .mockResolvedValueOnce({ card: initial })
+      .mockReturnValueOnce(refresh.promise)
+      .mockResolvedValueOnce({ card: latest });
+
+    const store = sessionProgressCardsForGateway(gateway);
+    const owner = {};
+    store.watch(owner, [target]);
+    onTestFinished(() => store.unwatch(owner));
+
+    await expect(store.load(target)).resolves.toEqual(initial);
+    emitChange(sessionKey, 2);
+    emitChange(sessionKey, 3);
+    refresh.resolve({ card: stale });
+
+    await vi.waitFor(() => expect(store.get(target)).toEqual(latest));
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not let a late conditional dismissal overwrite a newer coalesced read", async () => {
+    const { gateway, request, emitChange } = createGateway("agent:main:main");
+    const target = { sessionKey };
+    const initial = { ...createProgressCard(1), markdown: "Initial" };
+    const stale = { ...initial, revision: 2, markdown: "Stale" };
+    const latest = { ...initial, revision: 3, markdown: "Latest" };
+    const refresh = createDeferred<{ card: typeof latest }>();
+    const dismissal = createDeferred<{ card: typeof stale }>();
+    request
+      .mockResolvedValueOnce({ card: initial })
+      .mockReturnValueOnce(refresh.promise)
+      .mockReturnValueOnce(dismissal.promise);
+
+    const store = sessionProgressCardsForGateway(gateway);
+    const owner = {};
+    store.watch(owner, [target]);
+    onTestFinished(() => {
+      refresh.resolve({ card: latest });
+      dismissal.resolve({ card: stale });
+      store.unwatch(owner);
+    });
+
+    const displayed = await store.load(target);
+    if (!displayed) {
+      throw new Error("Expected the initial progress card");
+    }
+    emitChange(sessionKey, 2);
+    const clearing = store.dismiss(target, displayed);
+    emitChange(sessionKey, 3);
+
+    refresh.resolve({ card: latest });
+    await vi.waitFor(() => expect(store.get(target)).toEqual(latest));
+
+    dismissal.resolve({ card: stale });
+    await expect(clearing).resolves.toBe(false);
+    expect(store.get(target)).toEqual(latest);
+  });
+
   it.each([
     ["global", "main", "global", "global", "global"],
     ["global", "main", "agent:research:main", "global", "global"],

@@ -23,6 +23,7 @@ import {
 import {
   executeCronStateCommand,
   isCronStateWorkerCommand,
+  prepareCronStateWorkerCommand,
 } from "../cron/store/dispatch.worker.js";
 import {
   acquireFleetCellOperationInDatabase,
@@ -138,6 +139,10 @@ type Operations = OpenClawStateWorkerOperations &
   OpenClawStateWorkerCleanupOperations;
 
 const log = createSubsystemLogger("state/worker");
+
+export function prepareSharedStateCommand(type: PropertyKey): Promise<void> | undefined {
+  return prepareCronStateWorkerCommand(type);
+}
 
 export function executeSharedStateCommand(
   command: Exclude<

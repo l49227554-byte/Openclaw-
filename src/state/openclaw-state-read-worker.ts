@@ -85,6 +85,17 @@ function readPool(): ReadPool {
 }
 
 function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "cron.observeRunRecovery") {
+    return {
+      type: command.type,
+      storeKey: command.storeKey,
+      proposals: command.proposals.map(({ jobId, queuedAtMs, runningAtMs }) => ({
+        jobId,
+        ...(queuedAtMs === undefined ? {} : { queuedAtMs }),
+        ...(runningAtMs === undefined ? {} : { runningAtMs }),
+      })),
+    };
+  }
   if (command.type === "pluginBlob.lookup") {
     const { pluginId, namespace, key } = command.input;
     return { type: command.type, input: { pluginId, namespace, key } };
@@ -121,6 +132,16 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "cron.observeRunRecovery") {
+    return command.proposals.reduce(
+      (total, proposal) =>
+        total +
+        Buffer.byteLength(proposal.jobId, "utf8") +
+        (proposal.queuedAtMs === undefined ? 0 : 8) +
+        (proposal.runningAtMs === undefined ? 0 : 8),
+      bytes + Buffer.byteLength(command.storeKey, "utf8"),
+    );
+  }
   if (command.type === "pluginBlob.lookup" || command.type === "pluginBlob.entries") {
     return (
       bytes +

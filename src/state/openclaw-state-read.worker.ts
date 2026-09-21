@@ -9,6 +9,7 @@ import {
 import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
+import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
@@ -59,6 +60,16 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.directory === "string" &&
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (isPluginBlobReadCommand(input.command) ||
+      (input.command.type === "cron.observeRunRecovery" &&
+        typeof input.command.storeKey === "string" &&
+        Array.isArray(input.command.proposals) &&
+        input.command.proposals.every(
+          (proposal: unknown) =>
+            isRecord(proposal) &&
+            typeof proposal.jobId === "string" &&
+            (proposal.queuedAtMs === undefined || typeof proposal.queuedAtMs === "number") &&
+            (proposal.runningAtMs === undefined || typeof proposal.runningAtMs === "number"),
+        )) ||
       input.command.type === "admit" ||
       input.command.type === "exec-approvals.read" ||
       input.command.type === "agentDatabaseRegistry.read" ||
@@ -150,6 +161,14 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "cron.observeRunRecovery") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    observation: observeCronRunRecoveryInDatabase(db, command),
+                  };
+                }
                 if (command.type === "pluginBlob.lookup") {
                   return {
                     ok: true,

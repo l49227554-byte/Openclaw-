@@ -41,7 +41,7 @@ export function initialTranscriptRect(host: ReactiveControllerHost) {
   };
 }
 
-export function measureConnectedTranscriptRows(
+function measureConnectedTranscriptRows(
   scrollElement: HTMLDivElement | null,
   virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
 ): boolean {
@@ -116,14 +116,17 @@ export function reconcileInitialTranscriptOffset(
   return "corrected";
 }
 
-export class PositionRailGutterController implements ReactiveController {
+export class TranscriptGeometryController implements ReactiveController {
   private frame: number | null = null;
+  private rowMeasureFrame: number | null = null;
 
   constructor(
     private readonly host: ReactiveControllerHost & {
       readonly scrollElement: HTMLDivElement | null;
     },
     private readonly inner: () => HTMLDivElement | null,
+    private readonly getVirtualizer: () => Virtualizer<HTMLDivElement, HTMLElement>,
+    private readonly beforeMeasure: () => void,
   ) {
     host.addController(this);
   }
@@ -136,18 +139,52 @@ export class PositionRailGutterController implements ReactiveController {
     // layout read here clamps scrolling against that intermediate viewport.
     this.frame = requestAnimationFrame(() => {
       this.frame = null;
-      this.sync();
+      this.syncPositionRail();
     });
   }
 
   hostDisconnected(): void {
+    if (this.rowMeasureFrame !== null) {
+      cancelAnimationFrame(this.rowMeasureFrame);
+      this.rowMeasureFrame = null;
+    }
     if (this.frame !== null) {
       cancelAnimationFrame(this.frame);
       this.frame = null;
     }
   }
 
-  sync(): void {
+  measureRows(): boolean {
+    // Native input can land after takeover but before its offset observer.
+    // Refresh the offset and direction before compensating deferred row growth.
+    this.beforeMeasure();
+    return measureConnectedTranscriptRows(this.host.scrollElement, this.getVirtualizer());
+  }
+
+  measureSearchRows(): boolean {
+    const element = this.host.scrollElement;
+    const rect = element?.getBoundingClientRect();
+    if (!element || !rect?.width || !rect.height || !element.querySelector(".chat-virtual-row")) {
+      return false;
+    }
+    this.measureRows();
+    return true;
+  }
+
+  queueRowMeasure(): void {
+    if (this.rowMeasureFrame !== null) {
+      return;
+    }
+    const element = this.host.scrollElement;
+    this.rowMeasureFrame = requestAnimationFrame(() => {
+      this.rowMeasureFrame = null;
+      if (element === this.host.scrollElement) {
+        this.measureRows();
+      }
+    });
+  }
+
+  syncPositionRail(): void {
     const viewport = this.host.scrollElement;
     const inner = this.inner();
     if (!viewport?.isConnected || inner?.parentElement !== viewport) {

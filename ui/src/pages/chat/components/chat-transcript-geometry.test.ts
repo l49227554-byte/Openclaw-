@@ -8,7 +8,7 @@ import { createTestTranscript, stubAnimationFrames } from "../chat-view.test-hel
 import { SIDEBAR_GEOMETRY_COMMIT_EVENT } from "../sidebar-layout.ts";
 import { renderChatThread } from "./chat-thread.ts";
 import { ChatTranscriptController } from "./chat-transcript-controller.ts";
-import { measureConnectedTranscriptRows } from "./chat-transcript-geometry.ts";
+import { TranscriptGeometryController } from "./chat-transcript-geometry.ts";
 import {
   flushDeferredRowPrune,
   installTranscriptDomMocks,
@@ -58,10 +58,22 @@ describe("chat transcript geometry", () => {
     controller.hostUpdated();
     const virtualizer = controller.getVirtualizer();
     virtualizer.getVirtualItems();
+    const geometry = new TranscriptGeometryController(
+      {
+        addController: vi.fn(),
+        removeController: vi.fn(),
+        requestUpdate: vi.fn(),
+        updateComplete: Promise.resolve(true),
+        scrollElement: container,
+      },
+      () => null,
+      () => virtualizer,
+      () => {},
+    );
     try {
-      expect(measureConnectedTranscriptRows(container, virtualizer)).toBe(true);
+      expect(geometry.measureRows()).toBe(true);
       expect(virtualizer.itemSizeCache.get("fractional")).toBe(100.375);
-      expect(measureConnectedTranscriptRows(container, virtualizer)).toBe(false);
+      expect(geometry.measureRows()).toBe(false);
     } finally {
       controller.hostDisconnected();
     }

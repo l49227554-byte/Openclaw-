@@ -2,11 +2,11 @@
 import { VirtualizerController } from "@tanstack/lit-virtual";
 import type { Virtualizer } from "@tanstack/virtual-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TranscriptMessageAnchors } from "./chat-transcript-message-anchors.ts";
 import {
   createTranscriptOffsetState,
   observeTranscriptOffset,
 } from "./chat-transcript-offset-observer.ts";
-import { TranscriptPrependAnchor } from "./chat-transcript-prepend-anchor.ts";
 
 function rect(top: number, height: number): DOMRect {
   return {
@@ -46,7 +46,7 @@ function fixture(scrollHeight = 1600) {
     bubble,
     virtualizer,
     instance: virtualizer as unknown as Virtualizer<HTMLDivElement, HTMLElement>,
-    anchor: new TranscriptPrependAnchor(),
+    anchor: new TranscriptMessageAnchors(),
     measureRows: vi.fn(() => false),
   };
 }
@@ -129,11 +129,11 @@ describe("transcript prepend anchor", () => {
     anchor.capture(scroller, false);
     scroller.scrollTop = 200;
     anchor.messageKeys = messages("visible", "peer-one");
-    anchor.capture(scroller, false, true);
+    anchor.capture(scroller, false, false, true);
     anchor.update(scroller, instance, measureRows);
     contentTop += 30;
     anchor.messageKeys = messages("visible", "peer-one", "peer-two");
-    anchor.capture(scroller, false, true);
+    anchor.capture(scroller, false, false, true);
     anchor.update(scroller, instance, measureRows);
     contentTop += 30;
     anchor.update(scroller, instance, measureRows);
@@ -148,7 +148,7 @@ describe("transcript prepend anchor", () => {
     const owner = {
       state: createTranscriptOffsetState(),
       getScrollElement: () => scroller,
-      prependAnchor: anchor,
+      messageAnchors: anchor,
       isProgrammaticScroll: () => false,
       cancelScroll: () => anchor.clear(),
       requestUpdate: vi.fn(),
@@ -183,7 +183,7 @@ describe("transcript prepend anchor", () => {
     try {
       scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
       anchor.messageKeys = messages("visible");
-      anchor.capture(scroller, false, true);
+      anchor.capture(scroller, false, false, true);
       anchor.update(scroller, instance, measureRows);
       headerGrowth = 30;
       scroller.scrollTop = 160;
@@ -212,6 +212,46 @@ describe("transcript prepend anchor", () => {
       expect(anchor.update(scroller, instance, measureRows)).toBe(true);
       expect(scroller.scrollTop).toBe(200);
       expect(anchor.update(scroller, instance, measureRows)).toBe(false);
+    },
+  );
+});
+
+describe("empty-search message return", () => {
+  it.each([false, true])(
+    "resolves a regrouped message or discards a removed message=$removed before return",
+    (removed) => {
+      const { scroller, row, bubble, instance, anchor, measureRows } = fixture();
+      row.dataset.virtualRowKey = "old-group";
+      anchor.committedMessageRows = new Map([["visible", "old-group"]]);
+      anchor.setSearchState(scroller, true, true, false);
+      anchor.setSearchState(scroller, false, false, false);
+      anchor.capture(scroller, false);
+      anchor.measureSearchReturn(() => true);
+      anchor.committedMessageRows = new Map(removed ? [] : [["visible", "new-group"]]);
+      anchor.capture(scroller, false);
+      const onRestored = vi.fn();
+      scroller.scrollTop = 200;
+      if (removed) {
+        bubble.remove();
+        expect(anchor.update(scroller, instance, measureRows, false, onRestored)).toBe(false);
+        expect(scroller.scrollTop).toBe(200);
+        expect(onRestored).not.toHaveBeenCalled();
+        return;
+      }
+      row.dataset.virtualRowKey = "new-group";
+      const range = anchor.extractRange(
+        { startIndex: 0, endIndex: 1, count: 8, overscan: 1 },
+        new Map([["new-group", 6]]),
+        null,
+      );
+      expect(range).toEqual([5, 6, 7]);
+      bubble.getBoundingClientRect = () => rect(390, 180);
+      expect(anchor.update(scroller, instance, measureRows, false, onRestored)).toBe(false);
+      expect(scroller.scrollTop).toBe(200);
+      anchor.measureSearchReturn(() => true);
+      expect(anchor.update(scroller, instance, measureRows, false, onRestored)).toBe(true);
+      expect(scroller.scrollTop).toBe(500);
+      expect(onRestored).toHaveBeenCalledOnce();
     },
   );
 });

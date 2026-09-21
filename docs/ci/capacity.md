@@ -215,6 +215,12 @@ before claiming realized savings.
 
 ## Measured shard weights
 
+Infrastructure and host-owned SQLite test consumers also follow the existing
+worker ceiling, retaining isolated forks and fixture-owned home/state directories.
+Directory-sensitive regressions run in joined child processes, and backup command
+fixtures consume the invocation's prepared runtime. File parallelism does not add
+compact groups, runner registrations, or a separate worker budget.
+
 Gateway core, database-worker, methods, methods-isolated, server, and
 server-isolated configs run with exclusive plan admission. Cold in-process
 Gateway boot measured 37 seconds alone and 50 seconds under contention against
@@ -236,12 +242,6 @@ and module state. One worker still runs files serially; the file inventory and
 no-output watchdog are unchanged.
 Shared test port claims cover both child-process startup and in-process listener
 lifetimes, including the handoff before a child binds its socket.
-
-Infrastructure and host-owned SQLite test consumers also follow the existing
-worker ceiling, retaining isolated forks and fixture-owned home/state directories.
-Directory-sensitive regressions run in joined child processes, and backup command
-fixtures consume the invocation's prepared runtime. File parallelism does not add
-compact groups, runner registrations, or a separate worker budget.
 
 Complete hybrid main and pull-request plans retain their existing jobs and runner
 allocations while admitting measured runtime groups within 440 seconds, including

@@ -21,6 +21,13 @@ type ComposerTextareaResizeObserverState = {
   events: AbortController;
 };
 
+type ComposerPaneAnchorState = {
+  anchorToEnd: boolean;
+  pendingBottomAnchor: boolean;
+  firstFrame: number | null;
+  secondFrame: number | null;
+};
+
 type ComposerPopoverAnchorObserverState = {
   resizeObserver: ResizeObserver | null;
   toggleObserver: MutationObserver | null;
@@ -37,11 +44,86 @@ const composerPopoverAnchorObservers = new WeakMap<
   HTMLElement,
   ComposerPopoverAnchorObserverState
 >();
+const composerPaneAnchorStates = new WeakMap<HTMLElement, ComposerPaneAnchorState>();
+const observedComposerThreads = new WeakSet<HTMLElement>();
 
 const COMPOSER_POPOVER_GAP_PX = 6;
 // max-height constrains the menu's scrollable box before its border/padding;
 // include that chrome so the outer panel retains a viewport gutter.
 const COMPOSER_POPOVER_VIEWPORT_INSET_PX = 28;
+
+function hasNativeTextareaContentSizing() {
+  return typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
+}
+
+function ensureComposerPaneAnchorState(
+  owner: HTMLElement,
+  thread: HTMLElement,
+): ComposerPaneAnchorState {
+  let state = composerPaneAnchorStates.get(owner);
+  if (!state) {
+    state = {
+      anchorToEnd: captureChatSessionScrollPosition(thread).anchorToEnd,
+      pendingBottomAnchor: false,
+      firstFrame: null,
+      secondFrame: null,
+    };
+    composerPaneAnchorStates.set(owner, state);
+  }
+  if (!observedComposerThreads.has(thread)) {
+    observedComposerThreads.add(thread);
+    thread.addEventListener(
+      "scroll",
+      () => {
+        state.anchorToEnd = captureChatSessionScrollPosition(thread).anchorToEnd;
+      },
+      { passive: true },
+    );
+    const cancelPendingAnchor = () => {
+      state.pendingBottomAnchor = false;
+    };
+    for (const type of ["wheel", "pointerdown", "touchstart"]) {
+      thread.addEventListener(type, cancelPendingAnchor, { passive: true });
+    }
+  }
+  return state;
+}
+
+function scheduleNativeTextareaBottomAnchor(el: HTMLTextAreaElement) {
+  const owner = el.closest<HTMLElement>("openclaw-chat-pane") ?? el.closest<HTMLElement>(".chat");
+  const thread = owner?.querySelector<HTMLElement>(".chat-thread") ?? null;
+  if (!owner || !thread) {
+    return;
+  }
+  const state = ensureComposerPaneAnchorState(owner, thread);
+  state.pendingBottomAnchor = state.anchorToEnd;
+  if (!state.pendingBottomAnchor || state.firstFrame !== null || state.secondFrame !== null) {
+    return;
+  }
+  // The first frame paints the character through native field sizing. Restore
+  // the transcript anchor from the already-computed layout in the next frame.
+  state.firstFrame = requestAnimationFrame(() => {
+    state.firstFrame = null;
+    if (!state.pendingBottomAnchor) {
+      return;
+    }
+    state.secondFrame = requestAnimationFrame(() => {
+      state.secondFrame = null;
+      if (!state.pendingBottomAnchor) {
+        return;
+      }
+      const currentThread = owner.querySelector<HTMLElement>(".chat-thread");
+      if (!currentThread) {
+        state.pendingBottomAnchor = false;
+        return;
+      }
+      ensureComposerPaneAnchorState(owner, currentThread);
+      state.pendingBottomAnchor = false;
+      currentThread.scrollTop = currentThread.scrollHeight;
+      state.anchorToEnd = true;
+    });
+  });
+}
 
 function updateComposerPopoverAnchor(el: HTMLElement) {
   const viewport = window.visualViewport;
@@ -150,6 +232,14 @@ export function adjustTextareaHeight(el: HTMLTextAreaElement) {
     el.removeAttribute("data-scroll-fade-bottom");
     return;
   }
+  // Modern engines can size the textarea from its content in the normal layout
+  // pass. Do not force repeated transcript and textarea layout reads on every
+  // keystroke when that native path is available.
+  if (hasNativeTextareaContentSizing()) {
+    el.style.height = "";
+    scheduleNativeTextareaBottomAnchor(el);
+    return;
+  }
   const thread = el.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null;
   const preserveBottomAnchor = thread
     ? captureChatSessionScrollPosition(thread).anchorToEnd
@@ -175,6 +265,11 @@ export function adjustTextareaHeight(el: HTMLTextAreaElement) {
 export function observeTextareaOverflow(el: HTMLTextAreaElement) {
   if (composerTextareaResizeObservers.has(el)) {
     return;
+  }
+  const thread = el.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null;
+  const owner = el.closest<HTMLElement>("openclaw-chat-pane") ?? el.closest<HTMLElement>(".chat");
+  if (owner && thread) {
+    ensureComposerPaneAnchorState(owner, thread);
   }
   const state: ComposerTextareaResizeObserverState = {
     observer: null,

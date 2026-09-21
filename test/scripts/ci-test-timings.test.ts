@@ -412,7 +412,9 @@ describe("runtime placement observations", () => {
                 original.checkName === job.checkName &&
                 original.pretestBuildMode === undefined &&
                 original.planConcurrency === 1 &&
-                original.env?.OPENCLAW_VITEST_MAX_WORKERS === "2",
+                original.groups.some((group) =>
+                  group.configs.includes("test/vitest/vitest.gateway-methods-isolated.config.ts"),
+                ),
             ),
           )!;
           expect(recipient, "serial Gateway recipient").toBeDefined();
@@ -437,9 +439,14 @@ describe("runtime placement observations", () => {
             .map((group) => Object.assign({}, group, { env: { ...job.env, ...group.env } })),
         );
         expect(crossing.length).toBeGreaterThan(0);
-        expect(crossing.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2")).toBe(
-          true,
-        );
+        for (const group of crossing) {
+          const measuredGateway =
+            gatewayRecipient &&
+            group.configs.includes("test/vitest/vitest.gateway-methods-isolated.config.ts");
+          expect(group.env?.OPENCLAW_VITEST_MAX_WORKERS, group.shard_name).toBe(
+            measuredGateway ? "8" : "2",
+          );
+        }
         spy.mockImplementation((profile) =>
           profile === "blacksmith"
             ? blacksmith.filter((entry) => !entry.configs.includes(runtimeConfig))

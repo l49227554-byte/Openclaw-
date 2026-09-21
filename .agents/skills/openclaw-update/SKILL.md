@@ -36,7 +36,7 @@ If the owner lacks controlled interruption, report or repair that gap within sco
 
 Retain ownership of an explicit update request across busy deferral, failure, rollback, and recovery until the selected owner's full acceptance or a concrete external/access blocker requiring outside action. Respect user pauses and cancellations. Before ending with work pending, establish an active completion/observation path or supported continuation through that owner; return without waiting for another prompt. If no continuation path exists, state that blocker instead of promising one. An existing cadence or restored old process alone does not complete the request.
 
-Keep deployment-specific recovery and target selection with the linked owner. Make necessary code repairs in an isolated worktree through normal PR review, CI, and `scripts/pr` landing; persistence does not authorize bypassing locks, safeguards, or branch protection.
+Keep deployment-specific recovery and target selection with the linked owner. Qualify suspected issues at the actual failing path, improve updater guidance for confirmed durable gaps, and repair confirmed defects within the authorized scope. Use isolated worktrees and subagents where useful; test and review repairs, then land them through normal PR review, CI, and `scripts/pr` landing. Continue through verified update acceptance after landing; persistence does not authorize bypassing locks, safeguards, or branch protection.
 
 ## Verify
 

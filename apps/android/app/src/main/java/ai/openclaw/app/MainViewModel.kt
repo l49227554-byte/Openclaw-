@@ -967,6 +967,10 @@ class MainViewModel private constructor(
     ensureRuntime().setNotificationForwardingSessionKey(value)
   }
 
+  fun setChatScreenActive(active: Boolean) {
+    ensureRuntime().setChatScreenActive(active)
+  }
+
   fun setVoiceScreenActive(active: Boolean) {
     ensureRuntime().setVoiceScreenActive(active)
   }

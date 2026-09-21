@@ -387,6 +387,8 @@ internal class ConversationReplyNotifier(
     owner: ChatComposerOwner,
     runId: String,
     assistantText: String,
+    agentName: String? = null,
+    sessionTitle: String? = null,
   ): Boolean =
     synchronized(publicationLock) {
       val target = ConversationNotificationTarget.from(owner, runId) ?: return@synchronized false
@@ -394,7 +396,8 @@ internal class ConversationReplyNotifier(
       if (!canPostNotifications()) return@synchronized false
       val generation = checkNotNull(publicationGeneration(target, PendingIntent.FLAG_CANCEL_CURRENT))
       try {
-        post(target, buildAssistantReplyNotification(target, text, generation))
+        ensureConversationShortcut(target, agentName, sessionTitle)
+        post(target, buildAssistantReplyNotification(target, text, generation, agentName, sessionTitle))
         true
       } catch (err: Throwable) {
         // Cancel only this token: cancelling an obsolete token can remove its replacement's lookup key.
@@ -437,10 +440,21 @@ internal class ConversationReplyNotifier(
         } else {
           NotificationCompat.Action.Builder(0, nativeString("Open conversation"), contentIntent).build()
         }
+      // The published shortcut retains labels across notifier instances and notification dismissal.
+      val title =
+        runCatching {
+          ShortcutManagerCompat
+            .getShortcuts(
+              context,
+              ShortcutManagerCompat.FLAG_MATCH_DYNAMIC or ShortcutManagerCompat.FLAG_MATCH_PINNED or ShortcutManagerCompat.FLAG_MATCH_CACHED,
+            ).firstOrNull { it.id == target.shortcutId }
+            ?.shortLabel
+        }.getOrNull() ?: conversationNotificationTitle(target.agentId, null, null)
       // Reply outcomes update the notice; Android may retain and re-enqueue a canceled direct reply.
       post(
         target,
         baseBuilder(target, contentIntent, generation)
+          .setContentTitle(title)
           .setSilent(outcome == ConversationNotificationReplyOutcome.Admitted)
           .setContentText(text)
           .setStyle(NotificationCompat.BigTextStyle().bigText("$text\n\n${reply.take(maxReplyLength)}"))
@@ -455,7 +469,6 @@ internal class ConversationReplyNotifier(
     notification: Notification,
   ) {
     ensureChannel()
-    ensureConversationShortcut(target)
     notificationManager().notify(target.notificationTag, conversationNotificationId, notification)
   }
 
@@ -478,17 +491,22 @@ internal class ConversationReplyNotifier(
     target: ConversationNotificationTarget,
     assistantText: String,
     generation: PendingIntent,
+    agentName: String? = null,
+    sessionTitle: String? = null,
   ): Notification {
     val contentIntent = contentPendingIntent(target)
-    val assistant = assistantPerson()
+    val title = conversationNotificationTitle(target.agentId, agentName, sessionTitle)
+    val assistant = assistantPerson(target, agentName)
     val style =
       NotificationCompat
         .MessagingStyle(userPerson())
-        .setConversationTitle(nativeString("OpenClaw"))
-        .setGroupConversation(false)
+        .setConversationTitle(title)
+        // Android hides the conversation title for one-to-one MessagingStyle notifications.
+        .setGroupConversation(true)
         .addMessage(assistantText, System.currentTimeMillis(), assistant)
     return baseBuilder(target, contentIntent, generation)
       .setStyle(style)
+      .setContentTitle(title)
       .setContentText(assistantText)
       .addPerson(assistant)
       .addAction(replyAction(target, generation))
@@ -564,13 +582,17 @@ internal class ConversationReplyNotifier(
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-  private fun ensureConversationShortcut(target: ConversationNotificationTarget) {
+  private fun ensureConversationShortcut(
+    target: ConversationNotificationTarget,
+    agentName: String? = null,
+    sessionTitle: String? = null,
+  ) {
     val shortcut =
       ShortcutInfoCompat
         .Builder(context, target.shortcutId)
-        .setShortLabel(nativeString("OpenClaw"))
+        .setShortLabel(conversationNotificationTitle(target.agentId, agentName, sessionTitle))
         .setLongLived(true)
-        .setPerson(assistantPerson())
+        .setPerson(assistantPerson(target, agentName))
         .setLocusId(LocusIdCompat(target.shortcutId))
         .setIcon(IconCompat.createWithResource(context, R.mipmap.ic_launcher))
         .setIntent(conversationNotificationLaunchIntent(context, target))
@@ -578,10 +600,14 @@ internal class ConversationReplyNotifier(
     runCatching { ShortcutManagerCompat.pushDynamicShortcut(context, shortcut) }
   }
 
-  private fun assistantPerson(): Person =
+  private fun assistantPerson(
+    target: ConversationNotificationTarget,
+    agentName: String?,
+  ): Person =
     Person
       .Builder()
-      .setName(nativeString("OpenClaw"))
+      .setName(conversationAgentName(target.agentId, agentName))
+      .setKey("${target.gatewayStableId}:${target.agentId}")
       .setBot(true)
       .build()
 
@@ -615,6 +641,33 @@ internal class ConversationReplyNotifier(
     // Android enqueues notifications asynchronously; rotate and check generations in the same owner as every effect.
     val publicationLock = Any()
   }
+}
+
+private fun conversationAgentName(
+  agentId: String,
+  agentName: String?,
+): String = agentName?.trim()?.takeIf(String::isNotEmpty) ?: agentId
+
+private fun conversationNotificationTitle(
+  agentId: String,
+  agentName: String?,
+  sessionTitle: String?,
+): String {
+  val name = conversationAgentName(agentId, agentName)
+  val title = sessionTitle?.trim()?.takeIf(String::isNotEmpty) ?: nativeString("Chat")
+  return "$name · $title"
+}
+
+/** Dreaming narration is archival background work, not a user-facing chat reply. */
+internal fun shouldPostConversationReplyNotification(
+  owner: ChatComposerOwner,
+  runId: String,
+  isReplyVisible: Boolean,
+): Boolean {
+  val sessionKey = owner.sessionKey.trim()
+  // Match the Gateway's dreaming-narrative session prefix, not arbitrary thread suffixes.
+  val session = if (sessionKey.startsWith("agent:")) sessionKey.substringAfter(':').substringAfter(':') else sessionKey
+  return !isReplyVisible && !session.startsWith("dreaming-narrative-") && !runId.trim().startsWith("dreaming-narrative-")
 }
 
 class ConversationReplyReceiver : BroadcastReceiver() {

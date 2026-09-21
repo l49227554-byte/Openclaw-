@@ -562,6 +562,18 @@ class ChatController internal constructor(
   private val presentedSessions = MutableStateFlow<List<ChatSessionEntry>>(emptyList())
   val sessions: StateFlow<List<ChatSessionEntry>> = presentedSessions.asStateFlow()
 
+  // Notification display metadata is separate from the selected agent's session list.
+  // Bound it to the active gateway and the same small window as the existing session cache.
+  private val notificationSessions = linkedMapOf<ChatComposerOwner, ChatSessionEntry>()
+  private var notificationSessionsGatewayId: String? = null
+
+  internal fun notificationSession(owner: ChatComposerOwner): ChatSessionEntry? =
+    synchronized(gatewayScopeApplyLock) {
+      val gatewayId = currentCacheScope()?.gatewayId ?: return@synchronized null
+      if (!owner.routingVerified || owner.gatewayStableId != gatewayId || notificationSessionsGatewayId != gatewayId) return@synchronized null
+      notificationSessions[owner]
+    }
+
   private fun projectLocalSessionTitles(
     entries: List<ChatSessionEntry>,
     binding: MainSessionBinding?,
@@ -579,6 +591,20 @@ class ChatController internal constructor(
       _sessions.value = entries
       val binding = currentCacheScope()?.let { desiredMainSessions[it.gatewayId] }
       presentedSessions.value = projectLocalSessionTitles(entries, binding)
+      val gatewayId = currentCacheScope()?.gatewayId
+      if (notificationSessionsGatewayId != gatewayId) {
+        notificationSessions.clear()
+        notificationSessionsGatewayId = gatewayId
+      }
+      if (gatewayId != null) {
+        for (entry in presentedSessions.value.take(MAX_CACHED_SESSIONS).asReversed()) {
+          val agentId = entry.ownerAgentId ?: resolveAgentIdFromMainSessionKey(entry.key) ?: continue
+          val owner = ChatComposerOwner(gatewayId, agentId, entry.key)
+          notificationSessions.remove(owner)
+          notificationSessions[owner] = entry
+        }
+        while (notificationSessions.size > MAX_CACHED_SESSIONS) notificationSessions.remove(notificationSessions.keys.first())
+      }
     }
   }
 
@@ -1083,6 +1109,8 @@ class ChatController internal constructor(
       clearProgressCard()
       clearSubagentActivities()
       clearLiveHistoryMarker()
+      notificationSessions.clear()
+      notificationSessionsGatewayId = null
       publishSessions(emptyList())
       publishRunPresentation()
       clearQuestions()
@@ -4661,6 +4689,20 @@ class ChatController internal constructor(
                 if (!synchronized(gatewayScopeApplyLock) { isCurrent() }) return HistoryRefreshResult.Superseded
                 throw err
               }
+            // A fresh process can receive live history before its offline transcript was displayed.
+            // Read only the captured owner; the publication gate below revalidates after this await.
+            val cachedMetricsMessages =
+              if (requestCacheScope != null && transcriptCache != null) {
+                try {
+                  transcriptCache.loadTranscript(requestCacheScope.gatewayId, requestAgentId, sessionKey)
+                } catch (err: CancellationException) {
+                  throw err
+                } catch (_: Exception) {
+                  emptyList()
+                }
+              } else {
+                emptyList()
+              }
             historyPublicationMutex.withLock {
               if (!synchronized(gatewayScopeApplyLock) { isCurrent() }) return@withLock HistoryRefreshResult.Superseded
               val previousState =
@@ -4714,6 +4756,11 @@ class ChatController internal constructor(
                 val reportedRun = history.inFlightRun
                 val inFlightRun = reportedRun?.takeUnless { hasTerminalRunTelemetry(it.runId) }
                 val snapshotRunId = inFlightRun?.runId
+                // Capture entry-owned usage before publishing the settled row retires telemetry.
+                val annotatedHistory =
+                  history.withReplyMetrics(cachedMetricsMessages + _messages.value) { runId ->
+                    synchronized(liveRunTelemetryLock) { liveRunTelemetryByRunId[runId]?.outputTokens }
+                  }
                 if (reconcileRunState) {
                   // A newer settings observation invalidates only this projection,
                   // not the useful transcript carried by the same history response.
@@ -4739,7 +4786,7 @@ class ChatController internal constructor(
                         !unresolvedRepliesByRunId.containsKey(it)
                     }.forEach { clearPendingRun(it, publishRunState = false) }
                 }
-                val nextMessages = mergeOptimisticMessages(incoming = history.messages, optimistic = optimisticMessagesByRunId.values)
+                val nextMessages = mergeOptimisticMessages(incoming = annotatedHistory.messages, optimistic = optimisticMessagesByRunId.values)
                 _messagesFromCache.value = false
                 _messages.value = nextMessages
                 val previousAnchor = _transcriptAnchor.value?.takeIf { it.sessionKey == sessionKey }
@@ -4784,7 +4831,7 @@ class ChatController internal constructor(
                   requestCacheScope,
                   requestAgentId,
                   sessionKey,
-                  history.messages,
+                  annotatedHistory.messages,
                   appliedHistoryEntry.takeIf { appliedPurpose == HistoryRefreshPurpose.RestoreSession && history.sessionInfo != null },
                 )
                 HistoryRefreshResult.Applied(historyBranchState, appliedPurpose)
@@ -7057,6 +7104,8 @@ class ChatController internal constructor(
     owner: ChatComposerOwner?,
   ) {
     if (payload["state"].asStringOrNull() != "final") return
+    // This recipient hint silences notifications, not terminal processing or history synchronization.
+    if (payload["suppressNotification"].asBooleanOrNull() == true) return
     val normalizedRunId = runId?.trim()?.takeIf(String::isNotEmpty) ?: return
     val verifiedOwner = owner?.takeIf { it.routingVerified } ?: return
     val text = parseAssistantDeltaText(payload)?.trim()?.takeIf(String::isNotEmpty) ?: return
@@ -8323,6 +8372,7 @@ class ChatController internal constructor(
     cacheScope: ChatCacheScope?,
   ) {
     synchronized(gatewayScopeApplyLock) {
+      notificationSessions.remove(ChatComposerOwner(cacheScope?.gatewayId, ownerAgentId, sessionKey))
       val owner = ChatAgentSessionSelectionOwner(cacheScope?.gatewayId, ownerAgentId)
       if (lastSelectedChatSessionByOwner[owner]?.key == sessionKey) lastSelectedChatSessionByOwner.remove(owner)
     }

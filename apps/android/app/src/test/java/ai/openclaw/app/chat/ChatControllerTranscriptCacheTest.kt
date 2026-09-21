@@ -8,6 +8,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -148,6 +150,235 @@ class ChatControllerTranscriptCacheTest {
       content = listOf(ChatMessageContent(type = "text", text = text)),
       timestampMs = timestampMs,
     )
+
+  @Test
+  fun historyRetainsEntryMetricsWithoutBorrowingPreviousRunTokens() =
+    runTest {
+      val cache = FakeTranscriptCache()
+      val previousMetrics = ChatReplyMetrics("transcript-one", "answer-1", 200L, 100L, 12L)
+      cache.transcripts[TranscriptKey("gateway-a", "main", "main")] =
+        listOf(
+          cachedMessage("first", role = "assistant", timestampMs = 190L).copy(replyMetrics = previousMetrics),
+        )
+      val controller =
+        createCachedController(cache) { method, _ ->
+          when (method) {
+            "chat.history" -> {
+              """{
+            "sessionId":"transcript-one",
+            "sessionInfo":{"key":"main","status":"done","startedAt":300,"endedAt":500,"runtimeMs":200,"outputTokens":12},
+            "messages":[
+              {"role":"assistant","content":"first","phase":"final_answer","timestamp":190,"__openclaw":{"id":"answer-1"}},
+              {"role":"user","content":"second question","timestamp":310},
+              {"role":"assistant","content":"second","phase":"final_answer","timestamp":490,"__openclaw":{"id":"answer-2"}}
+            ]
+          }"""
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
+          }
+        }
+      controller.loadCurrent("main")
+      advanceUntilIdle()
+
+      // A successful run without usage retains the previous session-wide counter.
+      val expected = listOf(previousMetrics, null, ChatReplyMetrics("transcript-one", "answer-2", 500L, 200L, null))
+      assertEquals(expected, controller.messages.value.map { it.replyMetrics })
+      assertEquals(
+        expected,
+        cache.savedTranscripts
+          .last()
+          .messages
+          .map { it.replyMetrics },
+      )
+      val saved = cache.savedTranscripts.last()
+      cache.transcripts[TranscriptKey(saved.gatewayId, saved.agentId, saved.sessionKey)] = saved.messages
+      val offline = createCachedController(cache) { _, _ -> error("offline") }
+      offline.loadCurrent("main")
+      advanceUntilIdle()
+      assertEquals(expected, offline.messages.value.map { it.replyMetrics })
+    }
+
+  @Test
+  fun terminalHistoryKeepsRunQualifiedUsageAfterTelemetryRetires() =
+    runTest {
+      val cache = FakeTranscriptCache()
+      var completed = false
+      var clientRunId: String? = null
+      val controller =
+        createCachedController(cache) { method, paramsJson ->
+          when (method) {
+            "chat.send" -> {
+              clientRunId =
+                chatControllerTestJson
+                  .parseToJsonElement(requireNotNull(paramsJson))
+                  .jsonObject["idempotencyKey"]!!
+                  .jsonPrimitive
+                  .content
+              """{"runId":"counted-run","status":"started"}"""
+            }
+
+            "chat.history" -> {
+              if (completed) {
+                """{"sessionId":"transcript-one",
+                "sessionInfo":{"key":"main","status":"done","hasActiveRun":false,"activeRunIds":[],
+                "startedAt":100,"endedAt":200,"runtimeMs":100,"outputTokens":999},
+                "messages":[
+                  {"role":"user","content":"question","timestamp":110,"idempotencyKey":"$clientRunId:user"},
+                  {"role":"assistant","content":"answer","phase":"final_answer","timestamp":190,
+                  "__openclaw":{"id":"counted-answer","runId":"counted-run"}}
+                ]}"""
+              } else {
+                """{"sessionId":"transcript-one","messages":[]}"""
+              }
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
+          }
+        }
+      controller.loadCurrent("main")
+      runCurrent()
+      assertTrue(controller.sendMessageAwaitAcceptance("question", "off", emptyList()))
+      controller.handleGatewayEvent(
+        "agent",
+        """{"sessionKey":"main","runId":"counted-run","seq":1,"stream":"usage","data":{"outputTokens":42}}""",
+      )
+      assertEquals(42L, controller.selectedActiveRunPresentation.value.outputTokens)
+      completed = true
+      controller.handleGatewayEvent("chat", chatTerminalPayload("main", "counted-run", seq = 2, assistantText = "answer"))
+      advanceUntilIdle()
+      val expected = ChatReplyMetrics("transcript-one", "counted-answer", 200L, 100L, 42L)
+      assertEquals(
+        expected,
+        controller.messages.value
+          .last()
+          .replyMetrics,
+      )
+      controller.refresh()
+      advanceUntilIdle()
+      assertEquals(
+        expected,
+        controller.messages.value
+          .last()
+          .replyMetrics,
+      )
+      val saved = cache.savedTranscripts.last()
+      assertEquals(expected, saved.messages.last().replyMetrics)
+      cache.transcripts[TranscriptKey(saved.gatewayId, saved.agentId, saved.sessionKey)] = saved.messages
+      val offline = createCachedController(cache) { _, _ -> error("offline") }
+      offline.loadCurrent("main")
+      advanceUntilIdle()
+      assertEquals(
+        expected,
+        offline.messages.value
+          .last()
+          .replyMetrics,
+      )
+    }
+
+  @Test
+  fun forwardedSteeringThenSilentCompletionNeverGetsMetricsOnRefreshOrCacheReload() =
+    runTest {
+      val cache = FakeTranscriptCache()
+      val controller =
+        createCachedController(cache) { method, _ ->
+          if (method == "chat.history") {
+            // Gateway omits the successful NO_REPLY output, leaving the forwarded input last.
+            """{"sessionId":"transcript-one",
+          "sessionInfo":{"key":"main","status":"done","startedAt":100,"endedAt":200,"runtimeMs":100,"outputTokens":42},
+          "messages":[{"role":"assistant","content":"Forwarded steering input","timestamp":190,
+          "provenance":{"kind":"inter_session","sourceTool":"sessions_send"},"__openclaw":{"id":"steer-input"}}]}"""
+          } else {
+            emptyChatGatewayResponse(method)
+          }
+        }
+      controller.loadCurrent("main")
+      advanceUntilIdle()
+      controller.handleGatewayEvent("chat", chatTerminalPayload("main", "silent-run", seq = 2))
+      advanceUntilIdle()
+      controller.refresh()
+      advanceUntilIdle()
+      assertTrue(
+        controller.messages.value
+          .single()
+          .isForwardedBoundary(),
+      )
+      assertEquals(
+        null,
+        controller.messages.value
+          .single()
+          .replyMetrics,
+      )
+      assertTrue(cache.savedTranscripts.isNotEmpty())
+      assertTrue(cache.savedTranscripts.all { saved -> saved.messages.all { it.replyMetrics == null } })
+      // This fixture records writes separately; reopen the exact persisted payload.
+      val saved = cache.savedTranscripts.last()
+      cache.transcripts[TranscriptKey(saved.gatewayId, saved.agentId, saved.sessionKey)] = saved.messages
+      val offline = createCachedController(cache) { _, _ -> error("offline") }
+      offline.loadCurrent("main")
+      advanceUntilIdle()
+      assertTrue(
+        offline.messages.value
+          .single()
+          .isForwardedBoundary(),
+      )
+      assertEquals(
+        null,
+        offline.messages.value
+          .single()
+          .replyMetrics,
+      )
+    }
+
+  @Test
+  fun notificationMetadataSurvivesAgentSelectionWithoutLeakingIntoItsListOrAnotherGateway() =
+    runTest {
+      val cache = FakeTranscriptCache()
+      var currentScope = gatewayScope
+      val controller =
+        createCachedController(cache, cacheScope = { currentScope }) { method, params ->
+          when (method) {
+            "sessions.list" -> {
+              if (params.orEmpty().contains("\"agentId\":\"reviewer\"")) {
+                """{"sessions":[{"key":"agent:reviewer:background","label":"Troubleshooting"}]}"""
+              } else {
+                """{"sessions":[{"key":"agent:main:visible","label":"Other conversation"}]}"""
+              }
+            }
+
+            "chat.history" -> {
+              """{"sessionId":"test-transcript","messages":[]}"""
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
+          }
+        }
+      controller.load("agent:reviewer:background")
+      advanceUntilIdle()
+      controller.refreshSessions()
+      advanceUntilIdle()
+      val owner = ChatComposerOwner("gateway-a", "reviewer", "agent:reviewer:background")
+      assertEquals("Troubleshooting", controller.notificationSession(owner)?.label)
+      controller.switchSession("agent:main:visible")
+      advanceUntilIdle()
+      controller.refreshSessions()
+      advanceUntilIdle()
+      assertTrue(controller.sessions.value.isNotEmpty())
+      assertTrue(controller.sessions.value.all { it.ownerAgentId == "main" })
+      assertEquals("Troubleshooting", controller.notificationSession(owner)?.label)
+      assertEquals(null, controller.notificationSession(owner.copy(agentId = "main")))
+      assertEquals(null, controller.notificationSession(owner.copy(gatewayStableId = "gateway-b")))
+      currentScope = ChatCacheScope("gateway-b", connectionGeneration = 2)
+      controller.onGatewayScopeChanging()
+      assertEquals(null, controller.notificationSession(owner))
+      assertEquals(null, controller.notificationSession(owner.copy(gatewayStableId = "gateway-b")))
+    }
 
   @Test
   fun offlineColdOpenShowsCachedTranscriptAndSessionsAndQueuesSend() =

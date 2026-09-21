@@ -136,7 +136,9 @@ describe("native Codex tool response fidelity", () => {
           'cli_auth_credentials_store="ephemeral"',
           'web_search="disabled"',
           'approval_policy="never"',
-          'sandbox_mode="read-only"',
+          // This fixture owns a fixed read-only command in a fresh temp directory;
+          // platform sandbox behavior is covered separately from output fidelity.
+          'sandbox_mode="danger-full-access"',
           "allow_login_shell=false",
           // The synthetic model uses fallback metadata; give the full-result case
           // an explicit history budget instead of relying on a model catalog default.

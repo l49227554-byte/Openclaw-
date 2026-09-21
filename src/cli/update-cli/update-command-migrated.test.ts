@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createConfigIO } from "../../config/io.js";
 import { asResolvedSourceConfig, asRuntimeConfig } from "../../config/materialize.js";
@@ -35,6 +36,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { createUpdateProgress } from "./progress.js";
+import { prepareCandidateAuthorityRuntime } from "./update-command-candidate-authority.test-support.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
 import {
@@ -52,6 +54,15 @@ vi.mock("../../state/openclaw-state-db-contract.js", async (importOriginal) => {
 });
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
+const runtimeFixture = createFixtureLifetime();
+let candidateRuntimeRoot = process.cwd();
+beforeAll(async () => {
+  const root = runtimeFixture.createTempDir("migrated-update-candidate-runtime-");
+  const runtime = await runtimeFixture.run(() => prepareCandidateAuthorityRuntime(root));
+  if (!runtime.worker.pathname.endsWith(".ts")) {
+    candidateRuntimeRoot = root;
+  }
+});
 let presentation: ReturnType<typeof createUpdateProgress> | undefined;
 afterEach(() => {
   presentation?.suspend();
@@ -63,6 +74,7 @@ afterEach(() => {
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });
+afterAll(() => runtimeFixture.cleanup());
 
 it.each([
   { agentId: "main", changed: "none", blocked: undefined },
@@ -369,7 +381,7 @@ it.each([
       OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
       OPENCLAW_TEST_RUNTIME_LOG: "1",
     };
-    const root = legacy ? path.join(stateDir, "legacy-runtime") : process.cwd();
+    const root = legacy ? path.join(stateDir, "legacy-runtime") : candidateRuntimeRoot;
     const legacyEffect = path.join(stateDir, "legacy-worker-effect");
     if (legacy) {
       const worker = path.join(root, "dist", "infra", "update-migrated-finalize.worker.js");

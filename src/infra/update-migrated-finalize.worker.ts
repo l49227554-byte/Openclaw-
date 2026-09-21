@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { finishUpdateRun } from "../cli/daemon-cli.js";
 import { retainCliProcessJobUntilExit, withCliProcessScope } from "../cli/runtime-cleanup-scope.js";
+import { closeCliResources } from "../cli/runtime-cleanup.js";
 import type { UpdateCommandOptions } from "../cli/update-cli/shared.js";
 import {
   withDelegatedUpdateCommandExecutor,
@@ -364,7 +365,11 @@ void (async () => {
   try {
     await finalizeMigratedUpdate();
   } finally {
-    await closeOpenClawStateDatabaseAsync();
+    try {
+      await closeCliResources();
+    } finally {
+      await closeOpenClawStateDatabaseAsync();
+    }
   }
 })().catch((error: unknown) => {
   process.stderr.write(`${formatUpdateFinalizationError(error)}\n`);

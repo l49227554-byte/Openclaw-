@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../../src/config/sessions/session-accessor.js";
+import * as automationIndex from "../../../src/gateway/session-automation-index.js";
 import {
   disconnectGatewayClient,
   getGatewayE2ePortBlock,
@@ -183,6 +184,14 @@ suite.define(() => {
       const sessionKey = "agent:alpha:session-mutation";
       const frames: unknown[] = [];
       let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
+      const cronBindingsReady = createDeferred();
+      const registerAutomationSource = automationIndex.registerSessionAutomationSource;
+      const cronRegistration = vi
+        .spyOn(automationIndex, "registerSessionAutomationSource")
+        .mockImplementation((...args) => {
+          registerAutomationSource(...args);
+          cronBindingsReady.resolve();
+        });
       try {
         state.applyEnv();
         await state.writeAuthProfiles(
@@ -243,8 +252,12 @@ suite.define(() => {
             },
           },
         });
-        // Startup cron hydration publishes a separate sessions.changed invalidation.
-        await gateway.server.startupSettled;
+        // Cron publishes a catalog invalidation after startupSettled; finish it before the browser scenario.
+        await withTestTimeout(
+          cronBindingsReady.promise,
+          10_000,
+          "Cron binding publication did not finish",
+        );
         const admin = gateway.client;
         await upsertSessionEntryCore(
           { agentId: "alpha", sessionKey },
@@ -440,6 +453,7 @@ suite.define(() => {
           expect(catalogRequests.size).toBe(readsBeforeReopen);
         });
       } finally {
+        cronRegistration.mockRestore();
         await writeFile(
           path.join(suite.artifactDir, `catalog-mutation-${replacementState}.json`),
           JSON.stringify(frames, null, 2),

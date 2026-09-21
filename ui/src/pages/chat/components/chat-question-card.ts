@@ -29,6 +29,7 @@ type QuestionPanelViewModel = {
   submitting?: boolean;
   drafts: Map<string, QuestionDraft>;
   error?: string | null;
+  notice?: string;
   requestPosition?: { current: number; total: number };
 };
 
@@ -578,6 +579,7 @@ class ChatQuestionPanel extends OpenClawLightDomElement {
         })}
 
         <div class="chat-question-panel__footer">
+          ${model.notice ? html`<span class="chat-question-panel__error" role="status">${model.notice}</span>` : nothing}
           ${
             model.error
               ? html`<span class="chat-question-panel__error" role="status">

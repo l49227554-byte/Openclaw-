@@ -358,7 +358,7 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
               ? "split"
               : undefined));
         if (this.dashboardExpanded) {
-          this.showDashboard(true);
+          this.showDashboard(true, { persistFace: false });
         } else if (
           savedLayout &&
           (savedLayout.dashboardPresentationOverride === undefined ||
@@ -369,7 +369,7 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
           // Legacy layouts also retain their complete presentation without provenance.
           this.commitSidebarLayout(this.restorePaneSidebarLayout(savedLayout), { persist: false });
         } else {
-          this.showDashboard(presentation === "expanded");
+          this.showDashboard(presentation === "expanded", { persistFace: false });
         }
       }
     }
@@ -656,7 +656,7 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
     }`;
   }
 
-  protected showDashboard(expanded: boolean): void {
+  protected showDashboard(expanded: boolean, options?: { persistFace?: boolean }): void {
     const state = this.state;
     if (!state) {
       return;
@@ -672,7 +672,9 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
     };
     // Route/default/tool applications are not personal preference writes.
     this.commitSidebarLayout(layout, { persist: false });
-    this.persistBoardSessionView({ face: "dashboard" });
+    if (options?.persistFace ?? true) {
+      this.persistBoardSessionView({ face: "dashboard" });
+    }
   }
 
   protected handleBoardCommand(event: BoardCommandEvent): void {

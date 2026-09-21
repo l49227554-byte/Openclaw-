@@ -114,6 +114,16 @@ The app uses `OPENCLAW_DESKTOP_CLI` when set. Otherwise it checks `~/.openclaw/b
 
 Desktop notifications use each platform's system notification service. macOS 13+ uses Apple's User Notifications framework; Windows uses native system toasts and Linux uses the desktop notification service through `notify-rust`. On macOS, test notifications from a signed `.app` bundle: a direct `cargo run` stays unbundled, so the app disables notifications instead of initializing Apple's framework with no bundle identity.
 
+On macOS, a test launch with an isolated `HOME` or `CFFIXED_USER_HOME` can make
+the user's default keychain unavailable to that process. The saved-Gateway notice
+describes the app's launch environment; it does not mean the Mac has no login
+keychain. Keep credential-free tests isolated and treat saved-Gateway storage as
+unavailable in that fixture. Do not restore the user's keychain or redirect the
+test to real credentials to silence the notice. For an installed app, quit and
+reopen it from Finder to use the normal login environment. If the configured
+keychain is still unavailable, check its configuration in Keychain Access before
+attempting any repair.
+
 ### Inline browser live regression on Linux
 
 The existing first-run driver also exercises real native WebKit browser views

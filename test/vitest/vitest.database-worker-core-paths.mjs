@@ -137,6 +137,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-state-lease.retention.test.ts",
   "src/system-agent/setup-lifetime.test.ts",
   "src/audit/audit-events.test.ts",
+  "src/audit/audit-events.skill-selection-hidden.test.ts",
   "src/audit/audit-event-store.message.test.ts",
   "src/audit/audit-event-writer.test.ts",
   "src/audit/audit-event-writer.worker.test.ts",

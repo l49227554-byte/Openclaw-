@@ -1,0 +1,203 @@
+{
+  "capture": "Control UI unread badge via the production chat.send route (dashboard overview, session never opened)",
+  "gateway": "local test instance, production Control UI bundle, mock openai model gpt-5.6-luna, token auth, loopback",
+  "route": "Gateway chat.send (the Control UI chat method) with deliver:false and a fresh idempotencyKey",
+  "assertions": {
+    "beforeRowUnread": false,
+    "afterRowUnread": true,
+    "beforeDotVisible": false,
+    "afterDotVisible": true,
+    "beforeLastActivityAt": null,
+    "afterLastActivityAt": 1789946455064,
+    "afterRunStatus": "done"
+  },
+  "result": {
+    "sessionKey": "agent:main:dashboard:7200a2ab-bec7-4b60-920a-d9f9387813c5",
+    "before": {
+      "key": "agent:main:dashboard:7200a2ab-bec7-4b60-920a-d9f9387813c5",
+      "visibility": "shared",
+      "permissionModePending": false,
+      "spawnDepth": 0,
+      "createdVia": "operator",
+      "createdAt": 1789946430279,
+      "kind": "direct",
+      "label": "chat-send unread proof",
+      "classification": "dashboard",
+      "agentId": "main",
+      "isMain": false,
+      "isBackground": false,
+      "displayName": "chat-send unread proof",
+      "updatedAt": 1789946430279,
+      "archived": false,
+      "pinned": false,
+      "unread": false,
+      "sessionId": "dbd497db-7628-48c6-9857-10d64a50f9e1",
+      "thinkingLevels": [
+        {
+          "id": "off",
+          "label": "off"
+        }
+      ],
+      "thinkingOptions": [
+        "off"
+      ],
+      "thinkingDefault": "off",
+      "effectiveFastMode": false,
+      "effectiveFastModeSource": "default",
+      "fastAutoOnSeconds": 60,
+      "totalTokensFresh": false,
+      "parentSessionKey": "agent:main:main",
+      "effectiveResponseUsage": "off",
+      "effectiveQueueMode": "steer",
+      "modelProvider": "openai",
+      "model": "gpt-5.6-luna",
+      "modelOverrideSource": "user",
+      "runtimeSelectionLocked": false,
+      "agentRuntime": {
+        "id": "openclaw",
+        "cloudPlacementSupported": true,
+        "cloudPlacementExecutionMode": "worker-turn",
+        "devicePlacement": {
+          "requiredNodeCommands": [],
+          "consumesWorkerSlot": true
+        },
+        "devicePlacementSupported": true,
+        "source": "implicit"
+      },
+      "contextTokens": 96000,
+      "snapshotAt": 1789946430315,
+      "hasActiveRun": false,
+      "activeRunIds": [],
+      "sharingRole": "owner"
+    },
+    "after": {
+      "key": "agent:main:dashboard:7200a2ab-bec7-4b60-920a-d9f9387813c5",
+      "visibility": "shared",
+      "permissionModePending": false,
+      "spawnDepth": 0,
+      "createdVia": "operator",
+      "participants": [
+        {
+          "identity": {
+            "type": "observation",
+            "pluginId": null,
+            "accountId": null,
+            "senderKind": "unknown",
+            "id": "gateway-client"
+          }
+        }
+      ],
+      "expandedParticipants": [
+        {
+          "identity": {
+            "type": "observation",
+            "pluginId": null,
+            "accountId": null,
+            "senderKind": "unknown",
+            "id": "gateway-client"
+          }
+        }
+      ],
+      "participantCount": 1,
+      "createdAt": 1789946430279,
+      "kind": "direct",
+      "label": "chat-send unread proof",
+      "classification": "direct",
+      "agentId": "main",
+      "isMain": false,
+      "isBackground": false,
+      "displayName": "chat-send unread proof",
+      "chatType": "direct",
+      "updatedAt": 1789946455077,
+      "archived": false,
+      "pinned": false,
+      "unread": true,
+      "lastInteractionAt": 1789946454164,
+      "lastActivityAt": 1789946455064,
+      "sessionId": "dbd497db-7628-48c6-9857-10d64a50f9e1",
+      "systemSent": true,
+      "abortedLastRun": false,
+      "thinkingLevels": [
+        {
+          "id": "off",
+          "label": "off"
+        }
+      ],
+      "thinkingOptions": [
+        "off"
+      ],
+      "thinkingDefault": "off",
+      "effectiveFastMode": false,
+      "effectiveFastModeSource": "default",
+      "fastAutoOnSeconds": 60,
+      "inputTokens": 11,
+      "outputTokens": 7,
+      "totalTokens": 11,
+      "totalTokensFresh": true,
+      "estimatedCostUsd": 0,
+      "status": "done",
+      "startedAt": 1789946454979,
+      "endedAt": 1789946455050,
+      "runtimeMs": 71,
+      "lastRunId": "proof-1789946454028-j873hb",
+      "parentSessionKey": "agent:main:main",
+      "effectiveResponseUsage": "off",
+      "effectiveQueueMode": "steer",
+      "modelProvider": "openai",
+      "model": "gpt-5.6-luna",
+      "modelOverrideSource": "user",
+      "runtimeSelectionLocked": false,
+      "agentRuntime": {
+        "id": "openclaw",
+        "cloudPlacementSupported": true,
+        "cloudPlacementExecutionMode": "worker-turn",
+        "devicePlacement": {
+          "requiredNodeCommands": [],
+          "consumesWorkerSlot": true
+        },
+        "devicePlacementSupported": true,
+        "source": "implicit"
+      },
+      "contextTokens": 96000,
+      "contextBudgetStatus": {
+        "schemaVersion": 1,
+        "source": "pre-prompt-estimate",
+        "updatedAt": 1789946454977,
+        "provider": "openai",
+        "model": "gpt-5.6-luna",
+        "route": "fits",
+        "shouldCompact": false,
+        "estimatedPromptTokens": 48411,
+        "contextTokenBudget": 96000,
+        "promptBudgetBeforeReserve": 76000,
+        "reserveTokens": 20000,
+        "effectiveReserveTokens": 20000,
+        "remainingPromptBudgetTokens": 27589,
+        "overflowTokens": 0,
+        "toolResultReducibleChars": 0,
+        "messageCount": 0,
+        "unwindowedMessageCount": 0,
+        "sessionId": "dbd497db-7628-48c6-9857-10d64a50f9e1"
+      },
+      "snapshotAt": 1789946455115,
+      "placement": {
+        "state": "local",
+        "generation": 0,
+        "createdAtMs": 1789946454439,
+        "updatedAtMs": 1789946455048,
+        "stateChangedAtMs": 1789946454439
+      },
+      "hasActiveRun": false,
+      "activeRunIds": [],
+      "sharingRole": "owner"
+    },
+    "sendResponseKeys": [
+      "runId",
+      "status"
+    ]
+  },
+  "screenshots": [
+    "before-unread-chat-send.png",
+    "after-unread-chat-send.png"
+  ]
+}

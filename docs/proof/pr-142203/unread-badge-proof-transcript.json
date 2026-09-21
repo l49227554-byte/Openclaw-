@@ -1,0 +1,42 @@
+{
+  "capture": "Control UI unread badge before/after (dashboard overview, session never opened)",
+  "gateway": "local test instance, production Control UI bundle, mock openai model gpt-5.6-luna",
+  "assertions": {
+    "beforeDotCount": 0,
+    "afterDotCount": 1,
+    "beforeRowUnread": false,
+    "afterRowUnread": true
+  },
+  "result": {
+    "head": "1ebc715872e2b5e713dd15a047f53f937199f834",
+    "sessionKey": "agent:main:ui-unread-proof",
+    "runId": "ui-unread-proof-turn",
+    "before": {
+      "rowUnread": false,
+      "dots": {
+        "rowDots": 0,
+        "groupDots": 0,
+        "agentCardDots": 0,
+        "rowVisible": 1
+      },
+      "lastReadAt": null,
+      "lastActivityAt": null,
+      "createdAt": 1789919483130
+    },
+    "after": {
+      "rowUnread": true,
+      "dots": {
+        "rowDots": 1,
+        "groupDots": 0,
+        "agentCardDots": 0,
+        "rowVisible": 1
+      },
+      "lastReadAt": null,
+      "lastActivityAt": 1789919487995
+    },
+    "screenshots": [
+      "before-unread.png",
+      "after-unread.png"
+    ]
+  }
+}

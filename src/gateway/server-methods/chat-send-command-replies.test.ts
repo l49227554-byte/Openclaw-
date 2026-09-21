@@ -4,8 +4,10 @@ import { describe, expect, it } from "vitest";
 import {
   copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
+  isReplyPayloadSessionWriterDeliveryAuthorized,
   setReplyPayloadMetadata,
   type ReplyPayload,
+  type ReplyPayloadMetadata,
 } from "../../auto-reply/reply-payload.js";
 import type { ReplyDispatchOperation } from "../../auto-reply/reply/reply-dispatcher.types.js";
 import { createReplyToModeFilterForChannel } from "../../auto-reply/reply/reply-threading.js";
@@ -31,6 +33,67 @@ function selectRawReplies(params: {
       input: { kind: "raw", payload },
     })),
   }).map(readChatSendReplyPayload);
+}
+
+const staleWriterAuthority = {
+  expectedSessionId: "session-before-replacement",
+  expectedWriterRunId: "run-before-replacement",
+  sessionKey: "agent:main:webchat",
+} as const;
+
+const currentWriterAuthority = {
+  expectedSessionId: "replacement-session",
+  expectedWriterRunId: "replacement-run",
+  sessionKey: "agent:main:webchat",
+} as const;
+
+const blockedTranscriptMirror = {
+  expectedSessionId: "session-before-replacement",
+  sessionKey: "agent:main:source",
+  transcriptWriteBlocked: true,
+} as const;
+
+const currentTranscriptMirror = {
+  expectedSessionId: "replacement-session",
+  sessionKey: "agent:main:replacement",
+} as const;
+
+function expectStaleWriterRejected(payload: object) {
+  expect(getReplyPayloadMetadata(payload)).toMatchObject({
+    sessionWriterDeliveryAuthority: staleWriterAuthority,
+  });
+  expect(
+    isReplyPayloadSessionWriterDeliveryAuthorized(payload, {
+      activeWriterRunId: "replacement-run",
+      sessionId: "replacement-session",
+    }),
+  ).toBe(false);
+}
+
+function selectDuplicateOwnerPayloads(
+  blockMetadata: ReplyPayloadMetadata,
+  finalMetadata: ReplyPayloadMetadata,
+) {
+  return selectRawReplies({
+    deliveredReplies: [
+      {
+        kind: "block",
+        payload: setReplyPayloadMetadata(
+          { text: "done", mediaUrl: "file:///tmp/result.png" },
+          blockMetadata,
+        ),
+      },
+      {
+        kind: "final",
+        payload: setReplyPayloadMetadata(
+          { text: "done", mediaUrls: ["/tmp/result.png"] },
+          finalMetadata,
+        ),
+      },
+    ],
+    foldCommandBlocks: true,
+    suppressReplies: false,
+  });
 }
 
 describe("selectChatSendFinalReplyInputs", () => {
@@ -154,23 +217,29 @@ describe("selectChatSendFinalReplyInputs", () => {
     const deliveredReplies = [
       {
         kind: "block" as const,
-        payload: {
-          text: "done",
-          mediaUrl: "file:///tmp/result.png",
-          trustedLocalMedia: true,
-        },
+        payload: setReplyPayloadMetadata(
+          {
+            text: "done",
+            mediaUrl: "file:///tmp/result.png",
+            trustedLocalMedia: true,
+          },
+          { assistantMessageIndex: 4 },
+        ),
       },
       {
         kind: "final" as const,
-        payload: {
-          text: "done",
-          mediaUrls: ["/tmp/result.png"],
-          sensitiveMedia: true,
-          replyToId: "message-1",
-          attachments: [
-            { path: "/tmp/result.png", name: "Result chart.png", mimeType: "image/png" },
-          ],
-        },
+        payload: setReplyPayloadMetadata(
+          {
+            text: "done",
+            mediaUrls: ["/tmp/result.png"],
+            sensitiveMedia: true,
+            replyToId: "message-1",
+            attachments: [
+              { path: "/tmp/result.png", name: "Result chart.png", mimeType: "image/png" },
+            ],
+          },
+          { sessionWriterDeliveryAuthority: staleWriterAuthority },
+        ),
       },
     ];
     const originalReplies = structuredClone(deliveredReplies);
@@ -196,30 +265,34 @@ describe("selectChatSendFinalReplyInputs", () => {
         attachment: { name: "Result chart.png", mimeType: "image/png" },
       },
     ]);
+    expect(getReplyPayloadMetadata(replies[0]!)).toMatchObject({ assistantMessageIndex: 4 });
+    expectStaleWriterRejected(replies[0]!);
     expect(deliveredReplies).toEqual(originalReplies);
   });
 
   it("keeps unmatched final text while deduplicating its media", () => {
-    expect(
-      selectRawReplies({
-        deliveredReplies: [
-          {
-            kind: "block",
-            payload: { text: "progress", mediaUrl: "/tmp/result.png" },
-          },
-          {
-            kind: "final",
-            payload: {
+    const replies = selectRawReplies({
+      deliveredReplies: [
+        {
+          kind: "block",
+          payload: { text: "progress", mediaUrl: "/tmp/result.png" },
+        },
+        {
+          kind: "final",
+          payload: setReplyPayloadMetadata(
+            {
               text: "done",
               mediaUrl: "file:///tmp/result.png",
               audioAsVoice: true,
             },
-          },
-        ],
-        foldCommandBlocks: true,
-        suppressReplies: false,
-      }),
-    ).toEqual([
+            { sessionWriterDeliveryAuthority: staleWriterAuthority },
+          ),
+        },
+      ],
+      foldCommandBlocks: true,
+      suppressReplies: false,
+    });
+    expect(replies).toEqual([
       {
         text: "progress",
         mediaUrl: undefined,
@@ -233,6 +306,63 @@ describe("selectChatSendFinalReplyInputs", () => {
         audioAsVoice: true,
       },
     ]);
+    expectStaleWriterRejected(replies[1]!);
+  });
+
+  it.each([
+    ["stale block", staleWriterAuthority, currentWriterAuthority],
+    ["stale final", currentWriterAuthority, staleWriterAuthority],
+  ])("keeps conflicting raw delivery owners separate with a %s", (_label, block, final) => {
+    const replies = selectDuplicateOwnerPayloads(
+      { sessionWriterDeliveryAuthority: block },
+      { sessionWriterDeliveryAuthority: final },
+    );
+    expect(replies).toHaveLength(2);
+    expect(getReplyPayloadMetadata(replies[0]!)).toMatchObject({
+      sessionWriterDeliveryAuthority: block,
+    });
+    expect(getReplyPayloadMetadata(replies[1]!)).toMatchObject({
+      sessionWriterDeliveryAuthority: final,
+    });
+    expect(
+      replies.every((payload) =>
+        isReplyPayloadSessionWriterDeliveryAuthorized(payload, {
+          activeWriterRunId: "replacement-run",
+          sessionId: "replacement-session",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["blocked block", blockedTranscriptMirror, currentTranscriptMirror],
+    ["blocked final", currentTranscriptMirror, blockedTranscriptMirror],
+  ])("keeps conflicting raw transcript owners separate with a %s", (_label, block, final) => {
+    const replies = selectDuplicateOwnerPayloads(
+      { sourceReplyTranscriptMirror: block },
+      { sourceReplyTranscriptMirror: final },
+    );
+    expect(replies).toHaveLength(2);
+    expect(getReplyPayloadMetadata(replies[0]!)?.sourceReplyTranscriptMirror).toEqual(block);
+    expect(getReplyPayloadMetadata(replies[1]!)?.sourceReplyTranscriptMirror).toEqual(final);
+  });
+
+  it("folds raw replies when both metadata carriers have the same owners", () => {
+    const replies = selectDuplicateOwnerPayloads(
+      {
+        sessionWriterDeliveryAuthority: currentWriterAuthority,
+        sourceReplyTranscriptMirror: currentTranscriptMirror,
+      },
+      {
+        sessionWriterDeliveryAuthority: { ...currentWriterAuthority },
+        sourceReplyTranscriptMirror: { ...currentTranscriptMirror },
+      },
+    );
+    expect(replies).toHaveLength(1);
+    expect(getReplyPayloadMetadata(replies[0]!)).toMatchObject({
+      sessionWriterDeliveryAuthority: currentWriterAuthority,
+      sourceReplyTranscriptMirror: currentTranscriptMirror,
+    });
   });
 
   it.each([

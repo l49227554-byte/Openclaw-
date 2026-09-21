@@ -1,6 +1,7 @@
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import {
   copyReplyPayloadMetadata,
+  getReplyPayloadMetadata,
   type ReplyMediaAttachment,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
@@ -58,23 +59,26 @@ function mergeDefinedReplySemantics(target: ReplyPayload, source: ReplyPayload):
     sanitizeReplyDirectiveId(source.replyToId) ??
     sanitizeReplyDirectiveId(sourceInlineDirectives?.replyToExplicitId);
   const mergedMedia = mergeMediaReplySemantics(target, source, sourceInlineDirectives);
-  return copyReplyPayloadMetadata(mergedMedia, {
-    ...mergedMedia,
-    ...(source.presentation !== undefined ? { presentation: source.presentation } : {}),
-    ...(source.delivery !== undefined ? { delivery: source.delivery } : {}),
-    ...(source.interactive !== undefined ? { interactive: source.interactive } : {}),
-    ...(sourceReplyToId !== undefined ? { replyToId: sourceReplyToId } : {}),
-    ...(source.replyToTag === true || target.replyToTag === true ? { replyToTag: true } : {}),
-    ...(source.replyToCurrent === true ||
-    sourceInlineDirectives?.replyToCurrent === true ||
-    target.replyToCurrent === true
-      ? { replyToCurrent: true }
-      : {}),
-    ...(source.spokenText !== undefined ? { spokenText: source.spokenText } : {}),
-    ...(source.ttsSupplement !== undefined ? { ttsSupplement: source.ttsSupplement } : {}),
-    ...(source.isError === true || target.isError === true ? { isError: true } : {}),
-    ...(source.channelData !== undefined ? { channelData: source.channelData } : {}),
-  });
+  return copyReplyPayloadMetadata(
+    source,
+    copyReplyPayloadMetadata(mergedMedia, {
+      ...mergedMedia,
+      ...(source.presentation !== undefined ? { presentation: source.presentation } : {}),
+      ...(source.delivery !== undefined ? { delivery: source.delivery } : {}),
+      ...(source.interactive !== undefined ? { interactive: source.interactive } : {}),
+      ...(sourceReplyToId !== undefined ? { replyToId: sourceReplyToId } : {}),
+      ...(source.replyToTag === true || target.replyToTag === true ? { replyToTag: true } : {}),
+      ...(source.replyToCurrent === true ||
+      sourceInlineDirectives?.replyToCurrent === true ||
+      target.replyToCurrent === true
+        ? { replyToCurrent: true }
+        : {}),
+      ...(source.spokenText !== undefined ? { spokenText: source.spokenText } : {}),
+      ...(source.ttsSupplement !== undefined ? { ttsSupplement: source.ttsSupplement } : {}),
+      ...(source.isError === true || target.isError === true ? { isError: true } : {}),
+      ...(source.channelData !== undefined ? { channelData: source.channelData } : {}),
+    }),
+  );
 }
 
 function mergeMediaReplySemantics(
@@ -170,6 +174,37 @@ function replyDisplayText(payload: ReplyPayload): string {
   return sanitizeAssistantDisplayText(payload.text) ?? "";
 }
 
+function haveCompatibleReplyOwners(left: ReplyPayload, right: ReplyPayload): boolean {
+  const leftMetadata = getReplyPayloadMetadata(left);
+  const rightMetadata = getReplyPayloadMetadata(right);
+  const leftAuthority = leftMetadata?.sessionWriterDeliveryAuthority;
+  const rightAuthority = rightMetadata?.sessionWriterDeliveryAuthority;
+  if (
+    leftAuthority &&
+    rightAuthority &&
+    (leftAuthority.agentId !== rightAuthority.agentId ||
+      leftAuthority.expectedLifecycleRevision !== rightAuthority.expectedLifecycleRevision ||
+      leftAuthority.expectedSessionId !== rightAuthority.expectedSessionId ||
+      leftAuthority.expectedWriterRunId !== rightAuthority.expectedWriterRunId ||
+      leftAuthority.sessionKey !== rightAuthority.sessionKey ||
+      leftAuthority.storePath !== rightAuthority.storePath)
+  ) {
+    return false;
+  }
+  const leftMirror = leftMetadata?.sourceReplyTranscriptMirror;
+  const rightMirror = rightMetadata?.sourceReplyTranscriptMirror;
+  return !(
+    leftMirror &&
+    rightMirror &&
+    (leftMirror.agentId !== rightMirror.agentId ||
+      leftMirror.expectedSessionId !== rightMirror.expectedSessionId ||
+      leftMirror.idempotencyKey !== rightMirror.idempotencyKey ||
+      leftMirror.sessionKey !== rightMirror.sessionKey ||
+      leftMirror.transcriptOwner !== rightMirror.transcriptOwner ||
+      leftMirror.transcriptWriteBlocked !== rightMirror.transcriptWriteBlocked)
+  );
+}
+
 /** Folds raw command replies while preserving each prepared reply's ownership. */
 export function selectChatSendFinalReplyInputs(params: {
   deliveredReplies: readonly DeliveredChatSendReply[];
@@ -223,6 +258,7 @@ export function selectChatSendFinalReplyInputs(params: {
             ? commandBlockPayloadEntriesForDelivery.find(
                 (candidate) =>
                   candidate.input.kind === "raw" &&
+                  haveCompatibleReplyOwners(candidate.input.payload, payload) &&
                   mediaSetsMatch(replyMediaDedupeKeys(candidate.input.payload), finalMediaKeys),
               )
             : undefined;
@@ -230,6 +266,7 @@ export function selectChatSendFinalReplyInputs(params: {
           ? commandBlockPayloadEntriesForDelivery.find(
               (candidate) =>
                 candidate.input.kind === "raw" &&
+                haveCompatibleReplyOwners(candidate.input.payload, payload) &&
                 replyDisplayText(candidate.input.payload) === finalDisplayText,
             )
           : undefined;
@@ -238,6 +275,7 @@ export function selectChatSendFinalReplyInputs(params: {
             ? commandBlockPayloadEntriesForDelivery.find(
                 (candidate) =>
                   candidate.input.kind === "raw" &&
+                  haveCompatibleReplyOwners(candidate.input.payload, payload) &&
                   replyDisplayText(candidate.input.payload) === finalDisplayText &&
                   mediaSetsMatch(replyMediaDedupeKeys(candidate.input.payload), finalMediaKeys),
               )

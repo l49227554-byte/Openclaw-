@@ -15,6 +15,7 @@ import {
   isEquivalentTaskRecord,
   listTasksFromIndex,
 } from "./task-registry-records.js";
+import type { TaskRegistryObservers, TaskRegistryStore } from "./task-registry-runtime.types.js";
 import type {
   TaskRegistryMutationScope,
   TaskRegistryObserverEvent,
@@ -117,6 +118,12 @@ export type TaskRegistryEventMutations = {
 
 /** Process-local indexes backing task lookup, owner access, and pending delivery scans. */
 type TaskRegistryProcessState = {
+  // Store selection and restore authority must share the lifetime of their projection.
+  runtime: { store?: TaskRegistryStore; observers: TaskRegistryObservers | null };
+  restore:
+    | { status: "uninitialized"; admission?: OpenClawStateDatabaseReadAdmission }
+    | { status: "restoring" | "ready"; admission: OpenClawStateDatabaseReadAdmission }
+    | { status: "failed"; error: Error; admission: OpenClawStateDatabaseReadAdmission };
   tasks: Map<string, TaskRecord>;
   taskDeliveryStates: Map<string, TaskDeliveryState>;
   taskIdsByRunId: Map<string, Set<string>>;
@@ -154,6 +161,8 @@ export function getTaskRegistryProcessState(): TaskRegistryProcessState {
     [TASK_REGISTRY_PROCESS_STATE_KEY]?: TaskRegistryProcessState;
   };
   globalState[TASK_REGISTRY_PROCESS_STATE_KEY] ??= {
+    runtime: { observers: null },
+    restore: { status: "uninitialized" },
     tasks: new Map<string, TaskRecord>(),
     taskDeliveryStates: new Map<string, TaskDeliveryState>(),
     taskIdsByRunId: new Map<string, Set<string>>(),

@@ -128,7 +128,16 @@ async function runCliShimInner(moduleUrl, options, nodeArgs) {
     const nodeExecutable = options.executable ?? (process.versions.bun ? "node" : process.execPath);
     child = spawn(
       nodeExecutable,
-      [...nodeArgs, ...(options.execArgv ?? []), implementationPath, ...process.argv.slice(2)],
+      [
+        // Preserve explicit compiler policy without inheriting loaders, eval, or debugger flags.
+        ...process.execArgv.filter((arg) =>
+          /^--(?:no-)?(?:maglev|concurrent-sparkplug)$/.test(arg),
+        ),
+        ...nodeArgs,
+        ...(options.execArgv ?? []),
+        implementationPath,
+        ...process.argv.slice(2),
+      ],
       {
         cwd: process.cwd(),
         detached,

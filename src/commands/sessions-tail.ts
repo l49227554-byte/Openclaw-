@@ -249,6 +249,7 @@ function followSelections(
               error,
             )}`,
           );
+          runtime.exit(1);
           return finish("ERROR");
         }
       }

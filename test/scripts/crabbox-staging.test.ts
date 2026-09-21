@@ -19,6 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { hasUnjoinedWork, runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
+import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import {
   createFixtureDiagnostics,
   type FixtureDiagnostics,
@@ -221,6 +222,7 @@ if (plan.gate) {
     command(
       process.execPath,
       [
+        ...resolveVitestNodeArgs(),
         "--import",
         resolve(repository, "scripts/tsx.mjs"),
         "--input-type=module",
@@ -268,7 +270,12 @@ process.kill(process.pid,'SIGKILL');`,
   const wrapper = (args: string[], override: NodeJS.ProcessEnv = {}) =>
     command(
       process.execPath,
-      [resolve(repository, "scripts/crabbox-wrapper.mjs"), "staging", ...args],
+      [
+        ...resolveVitestNodeArgs(),
+        resolve(repository, "scripts/crabbox-wrapper.mjs"),
+        "staging",
+        ...args,
+      ],
       override,
       undefined,
       "wrapper",

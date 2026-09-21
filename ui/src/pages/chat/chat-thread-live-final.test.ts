@@ -56,7 +56,7 @@ function completed() {
 }
 
 describe("live terminal continuity with pending collaborators", () => {
-  it("keeps the active reply and its working indicator together before queued custody", () => {
+  it("keeps the active reply and its working indicator together while queued custody is composer-owned", () => {
     const items = project(props());
     const frames = items.filter((item) => item.kind === "agent-run-frame");
     expect(frames).toHaveLength(1);
@@ -67,9 +67,9 @@ describe("live terminal continuity with pending collaborators", () => {
       (item) =>
         item.kind === "group" && item.messages.some((message) => message.key.includes("peer")),
     );
-    expect(items.indexOf(frame)).toBeLessThan(peer);
+    expect(peer).toBe(-1);
   });
-  it("keeps an unsequenced terminal in its existing turn before pending custody", () => {
+  it("keeps an unsequenced terminal in its existing turn while queued custody is composer-owned", () => {
     const before = project(props());
     const after = project(
       props({ messages: [...history, completed()], stream: null, runId: null, runWorking: false }),
@@ -84,7 +84,7 @@ describe("live terminal continuity with pending collaborators", () => {
         item.sender?.id === "writer" &&
         item.messages.some((source) => source.key.includes("peer")),
     );
-    expect(after.findIndex((item) => item.kind === "agent-run-frame")).toBeLessThan(peer);
+    expect(peer).toBe(-1);
   });
   it("already attributes a streaming reply to the same participant as its terminal", () => {
     const before = project(props());

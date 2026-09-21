@@ -272,6 +272,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/openclaw-tools.subagents.scope.test.ts",
   "src/agents/tools/media-generate-tool.donor-resources.test.ts",
   "src/agents/tools/media-generate-tool.resources.test.ts",
+  "src/agents/tools/media-generate-background.queue.test.ts",
   "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
   "src/agents/subagents/registry/subagent-control.recovery.test.ts",
   "src/agents/subagents/registry/subagent-control.retirement.test.ts",

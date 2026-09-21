@@ -139,8 +139,17 @@ function applyProviderSimpleCompletionWrapper(
     return model;
   }
 
+  // The registered simple-completion alias is only a dispatch key. Keep the
+  // original wire API visible while the wrapped stream applies request-body
+  // policy; the source stream projects back to dispatchApi before calling the
+  // provider, so provider routing still uses its registered alias.
+  const registeredStreamFn: StreamFn = (runtimeModel, context, options) =>
+    streamFn(projectModel(runtimeModel, { api: hookSourceApi }), context, options);
+
   const api = resolveProviderSimpleCompletionApi(model);
-  return registerCustomApi(registry, api, streamFn) ? projectModel(model, { api }) : model;
+  return registerCustomApi(registry, api, registeredStreamFn)
+    ? projectModel(model, { api })
+    : model;
 }
 
 function prepareCodexSimpleTransportModel<TApi extends Api>(

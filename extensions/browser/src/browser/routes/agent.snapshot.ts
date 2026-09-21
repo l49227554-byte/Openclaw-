@@ -395,6 +395,7 @@ export function registerBrowserAgentSnapshotRoutes(
               headless:
                 profileRuntime?.running?.headless ??
                 (await profileRuntime?.externalBrowserMode?.headless),
+              signal,
             }),
           };
         }

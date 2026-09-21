@@ -288,6 +288,7 @@ export type RelaySession = {
     observed: ReturnType<
       ReturnType<typeof createClientVoiceConfirmationReadiness>["observeUserTranscript"]
     >;
+    settleTimer: ReturnType<typeof setTimeout>;
   };
   voiceTranscriptQueue: BoundedSerialQueue;
   confirmationReadiness: ReturnType<typeof createClientVoiceConfirmationReadiness>;

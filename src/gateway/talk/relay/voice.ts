@@ -6,6 +6,7 @@ import {
   closeRelayVoiceSessionRecord,
   createOrResumeClientVoiceSession,
 } from "../../../talk/client-voice-session.js";
+import type { TalkEvent } from "../../../talk/talk-events.js";
 import {
   normalizeVoiceTranscriptText,
   VOICE_TRANSCRIPT_QUEUE_POLICY,
@@ -13,6 +14,9 @@ import {
 import { drainingRelaySessions, type RelaySession } from "./state.js";
 
 const RELAY_TRANSCRIPT_RETRY_DELAYS_MS = [0, 500, 2_000] as const;
+// A held final is written once its input item goes this long without a revision. The
+// longest gap measured between live xAI re-finalizations of one item was about 1.3 s.
+const RELAY_PENDING_USER_FINAL_SETTLE_MS = 2_000;
 
 function logRelayVoiceFailure(session: RelaySession, message: string, error: unknown): void {
   session.context.logGateway?.warn(`${message}: ${formatErrorMessage(error)}`);
@@ -45,8 +49,40 @@ export function commitPendingRelayVoiceTranscript(session: RelaySession | undefi
   if (!session || !pending) {
     return true;
   }
+  clearTimeout(pending.settleTimer);
   session.voicePendingUserFinal = undefined;
   return appendRelayVoiceTranscriptEntry(session, "user", pending.text, pending.observed);
+}
+
+// Turn and response terminals settle a hold early, but none is guaranteed: a late partial
+// can reopen a turn that no response will end. The deadline is the settlement guarantee.
+function holdRelayUserFinal(
+  session: RelaySession,
+  utteranceId: string,
+  text: string,
+  observed: NonNullable<RelaySession["voicePendingUserFinal"]>["observed"],
+): void {
+  const settleTimer = setTimeout(() => {
+    if (session.voicePendingUserFinal?.settleTimer === settleTimer) {
+      commitPendingRelayVoiceTranscript(session);
+    }
+  }, RELAY_PENDING_USER_FINAL_SETTLE_MS);
+  settleTimer.unref?.();
+  session.voicePendingUserFinal = { utteranceId, text, observed, settleTimer };
+}
+
+/**
+ * Every turn terminal settles held speech, including a client cancellation whose provider
+ * terminal output ownership consumes before the relay's onResponseDone can run.
+ */
+export function settleRelayVoiceOnTurnTerminal(
+  getRelay: () => RelaySession | undefined,
+): (event: TalkEvent) => void {
+  return (event) => {
+    if (event.type === "turn.ended" || event.type === "turn.cancelled") {
+      commitPendingRelayVoiceTranscript(getRelay());
+    }
+  };
 }
 
 /**
@@ -104,10 +140,9 @@ export function enqueueRelayVoiceTranscript(
   // revisions of one utterance. Text similarity cannot -- "Hi." is a prefix of "History
   // please.", and a repeated sentence is indistinguishable from a re-transcription.
   //
-  // Whether waiting is safe: only while a turn is live, because the turn's terminal is what
-  // settles a held final. Providers may finish input transcription after the response ends
-  // (OpenAI explicitly allows it), and a final arriving then has nothing left to drain it,
-  // so it persists immediately instead.
+  // Whether waiting is safe: a held final settles at the next turn terminal (response end,
+  // cancellation, continuity reset, close) or at its revision deadline, whichever is first.
+  // With no live turn there is nothing to revise within, so it persists immediately.
   //
   // A live spoken-confirmation challenge is already blocked on this final's durable row,
   // so it also keeps the immediate append; only ordinary speech is held and revised.
@@ -118,8 +153,9 @@ export function enqueueRelayVoiceTranscript(
   const pending = session.voicePendingUserFinal;
   if (revisable && pending?.utteranceId === utteranceId) {
     // The superseded observation owns no row; release it so readiness never waits on it.
+    clearTimeout(pending.settleTimer);
     pending.observed?.persisted();
-    session.voicePendingUserFinal = { utteranceId, text: normalizedText, observed };
+    holdRelayUserFinal(session, utteranceId, normalizedText, observed);
     return true;
   }
   if (!commitPendingRelayVoiceTranscript(session)) {
@@ -128,7 +164,7 @@ export function enqueueRelayVoiceTranscript(
   if (!revisable) {
     return appendRelayVoiceTranscriptEntry(session, role, normalizedText, observed);
   }
-  session.voicePendingUserFinal = { utteranceId, text: normalizedText, observed };
+  holdRelayUserFinal(session, utteranceId, normalizedText, observed);
   return true;
 }
 

@@ -56,9 +56,9 @@ import {
   RelayToolCallLedger,
 } from "./tool-call-ledger.js";
 import {
-  commitPendingRelayVoiceTranscript,
   createRelayVoiceConfirmationReadiness,
   enqueueRelayVoiceTranscript,
+  settleRelayVoiceOnTurnTerminal,
   settleRelayVoiceSpeech,
 } from "./voice.js";
 
@@ -81,6 +81,7 @@ export function createTalkRealtimeRelaySession(
   if (expiresAtMs === undefined) {
     throw new Error("Realtime relay session expiry is outside the supported Date range");
   }
+  const relayRef: { current?: RelaySession } = {};
   const harness = createRealtimeVoiceSessionHarness({
     talk: {
       sessionId: relaySessionId,
@@ -101,6 +102,7 @@ export function createTalkRealtimeRelaySession(
     },
     transcriptLookbackMs: RELAY_TRANSCRIPT_ECHO_LOOKBACK_MS,
     captureBridgeEvents: false,
+    onTalkEvent: settleRelayVoiceOnTurnTerminal(() => relayRef.current),
   });
   const emit = (event: TalkRealtimeRelayEventPayload, talkEvent?: TalkEventInput) =>
     broadcastToOwner(params.context, params.connId, {
@@ -116,7 +118,6 @@ export function createTalkRealtimeRelaySession(
   const constructionTerminal: {
     current?: { kind: "error"; error: Error } | { kind: "close"; reason: RealtimeVoiceCloseReason };
   } = {};
-  const relayRef: { current?: RelaySession } = {};
   const getActiveRelay = (): RelaySession | undefined => {
     const relay = relayRef.current;
     return relay && relaySessions.get(relay.id) === relay ? relay : undefined;
@@ -377,9 +378,6 @@ export function createTalkRealtimeRelaySession(
       if (!relay) {
         return;
       }
-      // Accepted speech must reach history even when the response is cancelled or
-      // ends without an assistant transcript to settle behind.
-      commitPendingRelayVoiceTranscript(relay);
       const responseId = outcome.responseId ?? outputOwnership.responseId;
       const disposition = outputOwnership.finish(responseId);
       if (disposition === "ignore") {

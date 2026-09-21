@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isIndexedSessionEntry } from "../../../agents/sessions/session-manager-codec.js";
 import { formatSqliteSessionFileMarker } from "../../../config/sessions/legacy-sqlite-marker.js";
 import {
@@ -15,7 +15,11 @@ import {
 } from "../../../test-utils/openclaw-test-state.js";
 import { controlBridge, controlContext } from "../client-gateway-control.test-support.js";
 import { prepareTalkSessionTarget } from "../session-target.js";
-import { createTalkRealtimeRelaySession, flushTalkRealtimeRelayVoiceWrites } from "./index.js";
+import {
+  cancelTalkRealtimeRelayTurn,
+  createTalkRealtimeRelaySession,
+  flushTalkRealtimeRelayVoiceWrites,
+} from "./index.js";
 import { closeRelaySession } from "./operations.js";
 import { relaySessions, type RelaySession } from "./state.js";
 
@@ -40,6 +44,7 @@ describe("realtime relay voice transcript rows", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     if (ownedRelay) {
       await closeRelaySession(ownedRelay, "completed");
       ownedRelay = undefined;
@@ -64,7 +69,7 @@ describe("realtime relay voice transcript rows", () => {
         isConfigured: () => true,
         createBridge: (options) => {
           bridgeRequest = options;
-          return controlBridge();
+          return { ...controlBridge(), handleBargeIn: vi.fn() };
         },
       },
       providerConfig: {},
@@ -157,5 +162,36 @@ describe("realtime relay voice transcript rows", () => {
     await relay.voiceTranscriptQueue.flush();
 
     expect(await userRows()).toEqual(["Cancel that and check the time."]);
+  });
+  // A late input-transcription delta reaches ensureRelayTurn and opens a fresh turn, so a
+  // live turn no longer proves a terminal will follow. No response follows this final;
+  // only the hold's own revision deadline can settle it.
+  it("persists a final whose late partial reopened the turn", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { relay, request, onTranscript, userRows } = await startRelay();
+
+    request.onResponseDone?.({ responseId: "response-1", status: "completed" });
+    onTranscript("user", "Late transcription", false, "item_a");
+    expect(relay.harness.talk.activeTurnId).toBeDefined();
+    onTranscript("user", "Late transcription of my question.", true, "item_a");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await relay.voiceTranscriptQueue.flush();
+
+    expect(await userRows()).toEqual(["Late transcription of my question."]);
+  });
+
+  // Client cancellation retires the turn while output ownership swallows the provider
+  // terminal, so onResponseDone never runs for it. The cancel itself must settle the hold.
+  it("persists a held final when the client cancels the turn", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { relay, onTranscript, userRows } = await startRelay();
+
+    onTranscript("user", "Stop and check the time.", true, "item_a");
+    expect(relay.voicePendingUserFinal).toBeDefined();
+    void cancelTalkRealtimeRelayTurn({ relaySessionId: relay.id, connId });
+    expect(relay.voicePendingUserFinal).toBeUndefined();
+    await relay.voiceTranscriptQueue.flush();
+
+    expect(await userRows()).toEqual(["Stop and check the time."]);
   });
 });

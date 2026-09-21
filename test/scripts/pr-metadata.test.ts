@@ -43,6 +43,9 @@ type Fixture = {
   cleanupFailure?: boolean;
   authorSources?: unknown;
   authorPages?: unknown[];
+  coreQuotaAt?: string[];
+  graphqlResponses?: unknown[];
+  graphqlQuota?: boolean;
 };
 
 function readPrMetadata(fixture: Fixture = {}, command = "pr_meta_json 42") {
@@ -80,6 +83,7 @@ require("node:module").syncBuiltinESMExports();
   }
   writeFileSync(trace, "");
   writeFileSync(join(dir, "count"), "0");
+  writeFileSync(join(dir, "graphql-count"), "0");
   writeFileSync(join(dir, "sleeps"), "");
   writeFileSync(join(dir, "notify"), "");
   writeFileSync(
@@ -98,6 +102,29 @@ const qualifyRepository = (repository) => {
   return repository.startsWith("https://") ? repository
     : "https://" + (repository.split("/").length === 3 ? repository : defaultHost + "/" + repository);
 };
+const operation = args[0] === "browse" ? "browse" : args.find((arg) => arg.startsWith("repos/") || arg === "user");
+if (fixture.coreQuotaAt?.includes(operation)) {
+  console.log('HTTP/2 403 Forbidden\\nX-RateLimit-Resource: core\\nX-RateLimit-Remaining: 0\\n\\n'+JSON.stringify({message:"API rate limit exceeded"}));
+  console.error("gh: API rate limit exceeded");
+  process.exit(1);
+}
+if (args[0] === "repo" && args[1] === "set-default" && args[2] === "--view") {
+  console.log(fixture.defaultRepoURL || "base-owner/base-repo");
+  process.exit(0);
+}
+if ((args[0] === "api" && args.includes("graphql")) || (args[0] === "pr" && args[1] === "view")) {
+  if (args.includes("--input")) JSON.parse(fs.readFileSync(0,"utf8"));
+  if (fixture.graphqlQuota) {
+    console.error("gh: API rate limit exceeded");
+    process.exit(1);
+  }
+  const count = Number(fs.readFileSync(path.join(root,"graphql-count"),"utf8"));
+  fs.writeFileSync(path.join(root,"graphql-count"),String(count+1));
+  if (!fixture.graphqlResponses || count >= fixture.graphqlResponses.length) throw new Error("Unexpected GraphQL request");
+  if (args.includes("--include")) process.stdout.write("HTTP/2 200 OK\\n\\n");
+  out(fixture.graphqlResponses[count]);
+  process.exit(0);
+}
 if (args[0] === "browse" && args[1] === "--no-browser") {
   if (fixture.failure === "quota" && fixture.failureTarget === "browse") {
     console.error("HTTP 403: API rate limit exceeded");
@@ -168,7 +195,7 @@ if (fixture.failure && fail && (fixture.failureCount === undefined || count <= f
   process.exit(0);
 }
 if (endpoint === "repos/base-owner/base-repo") {
-  out({full_name:"base-owner/base-repo",html_url:repoURL,node_id:"R_base"});
+  out({id:1,full_name:"base-owner/base-repo",html_url:repoURL,node_id:"R_base"});
 } else if (isPull) {
   const record = {number:42,html_url:repoURL+"/pull/42",state:"open",draft:false,
     base:{sha:"${base}",ref:"main",repo:{id:1}},
@@ -245,6 +272,254 @@ if (endpoint === "repos/base-owner/base-repo") {
 }
 
 describe("PR metadata through REST", () => {
+  describe("core quota fallback", () => {
+    const repository = {
+      id: "R_base",
+      databaseId: 1,
+      nameWithOwner: "base-owner/base-repo",
+      url: "https://github.com/base-owner/base-repo",
+    };
+
+    it("verifies the protected writer through GraphQL when REST quota is exhausted", () => {
+      const result = readPrMetadata(
+        {
+          protectedGh: true,
+          coreQuotaAt: ["user"],
+          graphqlResponses: [{ data: { viewer: { login: "fixture-writer" } } }],
+        },
+        "pr_gh_writer_login github.com",
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe("fixture-writer");
+      expect(result.calls.filter((call) => call.includes("graphql"))).toHaveLength(1);
+    });
+
+    it.each([false, true])(
+      "resolves authoritative repository identity with exhausted core quota (both budgets=%s)",
+      (graphqlQuota) => {
+        const result = readPrMetadata(
+          {
+            coreQuotaAt: ["browse", "repos/base-owner/base-repo"],
+            graphqlResponses: [{ data: { repository } }],
+            graphqlQuota,
+          },
+          "pr_gh_plain repo view --json id,nameWithOwner,url",
+        );
+        expect(result.status, result.stderr).toBe(graphqlQuota ? 75 : 0);
+        if (!graphqlQuota) {
+          expect(JSON.parse(result.stdout)).toEqual({
+            id: "R_base",
+            nameWithOwner: repository.nameWithOwner,
+            url: repository.url,
+          });
+        }
+        expect(result.calls.filter((call) => call.includes("graphql"))).toHaveLength(1);
+        expect(
+          result.calls.filter((call) => call.includes("repos/base-owner/base-repo")),
+        ).toHaveLength(1);
+      },
+    );
+
+    it("preserves canonical repository identities for differently cased callers", () => {
+      const result = readPrMetadata(
+        {
+          coreQuotaAt: ["repos/Base-Owner/Base-Repo"],
+          graphqlResponses: [{ data: { repository } }],
+        },
+        "pr_gh_plain repo-authority Base-Owner/Base-Repo GitHub.com",
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        id: 1,
+        node_id: "R_base",
+        full_name: repository.nameWithOwner,
+        html_url: repository.url,
+      });
+    });
+
+    it.each(["exact", "absent", "unavailable"])(
+      "resolves %s author permission without accepting a fuzzy collaborator match",
+      (mode) => {
+        const page = (login: string, permission: string, hasNextPage: boolean) => ({
+          data: {
+            repository: {
+              collaborators: {
+                totalCount: 2,
+                edges: [{ permission, node: { login } }],
+                pageInfo: { hasNextPage, endCursor: hasNextPage ? "next" : null },
+              },
+            },
+          },
+        });
+        const result = readPrMetadata(
+          {
+            coreQuotaAt: ["repos/base-owner/base-repo/collaborators/human/permission"],
+            graphqlResponses:
+              mode === "unavailable"
+                ? [
+                    {
+                      data: { repository: null },
+                      errors: [{ message: "Unavailable collaborator contract" }],
+                    },
+                  ]
+                : [
+                    page("human-other", "ADMIN", true),
+                    page(mode === "exact" ? "human" : "human-another", "WRITE", false),
+                  ],
+          },
+          "pr_gh author-permission base-owner/base-repo github.com human",
+        );
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({
+          permission: mode === "exact" ? "write" : mode === "absent" ? "none" : "unknown",
+        });
+      },
+    );
+
+    it.each(["complete", "partial", "duplicate", "errors"])(
+      "reads %s GraphQL comment evidence after core exhaustion",
+      (mode) => {
+        const node = {
+          id: "IC_1",
+          databaseId: 12,
+          body: "review",
+          url: `${repository.url}/pull/42#issuecomment-12`,
+          createdAt: "2026-09-20T00:00:00Z",
+          updatedAt: "2026-09-20T00:00:00Z",
+          author: { id: "BOT_1", databaseId: 274271284, login: "clawsweeper", __typename: "Bot" },
+        };
+        const page = (nodes: unknown[], hasNextPage: boolean) => ({
+          data: {
+            repository: {
+              pullRequest: {
+                comments: {
+                  nodes,
+                  totalCount: 2,
+                  pageInfo: { hasNextPage, endCursor: hasNextPage ? "next" : null },
+                },
+              },
+            },
+          },
+        });
+        const result = readPrMetadata(
+          {
+            coreQuotaAt: ["repos/base-owner/base-repo/issues/42/comments?per_page=100"],
+            graphqlResponses:
+              mode === "errors"
+                ? [{ ...page([node], false), errors: [{ message: "partial result" }] }]
+                : [
+                    page([node], mode !== "partial"),
+                    page([{ ...node, databaseId: mode === "duplicate" ? 12 : 13 }], false),
+                  ],
+          },
+          "pr_gh_plain issue-comments base-owner/base-repo github.com 42",
+        );
+        expect(result.status, result.stderr).toBe(mode === "complete" ? 0 : 65);
+        if (mode === "complete") {
+          const comments = JSON.parse(result.stdout).flat();
+          expect(comments).toHaveLength(2);
+          expect(comments[0]).toMatchObject({
+            id: 12,
+            body: "review",
+            user: { id: 274271284, login: "clawsweeper[bot]", type: "Bot" },
+            html_url: node.url,
+          });
+        } else {
+          expect(result.stdout).toBe("");
+        }
+      },
+    );
+
+    it("preserves pinned author order and human attribution through GraphQL", () => {
+      const first = "1".repeat(40);
+      const second = "2".repeat(40);
+      const result = readPrMetadata(
+        {
+          authorSources: [
+            { oid: first, changesTree: true },
+            { oid: second, changesTree: false },
+          ],
+          coreQuotaAt: [`repos/base-owner/base-repo/commits?sha=${second}&per_page=2`],
+          graphqlResponses: [
+            {
+              data: {
+                repository: {
+                  commit0: {
+                    oid: first,
+                    author: {
+                      name: "Human",
+                      email: "human@example.invalid",
+                      user: { login: "human", __typename: "User" },
+                    },
+                  },
+                  commit1: {
+                    oid: second,
+                    author: { name: "Unlinked", email: "unlinked@example.invalid", user: null },
+                  },
+                },
+              },
+            },
+          ],
+        },
+        'printf "%s\\n" "$FAKE_GH_FIXTURE" | jq .authorSources | pr_gh commit-authors base-owner/base-repo github.com',
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([
+        {
+          name: "Human",
+          email: "human@example.invalid",
+          user: { login: "human", type: "User" },
+          changesTree: true,
+        },
+        { name: "Unlinked", email: "unlinked@example.invalid", user: null, changesTree: false },
+      ]);
+    });
+
+    it.each([false, true])(
+      "returns complete PR file metadata through GraphQL (truncated=%s)",
+      (truncated) => {
+        const page = (path: string, hasNextPage: boolean) => ({
+          data: {
+            repository: {
+              pullRequest: {
+                files: {
+                  totalCount: 2,
+                  nodes: [{ path, additions: 1, deletions: 0, changeType: "MODIFIED" }],
+                  pageInfo: { hasNextPage, endCursor: hasNextPage ? "next" : null },
+                },
+              },
+            },
+          },
+        });
+        const result = readPrMetadata(
+          {
+            coreQuotaAt: ["repos/base-owner/base-repo/pulls/42"],
+            graphqlResponses: [
+              { headRefOid: head },
+              page("src/a.ts", !truncated),
+              page("src/b.ts", false),
+            ],
+          },
+          "pr_gh pr view 42 --json headRefOid,files",
+        );
+        expect(result.status, result.stderr).toBe(truncated ? 65 : 0);
+        if (!truncated) {
+          expect(JSON.parse(result.stdout)).toEqual({
+            headRefOid: head,
+            files: ["src/a.ts", "src/b.ts"].map((path) => ({
+              path,
+              additions: 1,
+              deletions: 0,
+              changeType: "MODIFIED",
+            })),
+          });
+        } else {
+          expect(result.stdout).toBe("");
+        }
+      },
+    );
+  });
+
   describe("pinned source authors", () => {
     const command =
       'printf "%s\\n" "$FAKE_GH_FIXTURE" | jq .authorSources | pr_gh commit-authors base-owner/base-repo github.enterprise.invalid';
@@ -427,6 +702,7 @@ describe("PR metadata through REST", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe(
       JSON.stringify({
+        id: 1,
         full_name: "base-owner/base-repo",
         html_url: "https://github.com/base-owner/base-repo",
         node_id: "R_base",

@@ -715,7 +715,6 @@ vi.mock("../../transcript-policy.js", () => ({
     allowSyntheticToolResults: false,
     repairToolUseResultPairing: true,
   }),
-  shouldAllowProviderOwnedThinkingReplay: () => false,
 }));
 
 vi.mock("../cache-ttl.js", () => ({

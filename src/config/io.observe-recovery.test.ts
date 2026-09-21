@@ -1692,5 +1692,26 @@ describe("config observe recovery", () => {
       }
     });
   });
+
+  it("auto-restores a backup carrying a saved blank agent agentDir", async () => {
+    await withSuiteHome(async (home) => {
+      const { io, configPath, warn } = createTestConfigIO(home);
+      await seedConfigBackup(configPath, {
+        meta: { lastTouchedVersion: "2026.4.22" },
+        gateway: { mode: "local", auth: { mode: "none" } },
+        agents: { entries: { alpha: { agentDir: " " } } },
+      });
+      const clobbered = await writeConfigRaw(configPath, {
+        meta: { lastTouchedVersion: "2026.5.28" },
+      });
+
+      const snapshot = await io.readConfigFileSnapshot({ recoverSuspicious: true });
+
+      expect(snapshot.valid).toBe(true);
+      expect(snapshot.config.gateway?.mode).toBe("local");
+      expectWarnContaining(warn, "Config auto-restored from backup:");
+      await expect(fsp.readFile(configPath, "utf-8")).resolves.not.toBe(clobbered.raw);
+    });
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

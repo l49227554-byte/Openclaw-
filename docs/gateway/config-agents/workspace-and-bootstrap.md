@@ -53,6 +53,17 @@ Optional repository root shown in the system prompt's Runtime line. If unset, Op
 }
 ```
 
+## `agents.entries.*.agentDir`
+
+Optional per-agent directory that holds credentials, sessions, and database
+state for that agent. When omitted, the agent uses the default agent directory.
+Strict configuration validation rejects an explicitly configured `agentDir`
+that is blank, reporting a field error. Saved configurations from older
+versions that contain a blank value are migrated on load: the blank is removed
+and the default agent directory applies, so startup and unrelated settings
+changes keep working. Authoring a new blank value via `openclaw config` still
+fails validation.
+
 ## `agents.defaults.skills`
 
 Optional default skill allowlist for agents that do not set

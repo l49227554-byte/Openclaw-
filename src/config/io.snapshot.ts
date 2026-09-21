@@ -53,6 +53,7 @@ import type {
   ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "./io.types.js";
 import { warnIfConfigFromFuture } from "./io.warnings.js";
+import { migrateBlankAgentDir } from "./legacy.blank-agent-dir.js";
 import {
   findLegacyConfigIssues,
   migrateLegacyContextBudgetConfig,
@@ -262,7 +263,21 @@ async function readConfigSnapshotWithPreparation(
       ...contextBudgetMigration.warnings,
       ...rosterMigration.diagnostics.map((message) => ({ path: "agents.entries", message })),
     );
-    const effectiveConfigRaw = rosterMigration.config;
+    // The blank agentDir migration runs on this snapshot path only for runtime
+    // consumption (default / "runtime" preparation): the Gateway startup and
+    // other runtime readers must keep loading a saved blank agentDir with its
+    // unchanged defaulted directory. Strict CLI validation (`openclaw config
+    // validate`, prepareValidation: "strict") deliberately skips the migration
+    // so an explicitly blank agentDir stays visible and the field-level error
+    // is reported — validation is the diagnostic surface, not the loader.
+    const shouldMigrateBlankAgentDir = options.prepareValidation !== "strict";
+    const blankAgentDirMigration = shouldMigrateBlankAgentDir
+      ? migrateBlankAgentDir(rosterMigration.config)
+      : { config: rosterMigration.config, changed: false, changes: [], warnings: [] };
+    if (shouldMigrateBlankAgentDir) {
+      envVarWarnings.push(...blankAgentDirMigration.changes, ...blankAgentDirMigration.warnings);
+    }
+    const effectiveConfigRaw = blankAgentDirMigration.config;
     const validationConfigRaw = effectiveConfigRaw;
     const snapshotRaw = raw;
     const snapshotParsed = effectiveParsed;

@@ -288,13 +288,13 @@ describe("runHeartbeatOnce – heartbeat model override", () => {
       expectedTimeoutMs: MAX_TIMER_TIMEOUT_MS,
     },
     {
-      name: "agent budget when a scheduled turn admits a task review",
+      name: "heartbeat budget when scheduled work defers a pending task review",
       source: "background-task",
       contextKey: "task:review",
       eventText: "Delegated task completed. Review and verify the result.",
       scheduledTasks: true,
       heartbeat: { timeoutSeconds: 45 },
-      expectedTimeoutMs: 48 * 60 * 60_000,
+      expectedTimeoutMs: 45_000,
     },
     {
       name: "heartbeat budget for an unconsumed base-session task",

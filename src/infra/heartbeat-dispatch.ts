@@ -238,6 +238,7 @@ async function prepareHeartbeatDispatchReply(
       replyPayload: selected,
     },
     hasRelayableExecCompletion: prepared.hasRelayableExecCompletion,
+    hasCronEvents: prepared.hasCronEvents,
     suppressUnmarkedSourceReplies:
       resolveSourceReplyDeliveryMode({
         cfg,
@@ -294,6 +295,23 @@ async function prepareHeartbeatDispatchReply(
           source: "cron",
           intent: "immediate",
           reason: "cron:pending",
+          agentId,
+          sessionKey,
+          heartbeat: wake.heartbeat && {
+            ...(wake.heartbeat.target !== undefined ? { target: wake.heartbeat.target } : {}),
+            ...(wake.heartbeat.to !== undefined ? { to: wake.heartbeat.to } : {}),
+            ...(wake.heartbeat.accountId !== undefined
+              ? { accountId: wake.heartbeat.accountId }
+              : {}),
+          },
+        });
+      } else if (prepared.hasExcludedEventCohorts) {
+        // Route isolation filtered out events for a different conversation.
+        // Request a follow-up wake so those events are not stranded indefinitely.
+        requestHeartbeat({
+          source: "exec-event",
+          intent: "immediate",
+          reason: "excluded-cohort:pending",
           agentId,
           sessionKey,
           heartbeat: wake.heartbeat && {

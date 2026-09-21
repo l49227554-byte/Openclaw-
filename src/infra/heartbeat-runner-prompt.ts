@@ -7,7 +7,9 @@ import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readHeartbeatMonitorScratch } from "../cron/scratch-store.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
+import { channelRouteDedupeKey } from "../plugin-sdk/channel-route.js";
 import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "../sessions/session-state-event-kinds.js";
+import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import { formatErrorMessage } from "./errors.js";
 import type { HeartbeatConfig } from "./heartbeat-config.js";
 import {
@@ -46,7 +48,7 @@ export function truncateHeartbeatPreview(value: string | undefined): string | un
 
 type HeartbeatSkipReason = "empty-heartbeat-file" | typeof HEARTBEAT_SKIP_NO_PENDING_EVENT;
 
-type HeartbeatPreflight = HeartbeatWakePayloadFlags & {
+export type HeartbeatPreflight = HeartbeatWakePayloadFlags & {
   session: ReturnType<typeof resolveHeartbeatSessionSelection>;
   pendingEventEntries: ReturnType<typeof peekSystemEventEntries>;
   turnSourceDeliveryContext: ReturnType<typeof resolveSystemEventDeliveryContext>;
@@ -196,6 +198,7 @@ type HeartbeatPromptResolution = {
   hasExecCompletion: boolean;
   hasRelayableExecCompletion: boolean;
   hasCronEvents: boolean;
+  hasExcludedEventCohorts: boolean;
   usesHeartbeatResponseTool: boolean;
   genericEvents: SystemEvent[];
   inspectedSystemEventsToConsume: SystemEvent[];
@@ -213,6 +216,154 @@ function appendHeartbeatScratch(prompt: string, heartbeatScratchContent?: string
   return `${prompt}\n\nHeartbeat monitor scratch:\n${directives}`;
 }
 
+export type HeartbeatTurnEventSelection = {
+  execEvents: SystemEvent[];
+  cronEvents: SystemEvent[];
+  cronNoise: SystemEvent[];
+  genericEvents: SystemEvent[];
+  hasExcludedEventCohorts: boolean;
+  turnSourceDeliveryContext?: DeliveryContext;
+};
+
+function selectRouteCompatibleEventCohort(events: readonly SystemEvent[]): {
+  events: SystemEvent[];
+  turnSourceDeliveryContext?: DeliveryContext;
+} {
+  let authority: DeliveryContext | undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const candidate = events[index]?.deliveryContext;
+    if (candidate) {
+      authority = candidate;
+      break;
+    }
+  }
+  if (!authority) {
+    return { events: [...events] };
+  }
+  const authorityKey = channelRouteDedupeKey(authority);
+  const selected = events.filter(
+    (event) =>
+      event.deliveryContext === undefined ||
+      channelRouteDedupeKey(event.deliveryContext) === authorityKey,
+  );
+  return {
+    events: selected,
+    turnSourceDeliveryContext: resolveSystemEventDeliveryContext(selected),
+  };
+}
+
+/**
+ * Generic queue content rides along with a dedicated cohort only when it cannot
+ * redirect the turn: the cohort's route owns delivery, so a generic event must
+ * carry that same route or carry none at all. Differently routed events stay
+ * queued for a wake that owns their conversation.
+ */
+function selectRouteCompatibleGenericEvents(
+  candidates: readonly SystemEvent[],
+  authority: DeliveryContext | undefined,
+): SystemEvent[] {
+  const authorityKey = authority ? channelRouteDedupeKey(authority) : undefined;
+  return candidates.filter((event) => {
+    if (event.deliveryContext === undefined) {
+      return true;
+    }
+    return (
+      authorityKey !== undefined && channelRouteDedupeKey(event.deliveryContext) === authorityKey
+    );
+  });
+}
+
+/**
+ * Selects one route-authorized event cohort for this turn. Content admission,
+ * delivery authority, and queue consumption must all use this same selection.
+ * Differently routed events remain queued for a later wake.
+ */
+export function resolveHeartbeatTurnEventSelection(params: {
+  preflight: HeartbeatPreflight;
+  scheduledTasks: readonly HeartbeatScheduledTask[];
+}): HeartbeatTurnEventSelection {
+  const genericCandidates: SystemEvent[] = [];
+  const cronCandidates: SystemEvent[] = [];
+  const execCandidates: SystemEvent[] = [];
+  const cronNoise: SystemEvent[] = [];
+
+  for (const event of params.preflight.pendingEventEntries) {
+    if (event.contextKey?.startsWith(SESSION_CREATED_NOTICE_CONTEXT_PREFIX)) {
+      genericCandidates.push(event);
+    } else if (isExecCompletionEvent(event.text)) {
+      if (params.preflight.shouldInspectPendingEvents) {
+        execCandidates.push(event);
+      }
+    } else if (params.preflight.isCronWake || event.contextKey?.startsWith("cron:")) {
+      (isCronSystemEvent(event.text) ? cronCandidates : cronNoise).push(event);
+    } else {
+      genericCandidates.push(event);
+    }
+  }
+
+  // A scheduled turn is not event-derived: its authority comes from the job's own
+  // configured destination, so no queued event supplies a route to ride along on.
+  if (params.scheduledTasks.length > 0) {
+    return {
+      execEvents: [],
+      cronEvents: [],
+      cronNoise,
+      genericEvents: [],
+      hasExcludedEventCohorts: false,
+    };
+  }
+
+  const routeAuthority = (selected: { turnSourceDeliveryContext?: DeliveryContext }) =>
+    params.preflight.session.inspectsRunQueue ? selected.turnSourceDeliveryContext : undefined;
+
+  if (execCandidates.length > 0) {
+    const selected = selectRouteCompatibleEventCohort(execCandidates);
+    const selectedGenericEvents = selectRouteCompatibleGenericEvents(
+      genericCandidates,
+      selected.turnSourceDeliveryContext,
+    );
+    return {
+      execEvents: selected.events,
+      // Preserve awareness of queued cron work without admitting or consuming it.
+      cronEvents: cronCandidates,
+      cronNoise,
+      genericEvents: selectedGenericEvents,
+      hasExcludedEventCohorts:
+        selected.events.length < execCandidates.length ||
+        selectedGenericEvents.length < genericCandidates.length,
+      turnSourceDeliveryContext: routeAuthority(selected),
+    };
+  }
+
+  if (cronCandidates.length > 0) {
+    const selected = selectRouteCompatibleEventCohort(cronCandidates);
+    const selectedGenericEvents = selectRouteCompatibleGenericEvents(
+      genericCandidates,
+      selected.turnSourceDeliveryContext,
+    );
+    return {
+      execEvents: [],
+      cronEvents: selected.events,
+      cronNoise,
+      genericEvents: selectedGenericEvents,
+      hasExcludedEventCohorts:
+        selected.events.length < cronCandidates.length ||
+        selectedGenericEvents.length < genericCandidates.length,
+      turnSourceDeliveryContext: routeAuthority(selected),
+    };
+  }
+
+  const selected = selectRouteCompatibleEventCohort(genericCandidates);
+  return {
+    execEvents: [],
+    cronEvents: [],
+    cronNoise,
+    genericEvents: selected.events,
+    hasExcludedEventCohorts: selected.events.length < genericCandidates.length,
+    turnSourceDeliveryContext: routeAuthority(selected),
+  };
+}
+
 export function resolveHeartbeatRunPrompt(params: {
   cfg: OpenClawConfig;
   heartbeat?: HeartbeatConfig;
@@ -222,27 +373,15 @@ export function resolveHeartbeatRunPrompt(params: {
   scheduledTasks: readonly HeartbeatScheduledTask[];
   heartbeatScratchContent?: string;
   useHeartbeatResponseTool: boolean;
+  eventSelection?: HeartbeatTurnEventSelection;
 }): HeartbeatPromptResolution {
-  const pendingEventEntries = params.preflight.pendingEventEntries;
-  const genericEvents: SystemEvent[] = [];
-  const cronEvents: SystemEvent[] = [];
-  const execEvents: SystemEvent[] = [];
-  const cronNoise: SystemEvent[] = [];
-  // Select once: admission owns generic text; completed delivery owns dedicated
-  // prompts and filtered cron noise. Late arrivals retain their queue identities.
-  for (const event of pendingEventEntries) {
-    if (event.contextKey?.startsWith(SESSION_CREATED_NOTICE_CONTEXT_PREFIX)) {
-      genericEvents.push(event);
-    } else if (isExecCompletionEvent(event.text)) {
-      if (params.preflight.shouldInspectPendingEvents) {
-        execEvents.push(event);
-      }
-    } else if (params.preflight.isCronWake || event.contextKey?.startsWith("cron:")) {
-      (isCronSystemEvent(event.text) ? cronEvents : cronNoise).push(event);
-    } else {
-      genericEvents.push(event);
-    }
-  }
+  const selection =
+    params.eventSelection ??
+    resolveHeartbeatTurnEventSelection({
+      preflight: params.preflight,
+      scheduledTasks: params.scheduledTasks,
+    });
+  const { genericEvents, cronEvents, execEvents, cronNoise } = selection;
   const hasExecCompletion = execEvents.length > 0;
   const hasRelayableExecCompletion =
     params.canRelayToUser && execEvents.some((event) => isRelayableExecCompletionEvent(event.text));
@@ -265,12 +404,16 @@ ${completionInstruction}`;
     const prompt = appendHeartbeatScratch(taskPrompt, params.heartbeatScratchContent);
     return {
       prompt,
-      hasTaskContinuation: hasBackgroundTaskEvent,
+      // Scheduled work must not coalesce queued generic events whose delivery
+      // authority may belong to another conversation. Leave those events queued
+      // so their own wake can process them with their original delivery context.
+      hasTaskContinuation: false,
       hasExecCompletion: false,
       hasRelayableExecCompletion: false,
       hasCronEvents: false,
+      hasExcludedEventCohorts: selection.hasExcludedEventCohorts,
       usesHeartbeatResponseTool: params.useHeartbeatResponseTool,
-      genericEvents,
+      genericEvents: [],
       inspectedSystemEventsToConsume: cronNoise,
     };
   }
@@ -308,6 +451,7 @@ ${completionInstruction}`;
     hasExecCompletion,
     hasRelayableExecCompletion,
     hasCronEvents,
+    hasExcludedEventCohorts: selection.hasExcludedEventCohorts,
     usesHeartbeatResponseTool: baseUsesHeartbeatResponseTool,
     genericEvents,
     inspectedSystemEventsToConsume: [

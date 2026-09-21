@@ -12,6 +12,8 @@ import {
   buildEmptyInteractiveReplyPayload,
   buildExternalRunFailureReply,
   buildKnownAgentRunFailureReplyPayload,
+  buildTerminalAgentRunFailureReplyPayload,
+  shouldUseHeartbeatFailureCopy,
 } from "./agent-runner-failure-reply.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
 
@@ -175,5 +177,63 @@ describe("buildExternalRunFailureReply", () => {
     expect(reply.text).not.toContain("secret-canary");
     expect(reply.text).not.toBe(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
     expect(reply.isGenericRunnerFailure).toBe(false);
+  });
+});
+
+describe("heartbeat event failure visibility (#153543)", () => {
+  it("uses generic wording without suppressing a heartbeat-backed event failure", () => {
+    const external = buildExternalRunFailureReply(
+      { message: "event failure", error: new Error("event failure") },
+      { isHeartbeat: true, useHeartbeatFailureCopy: false },
+    );
+    expect(external).toEqual({
+      text: GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
+      isGenericRunnerFailure: false,
+    });
+
+    const terminal = buildTerminalAgentRunFailureReplyPayload({
+      isHeartbeat: true,
+      useHeartbeatFailureCopy: false,
+      replyExpectation: "optional",
+      visibleReplyDelivered: false,
+    });
+    expect(terminal.text).toBe(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
+    expect(terminal.text).not.toBe(SILENT_REPLY_TOKEN);
+    expect(terminal.isError).toBe(true);
+  });
+});
+
+describe("shouldUseHeartbeatFailureCopy (#153543)", () => {
+  it("returns true for heartbeat runs without exec/cron turns", () => {
+    expect(shouldUseHeartbeatFailureCopy({ isHeartbeat: true, sessionCtx: {} })).toBe(true);
+    expect(
+      shouldUseHeartbeatFailureCopy({
+        isHeartbeat: true,
+        sessionCtx: { InternalTurnSource: "heartbeat" },
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for exec turns running in heartbeat harness", () => {
+    expect(
+      shouldUseHeartbeatFailureCopy({
+        isHeartbeat: true,
+        sessionCtx: { InternalTurnSource: "exec" },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for cron turns running in heartbeat harness", () => {
+    expect(
+      shouldUseHeartbeatFailureCopy({
+        isHeartbeat: true,
+        sessionCtx: { InternalTurnSource: "cron" },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when isHeartbeat is false or undefined", () => {
+    expect(shouldUseHeartbeatFailureCopy({ isHeartbeat: false, sessionCtx: {} })).toBe(false);
+    expect(shouldUseHeartbeatFailureCopy({ sessionCtx: {} })).toBe(false);
   });
 });

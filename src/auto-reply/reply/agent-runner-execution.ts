@@ -65,6 +65,7 @@ import type {
 import {
   buildTerminalAgentRunFailureReplyPayload,
   markAgentRunFailureReplyPayload,
+  shouldUseHeartbeatFailureCopy,
 } from "./agent-runner-failure-reply.js";
 import {
   executeAgentFallbackCycle,
@@ -501,6 +502,10 @@ async function executeAgentTurnInternalLoop(
     const replyExpectation = resolveReplyExpectation(params.followupRun.run);
     terminalFailurePayload = buildTerminalAgentRunFailureReplyPayload({
       isHeartbeat: params.isHeartbeat,
+      useHeartbeatFailureCopy: shouldUseHeartbeatFailureCopy({
+        isHeartbeat: params.isHeartbeat,
+        sessionCtx: params.sessionCtx,
+      }),
       replyExpectation,
       visibleReplyDelivered:
         replyExpectation === "optional"

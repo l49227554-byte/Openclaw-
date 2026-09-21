@@ -44,6 +44,7 @@ import { shouldUseHeartbeatResponseToolPrompt } from "./heartbeat-runner-config.
 import {
   resolveHeartbeatPreflight,
   resolveHeartbeatRunPrompt,
+  resolveHeartbeatTurnEventSelection,
   shouldPreflightWakeBeforeBusy,
 } from "./heartbeat-runner-prompt.js";
 import {
@@ -372,6 +373,11 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
         }
       : undefined;
 
+  const turnEventSelection = resolveHeartbeatTurnEventSelection({
+    preflight,
+    scheduledTasks,
+  });
+
   // When isolatedSession is enabled, create a fresh session via the same
   // pattern as cron sessionTarget: "isolated". This gives the heartbeat
   // a new session ID (empty transcript) each run, avoiding the cost of
@@ -384,10 +390,9 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     heartbeat,
     currentSessionKey: sessionKey,
     // A base queue's route stays excluded; events on the actual isolated queue
-    // own their route, including exec completion after the base route moves.
-    turnSource: preflight.session.inspectsRunQueue
-      ? preflight.turnSourceDeliveryContext
-      : undefined,
+    // own their route only when selected for this turn. Scheduled tasks and
+    // unselected events never override the configured delivery destination.
+    turnSource: turnEventSelection.turnSourceDeliveryContext,
   });
   // Operator-chosen suppression is the resolver's verdict, not a config string:
   // an explicit target that never resolves to a route also reports `target-none`.
@@ -455,6 +460,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     scheduledTasks,
     heartbeatScratchContent: preflight.heartbeatScratchContent,
     useHeartbeatResponseTool: useHeartbeatResponseToolPrompt,
+    eventSelection: turnEventSelection,
   });
 
   const runSessionKey = run.sessionKey;
@@ -557,6 +563,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
         scheduledTasks,
         heartbeatScratchContent: preflight.heartbeatScratchContent,
         useHeartbeatResponseTool: useHeartbeatResponseToolPrompt,
+        eventSelection: turnEventSelection,
       });
     }
   }

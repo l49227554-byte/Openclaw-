@@ -715,8 +715,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
       }>(storePath);
 
       expect(failedResult).toEqual({ status: "failed", reason: "agent-runner-failure" });
-      expectTelegramSend(sendTelegram, { text: HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT, cfg });
-      expect(HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT).not.toContain("/new");
+      expectTelegramSend(sendTelegram, { text: GENERIC_EXTERNAL_RUN_FAILURE_TEXT, cfg });
       expect(peekSystemEventEntries(sessionKey)).toEqual(inspectedEvents);
       expect(failedSessionStore[sessionKey]).toMatchObject({
         lastHeartbeatText: previousHeartbeatText,

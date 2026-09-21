@@ -42,6 +42,13 @@ import {
   type ChatAbortRequester,
 } from "./chat-abort-authorization.js";
 import {
+  ABORTED_PARTIAL_PERSISTENCE_WARNING,
+  finishAbortedPartialPersistence,
+  withQueuedCollectorPersistenceWarning,
+  type ChatSessionAbortResult as ChatSessionAbortResultShape,
+  type QueuedCollectorAbortOutcome,
+} from "./chat-abort-persistence-warning.js";
+import {
   normalizeOptionalChatText as normalizeOptionalText,
   normalizeUnknownChatText as normalizeUnknownText,
 } from "./chat-text-normalization.js";
@@ -105,7 +112,7 @@ export function descendantAbortError(
 /** Queued collectors retain scheduler ownership while Gateway admission is still pending. */
 export function abortQueuedCollectorSession(
   params: Omit<ChatSessionAbortParams, "ops"> & { runId?: string },
-): Promise<Result<{ aborted: boolean; runIds: string[] }, ErrorShape>> | undefined {
+): Promise<QueuedCollectorAbortOutcome> | undefined {
   const entry = getLatestLiveSubagentRunByChildSessionKey(params.sessionKey);
   if (
     !entry ||
@@ -321,7 +328,10 @@ export function abortQueuedCollectorSession(
       // after later owner failures; the transcript writer still fences the session.
       if (sessionAbort?.ok) {
         try {
-          await sessionAbort.value.plan.finish(sessionAbort.value.result);
+          const partialPersistenceFailed = await sessionAbort.value.plan.finish(
+            sessionAbort.value.result,
+          );
+          outcome = withQueuedCollectorPersistenceWarning(outcome, partialPersistenceFailed);
         } catch (error) {
           if (outcome.ok) {
             outcome = {
@@ -453,13 +463,9 @@ type ChatSessionAbortParams = {
   onCancellationStarted?: () => void;
 };
 
-type ChatSessionAbortResult = {
-  aborted: boolean;
-  runIds: string[];
-  unauthorized: boolean;
-  error?: ErrorShape;
-  descendants?: Awaited<ReturnType<typeof abortControlledSubagents>>;
-};
+type ChatSessionAbortResult = ChatSessionAbortResultShape<
+  Awaited<ReturnType<typeof abortControlledSubagents>>
+>;
 
 /** Resolve once at the cancellation boundary; persist captured partials only after Stop. */
 function prepareChatSessionAbort(params: ChatSessionAbortParams, selectedRunId?: string) {
@@ -663,10 +669,11 @@ function prepareChatSessionAbort(params: ChatSessionAbortParams, selectedRunId?:
     canCascade: canRunLifecycleCleanup && !hasUnauthorizedLifecycleOwner,
     hasOtherWork,
     abort: abortAuthorizedRuns,
-    async finish(result: Pick<ChatSessionAbortResult, "aborted" | "runIds">) {
+    async finish(result: Pick<ChatSessionAbortResult, "aborted" | "runIds">): Promise<boolean> {
+      let partialPersistenceFailed = false;
       if (result.aborted && snapshots.length > 0) {
         const abortedRunIds = new Set(result.runIds);
-        await persistAbortedPartials({
+        partialPersistenceFailed = await persistAbortedPartials({
           context: params.context,
           snapshots: snapshots.filter((snapshot) => abortedRunIds.has(snapshot.runId)),
         });
@@ -674,6 +681,7 @@ function prepareChatSessionAbort(params: ChatSessionAbortParams, selectedRunId?:
       if (params.session && !params.session.ok) {
         throw params.session.error;
       }
+      return partialPersistenceFailed;
     },
   };
 }
@@ -694,6 +702,7 @@ export async function abortChatRunsForSessionKeyWithPartials(
   let result: ChatSessionAbortResult = { aborted: false, runIds: [], unauthorized: false };
   let descendants: Awaited<ReturnType<typeof abortControlledSubagents>>;
   let failure: { error: unknown } | undefined;
+  let partialPersistenceFailed = false;
   try {
     if (params.cascadeDescendants && plan.canCascade) {
       descendants = await abortControlledSubagents({
@@ -716,18 +725,18 @@ export async function abortChatRunsForSessionKeyWithPartials(
     failure = { error };
   }
   // Cancellation consumed these buffers before awaited descendant work could fail.
-  try {
-    await plan.finish(result);
-  } catch (error) {
-    if (!failure) {
-      throw error;
-    }
-    params.context.logGateway.warn(
-      "chat.abort could not persist captured output after cancellation was rejected",
-    );
-  }
+  partialPersistenceFailed = await finishAbortedPartialPersistence({
+    finish: () => plan.finish(result),
+    hasPrimaryFailure: Boolean(failure),
+    warn: params.context.logGateway.warn,
+  });
   if (failure) {
     throw failure.error;
   }
-  return { ...result, aborted: result.aborted || Boolean(descendants?.killed), descendants };
+  return {
+    ...result,
+    aborted: result.aborted || Boolean(descendants?.killed),
+    descendants,
+    ...(partialPersistenceFailed ? { warning: ABORTED_PARTIAL_PERSISTENCE_WARNING } : {}),
+  };
 }

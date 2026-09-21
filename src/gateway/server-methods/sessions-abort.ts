@@ -417,6 +417,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     let failedResponse: Parameters<typeof respond> | undefined;
     let descendantsCancelled = false;
     let responseMeta: Record<string, unknown> | undefined;
+    let abortWarning: string | undefined;
     const persistedSessionId = sessionEntry?.sessionId;
     const sessionEmbeddedRun = persistedSessionId
       ? resolveActiveEmbeddedRunOwner(persistedSessionId)
@@ -538,6 +539,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             ok: true,
             abortedRunId: result.value.runIds[0] ?? null,
             status: result.value.aborted ? "aborted" : "no-active-run",
+            ...(result.value.warning ? { warning: result.value.warning } : {}),
           },
           undefined,
           undefined,
@@ -560,6 +562,10 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           }
           chatAbortSucceeded = true;
           responseMeta = meta;
+          abortWarning =
+            payload && typeof payload === "object" && "warning" in payload
+              ? normalizeOptionalString(payload.warning)
+              : undefined;
           const runIds =
             payload &&
             typeof payload === "object" &&
@@ -630,6 +636,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         ok: true,
         abortedRunId,
         status: aborted ? "aborted" : "no-active-run",
+        ...(abortWarning ? { warning: abortWarning } : {}),
       },
       undefined,
       responseMeta,

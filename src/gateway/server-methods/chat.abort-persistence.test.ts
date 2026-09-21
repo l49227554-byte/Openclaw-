@@ -16,10 +16,10 @@ import { onAgentEvent, resetAgentEventsForTest } from "../../infra/agent-events.
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
-import { createChatRunState } from "../server-chat-state.js";
 import { handleChatAbortRequest } from "./chat-abort-handler.js";
 import { captureAbortedPartial, persistAbortedPartials } from "./chat-transcript-persistence.js";
 import {
+  createAbortTestRunState,
   createActiveRun,
   createChatAbortContext,
   invokeChatAbortHandler,
@@ -28,17 +28,6 @@ import {
 type TranscriptLine = {
   message?: Record<string, unknown>;
 };
-
-type TestChatRunRecord =
-  ReturnType<typeof createChatRunState>["runs"] extends Map<string, infer Record> ? Record : never;
-
-function createAbortTestRunState(entries: Array<[string, Partial<TestChatRunRecord>]>) {
-  const state = createChatRunState();
-  for (const [runId, record] of entries) {
-    Object.assign(state.getOrCreate(runId), record);
-  }
-  return state;
-}
 
 const sessionEntryState = vi.hoisted(() => ({
   transcriptPath: "",
@@ -362,7 +351,7 @@ describe("chat abort transcript persistence", () => {
     if (rejects) {
       await expect(persistence).rejects.toThrow("transcript identity not resolved");
     } else {
-      await expect(persistence).resolves.toBeUndefined();
+      await expect(persistence).resolves.toBe(true);
     }
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("transcript identity not resolved"));
   });

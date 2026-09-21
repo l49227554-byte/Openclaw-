@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginRuntime } from "../../runtime-api.js";
 import { getMatrixRuntime, setMatrixRuntime } from "../runtime.js";
 import { installMatrixTestRuntime, resetMatrixTestStores } from "../test-runtime.js";
-import { voteMatrixPoll } from "./actions/polls.js";
 import {
   loadMatrixDeliveryPlan,
   reconcileMatrixUnknownSend,
@@ -21,11 +20,9 @@ import {
   chunkMatrixText,
   editMessageMatrix,
   sendMessageMatrix,
-  sendPollMatrix,
   sendSingleTextMessageMatrix,
-  sendTypingMatrix,
 } from "./send.js";
-import { MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY } from "./send/types.js";
+import { MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY, MsgType } from "./send/types.js";
 
 const loadOutboundMediaFromUrlMock = vi.hoisted(() => vi.fn());
 const loadWebMediaMock = vi.fn().mockResolvedValue({
@@ -683,6 +680,37 @@ describe("sendMessageMatrix durable delivery", () => {
       ],
     });
     expect(recovered.receipt?.parts[1]).not.toHaveProperty("replyToId");
+  });
+
+  it("sends text-only emote events with the Matrix emote msgtype", async () => {
+    const { client, sendMessage } = makeClient();
+
+    await sendMessageMatrix("room:!room:example", "waves", {
+      client,
+      cfg: {} as never,
+      emote: true,
+    });
+
+    expect(sentContent(sendMessage)).toMatchObject({
+      msgtype: MsgType.Emote,
+      body: "waves",
+    });
+  });
+
+  it("rejects emote sends that include media before loading the media", async () => {
+    const { client, sendMessage } = makeClient();
+
+    await expect(
+      sendMessageMatrix("room:!room:example", "waves", {
+        client,
+        cfg: {} as never,
+        mediaUrl: "photo.png",
+        emote: true,
+      }),
+    ).rejects.toThrow("Matrix emote sends cannot include media");
+
+    expect(loadOutboundMediaFromUrlMock).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -2155,222 +2183,4 @@ describe("editMessageMatrix mentions", () => {
   });
 });
 
-describe("sendPollMatrix mentions", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetMatrixSendRuntimeMocks();
-  });
-
-  it("adds m.mentions for poll fallback text", async () => {
-    const { client, sendEvent } = makeClient();
-
-    await sendPollMatrix(
-      "room:!room:example",
-      {
-        question: "@room lunch with @alice:example.org?",
-        options: ["yes", "no"],
-      },
-      {
-        client,
-        cfg: {} as never,
-      },
-    );
-
-    expect(mockCallArg(sendEvent, "sendEvent", 0)).toBe("!room:example");
-    expect(mockCallArg(sendEvent, "sendEvent", 1)).toBe("m.poll.start");
-    const content = requireRecord(mockCallArg(sendEvent, "sendEvent", 2), "poll start content");
-    expect(content["m.mentions"]).toEqual({
-      room: true,
-      user_ids: ["@alice:example.org"],
-    });
-  });
-});
-
-describe("voteMatrixPoll", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetMatrixSendRuntimeMocks();
-  });
-
-  it("maps 1-based option indexes to Matrix poll answer ids", async () => {
-    const { client, getEvent, sendEvent } = makeClient();
-    getEvent.mockResolvedValue({
-      type: "m.poll.start",
-      content: {
-        "m.poll.start": {
-          question: { "m.text": "Lunch?" },
-          max_selections: 1,
-          answers: [
-            { id: "a1", "m.text": "Pizza" },
-            { id: "a2", "m.text": "Sushi" },
-          ],
-        },
-      },
-    });
-
-    const result = await voteMatrixPoll("room:!room:example", "$poll", {
-      client,
-      cfg: {} as never,
-      optionIndex: 2,
-    });
-
-    expect(sendEvent).toHaveBeenCalledWith("!room:example", "m.poll.response", {
-      "m.poll.response": { answers: ["a2"] },
-      "org.matrix.msc3381.poll.response": { answers: ["a2"] },
-      "m.relates_to": {
-        rel_type: "m.reference",
-        event_id: "$poll",
-      },
-    });
-    expect(result.eventId).toBe("evt-poll-vote");
-    expect(result.roomId).toBe("!room:example");
-    expect(result.pollId).toBe("$poll");
-    expect(result.answerIds).toEqual(["a2"]);
-    expect(result.labels).toEqual(["Sushi"]);
-  });
-
-  it("rejects out-of-range option indexes", async () => {
-    const { client, getEvent } = makeClient();
-    getEvent.mockResolvedValue({
-      type: "m.poll.start",
-      content: {
-        "m.poll.start": {
-          question: { "m.text": "Lunch?" },
-          max_selections: 1,
-          answers: [{ id: "a1", "m.text": "Pizza" }],
-        },
-      },
-    });
-
-    await expect(
-      voteMatrixPoll("room:!room:example", "$poll", {
-        client,
-        cfg: {} as never,
-        optionIndex: 2,
-      }),
-    ).rejects.toThrow("out of range");
-  });
-
-  it("rejects votes that exceed the poll selection cap", async () => {
-    const { client, getEvent } = makeClient();
-    getEvent.mockResolvedValue({
-      type: "m.poll.start",
-      content: {
-        "m.poll.start": {
-          question: { "m.text": "Lunch?" },
-          max_selections: 1,
-          answers: [
-            { id: "a1", "m.text": "Pizza" },
-            { id: "a2", "m.text": "Sushi" },
-          ],
-        },
-      },
-    });
-
-    await expect(
-      voteMatrixPoll("room:!room:example", "$poll", {
-        client,
-        cfg: {} as never,
-        optionIndexes: [1, 2],
-      }),
-    ).rejects.toThrow("at most 1 selection");
-  });
-
-  it("rejects non-poll events before sending a response", async () => {
-    const { client, getEvent, sendEvent } = makeClient();
-    getEvent.mockResolvedValue({
-      type: "m.room.message",
-      content: { body: "hello" },
-    });
-
-    await expect(
-      voteMatrixPoll("room:!room:example", "$poll", {
-        client,
-        cfg: {} as never,
-        optionIndex: 1,
-      }),
-    ).rejects.toThrow("is not a Matrix poll start event");
-    expect(sendEvent).not.toHaveBeenCalled();
-  });
-
-  it("accepts decrypted poll start events returned from encrypted rooms", async () => {
-    const { client, getEvent, sendEvent } = makeClient();
-    getEvent.mockResolvedValue({
-      type: "m.poll.start",
-      content: {
-        "m.poll.start": {
-          question: { "m.text": "Lunch?" },
-          max_selections: 1,
-          answers: [{ id: "a1", "m.text": "Pizza" }],
-        },
-      },
-    });
-
-    const result = await voteMatrixPoll("room:!room:example", "$poll", {
-      client,
-      cfg: {} as never,
-      optionIndex: 1,
-    });
-    expect(result.pollId).toBe("$poll");
-    expect(result.answerIds).toEqual(["a1"]);
-    expect(sendEvent).toHaveBeenCalledWith("!room:example", "m.poll.response", {
-      "m.poll.response": { answers: ["a1"] },
-      "org.matrix.msc3381.poll.response": { answers: ["a1"] },
-      "m.relates_to": {
-        rel_type: "m.reference",
-        event_id: "$poll",
-      },
-    });
-  });
-});
-
-describe("sendTypingMatrix", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetMatrixSendRuntimeMocks();
-  });
-
-  it("normalizes room-prefixed targets before sending typing state", async () => {
-    const setTyping = vi.fn().mockResolvedValue(undefined);
-    const client = {
-      setTyping,
-      prepareForOneOff: vi.fn(async () => undefined),
-      start: vi.fn(async () => undefined),
-      stop: vi.fn(() => undefined),
-      stopAndPersist: vi.fn(async () => undefined),
-    } as unknown as import("./sdk.js").MatrixClient;
-
-    await sendTypingMatrix("room:!room:example", true, undefined, client);
-
-    expect(setTyping).toHaveBeenCalledWith("!room:example", true, 30_000);
-  });
-
-  it("passes account config through when resolving the typing client", async () => {
-    const cfg = { channels: { matrix: {} } } as unknown as import("../types.js").CoreConfig;
-    const setTyping = vi.fn().mockResolvedValue(undefined);
-    const client = {
-      setTyping,
-    } as unknown as import("./sdk.js").MatrixClient;
-    withResolvedRuntimeMatrixClientMock.mockImplementation(
-      async (
-        opts: Record<string, unknown>,
-        run: (resolved: import("./sdk.js").MatrixClient) => Promise<void>,
-      ) => {
-        expect(opts.cfg).toBe(cfg);
-        expect(opts.accountId).toBe("work");
-        expect(opts.timeoutMs).toBe(12_345);
-        expect(opts.readiness).toBe("none");
-        return await run(client);
-      },
-    );
-
-    await sendTypingMatrix("room:!room:example", true, {
-      cfg,
-      accountId: "work",
-      timeoutMs: 12_345,
-    });
-
-    expect(setTyping).toHaveBeenCalledWith("!room:example", true, 12_345);
-  });
-});
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -503,7 +503,8 @@ async function executeAgentTurnInternalLoop(
     terminalFailurePayload = buildTerminalAgentRunFailureReplyPayload({
       isHeartbeat: params.isHeartbeat,
       useHeartbeatFailureCopy: shouldUseHeartbeatFailureCopy({
-        isHeartbeat: params.isHeartbeat, sessionCtx: params.sessionCtx,
+        isHeartbeat: params.isHeartbeat,
+        sessionCtx: params.sessionCtx,
       }),
       replyExpectation,
       visibleReplyDelivered:

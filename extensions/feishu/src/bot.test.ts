@@ -2500,6 +2500,133 @@ describe("handleFeishuMessage command authorization", () => {
     );
   });
 
+  it("downloads captioned post files[] into agent context", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDownloadMessageResourceFeishu.mockImplementation(
+      async (params: { fileKey: string; originalFilename?: string; type: "file" | "image" }) => ({
+        saved: {
+          id: params.originalFilename ?? params.fileKey,
+          path: `/tmp/${params.originalFilename ?? params.fileKey}`,
+          size: Buffer.byteLength(params.fileKey),
+          contentType: params.originalFilename?.endsWith(".csv") ? "text/csv" : "application/zip",
+        },
+      }),
+    );
+
+    await dispatchMessage({
+      cfg: createFeishuTestConfig({ dmPolicy: "open" }),
+      event: createFeishuTestEvent({
+        messageId: "msg-post-top-level-files",
+        senderOpenId: "ou-sender",
+        messageType: "post",
+        content: JSON.stringify({
+          title: "",
+          content: [[{ tag: "text", text: "这是账本" }]],
+          content_v2: [[{ tag: "text", text: "这是账本" }]],
+          files: [
+            {
+              file_key: "file_v3_0015l_1a389bce-aabb-ccdd-eeff-1234567890ab",
+              file_name: "amount-2026-08-01_2026-08-31.csv",
+              is_folder: false,
+            },
+          ],
+        }),
+      }),
+    });
+
+    expect(mockDownloadMessageResourceFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "msg-post-top-level-files",
+        fileKey: "file_v3_0015l_1a389bce-aabb-ccdd-eeff-1234567890ab",
+        type: "file",
+        originalFilename: "amount-2026-08-01_2026-08-31.csv",
+      }),
+    );
+    const context = mockCallArg<{
+      BodyForAgent?: string;
+      MediaPaths?: string[];
+      MediaTypes?: string[];
+    }>(mockFinalizeInboundContext, 0, 0);
+    expect(context.BodyForAgent).toContain("这是账本");
+    expect(context.MediaPaths).toEqual(["/tmp/amount-2026-08-01_2026-08-31.csv"]);
+    expect(context.MediaTypes).toEqual(["text/csv"]);
+  });
+
+  it("downloads multi-file post files[] into agent context", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDownloadMessageResourceFeishu.mockImplementation(
+      async (params: { fileKey: string; originalFilename?: string; type: "file" | "image" }) => ({
+        saved: {
+          id: params.originalFilename ?? params.fileKey,
+          path: `/tmp/${params.originalFilename ?? params.fileKey}`,
+          size: Buffer.byteLength(params.fileKey),
+          contentType: "application/zip",
+        },
+      }),
+    );
+
+    await dispatchMessage({
+      cfg: createFeishuTestConfig({ dmPolicy: "open" }),
+      event: createFeishuTestEvent({
+        messageId: "msg-post-multi-files",
+        senderOpenId: "ou-sender",
+        messageType: "post",
+        content: JSON.stringify({
+          title: "",
+          content: [[]],
+          content_v2: [[]],
+          files: [
+            {
+              file_key: "file_v3_zip_aug",
+              file_name: "usage_data_2026-08-01_2026-08-31.zip",
+              is_folder: false,
+            },
+            {
+              file_key: "file_v3_zip_sep",
+              file_name: "usage_data_2026-09-01_2026-09-18.zip",
+              is_folder: false,
+            },
+          ],
+        }),
+      }),
+    });
+
+    expect(
+      mockDownloadMessageResourceFeishu.mock.calls.map((_call, index) => {
+        const request = mockCallArg<{ fileKey: string; originalFilename?: string; type: string }>(
+          mockDownloadMessageResourceFeishu,
+          index,
+          0,
+        );
+        return {
+          fileKey: request.fileKey,
+          fileName: request.originalFilename,
+          type: request.type,
+        };
+      }),
+    ).toEqual([
+      {
+        fileKey: "file_v3_zip_aug",
+        fileName: "usage_data_2026-08-01_2026-08-31.zip",
+        type: "file",
+      },
+      {
+        fileKey: "file_v3_zip_sep",
+        fileName: "usage_data_2026-09-01_2026-09-18.zip",
+        type: "file",
+      },
+    ]);
+    expect(mockFinalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        MediaPaths: [
+          "/tmp/usage_data_2026-08-01_2026-08-31.zip",
+          "/tmp/usage_data_2026-09-01_2026-09-18.zip",
+        ],
+        MediaTypes: ["application/zip", "application/zip"],
+      }),
+    );
+  });
+
   it("delivers unique rich-post attachments in their original mixed-media order", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     mockDownloadMessageResourceFeishu.mockImplementation(

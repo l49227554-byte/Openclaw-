@@ -1,3 +1,4 @@
+import { mediaKindFromMime, mimeTypeFromFilePath } from "openclaw/plugin-sdk/media-mime";
 import type { ClawdbotConfig } from "../runtime-api.js";
 import { buildFeishuConversationId } from "./conversation-id.js";
 import { normalizeFeishuExternalKey } from "./external-keys.js";
@@ -273,6 +274,20 @@ function resolveFeishuMediaKind(messageType: string): FeishuMediaInfo["kind"] {
   }
 }
 
+function resolvePostAttachmentMediaKind(attachment: {
+  kind: "image" | "file";
+  fileName?: string;
+}): FeishuMediaInfo["kind"] {
+  if (attachment.kind === "image") {
+    return "image";
+  }
+  if (!attachment.fileName) {
+    return "video";
+  }
+  const inferred = mediaKindFromMime(mimeTypeFromFilePath(attachment.fileName));
+  return inferred && inferred !== "unknown" ? inferred : "document";
+}
+
 export async function resolveFeishuMediaList(params: {
   cfg: ClawdbotConfig;
   messageId: string;
@@ -304,7 +319,7 @@ export async function resolveFeishuMediaList(params: {
       }
       seenAttachments.add(identity);
       const fileName = attachment.kind === "file" ? attachment.fileName : undefined;
-      const mediaKind = attachment.kind === "image" ? "image" : "video";
+      const mediaKind = resolvePostAttachmentMediaKind(attachment);
       try {
         const { saved } = await saveMessageResourceFeishu({
           cfg,

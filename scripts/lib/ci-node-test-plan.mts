@@ -40,7 +40,11 @@ import {
   bundledPluginDependentUnitTestFiles,
   isUnitConfigTestFile,
 } from "../../test/vitest/vitest.unit-paths.mjs";
-import { buildVitestRunPlans, isTestFileTarget } from "../test-projects.test-support.mts";
+import {
+  buildVitestRunPlans,
+  isTestFileTarget,
+  isToolingTestOwnerPath,
+} from "../test-projects.test-support.mts";
 import { rebalanceRuntimeTestJobs } from "./ci-runtime-test-placement.mts";
 import { isRuntimePlacementIncludePatterns } from "./ci-test-timings-schema.mts";
 import {
@@ -63,6 +67,8 @@ import {
   estimateVitestToolingFileSeconds as toolingFileWeight,
   parseCompactSplitTimingKey,
 } from "./vitest-shard-metadata.mts";
+
+export { isToolingTestOwnerPath } from "../test-projects.test-support.mts";
 
 export type NodeTestShardGroup = {
   shard_name: string;
@@ -98,6 +104,7 @@ type NodeTestShard = {
 type NodeTestPlanOptions = {
   changedPaths?: readonly string[];
   includeReleaseOnlyPluginShards?: boolean;
+  includeReleaseOnlyToolingShards?: boolean;
   compact?: boolean;
   compactMode?: CompactNodeTestPlanMode;
   compactGroupCount?: number;
@@ -234,6 +241,13 @@ export function resolvePolicyTestTargets(changedPaths: readonly string[]): strin
 export function isPolicyTestOwnedPath(changedPath: string): boolean {
   return policyTestWatches.some(({ ownerGlobs }) =>
     ownerGlobs?.some((ownerGlob) => matchesGlob(changedPath, ownerGlob)),
+  );
+}
+
+function includesReleaseOnlyTooling(options: NodeTestPlanOptions): boolean {
+  return (
+    options.includeReleaseOnlyToolingShards !== false ||
+    (options.changedPaths ?? []).some(isToolingTestOwnerPath)
   );
 }
 
@@ -1116,6 +1130,33 @@ const KEEP_LARGE_NODE_TEST_RUNNER = new Set([
   "core-unit-src-security-support",
 ]);
 const RELEASE_ONLY_PLUGIN_SHARDS = new Set(["agentic-plugins"]);
+const RELEASE_ONLY_TOOLING_SHARDS = new Set(["core-tooling"]);
+export const RELEASE_ONLY_TOOLING_CONFIGS = new Set(
+  fullSuiteVitestShards
+    .filter((shard) => RELEASE_ONLY_TOOLING_SHARDS.has(shard.name))
+    .flatMap((shard) => shard.projects),
+);
+
+export function isReleaseOnlyToolingTestFile(file: string): boolean {
+  return (
+    !file.endsWith(".e2e.test.ts") &&
+    !file.endsWith(".live.test.ts") &&
+    (file.startsWith("test/scripts/") || file.startsWith("src/scripts/"))
+  );
+}
+
+function mixedToolingTestFiles(configs: readonly string[]): string[] | undefined {
+  const files = [
+    ...(configs.includes("test/vitest/vitest.unit-fast-isolated.config.ts")
+      ? getUnitFastIsolatedTestFiles()
+      : []),
+    ...(configs.includes("test/vitest/vitest.unit-fast-fake-timers.config.ts")
+      ? getUnitFastTimerTestFiles()
+      : []),
+  ];
+  return files.length > 0 ? files : undefined;
+}
+
 function listTestFiles(rootDir: string): string[] {
   return listTrackedTestFiles(rootDir);
 }
@@ -2260,9 +2301,10 @@ function formatNodeTestShardCheckName(shardName: string): string {
   return `checks-node-${normalizedShardName}`;
 }
 
-/** Create node test shard descriptors for CI, optionally excluding release-only plugin shards. */
+/** Create node test shard descriptors for CI with explicit release-tier selection. */
 export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTestShard[] {
   const includeReleaseOnlyPluginShards = options.includeReleaseOnlyPluginShards ?? true;
+  const includeTooling = includesReleaseOnlyTooling(options);
   const changedTestPlans = includeReleaseOnlyPluginShards
     ? []
     : (options.changedPaths ?? [])
@@ -2275,7 +2317,10 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
         .flatMap((file) => buildVitestRunPlans([file]));
 
   return fullSuiteVitestShards.flatMap((shard) => {
-    if (EXCLUDED_FULL_SUITE_SHARDS.has(shard.config)) {
+    if (
+      EXCLUDED_FULL_SUITE_SHARDS.has(shard.config) ||
+      (!includeTooling && RELEASE_ONLY_TOOLING_SHARDS.has(shard.name))
+    ) {
       return [];
     }
 
@@ -2294,7 +2339,15 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
           return [];
         }
 
-        let includePatterns = splitShard.includePatterns;
+        let includePatterns =
+          splitShard.includePatterns ??
+          (!includeTooling ? mixedToolingTestFiles(splitConfigs) : undefined);
+        if (includePatterns && !includeTooling) {
+          includePatterns = includePatterns.filter((file) => !isReleaseOnlyToolingTestFile(file));
+          if (includePatterns.length === 0) {
+            return [];
+          }
+        }
         if (
           RELEASE_ONLY_PLUGIN_SHARDS.has(splitShard.shardName) &&
           !includeReleaseOnlyPluginShards
@@ -2585,7 +2638,9 @@ export function createNodeTestShardBundles(
     options.compactMode ?? (options.compact === true ? "pull-request" : undefined);
   if (compactMode !== undefined) {
     return createCompactNodeTestShardBundles(
-      createNodeTestShards(options),
+      // Keep complete owners for cost admission; compact projection below gives
+      // a reduced tooling selection its own timing identity.
+      createNodeTestShards({ ...options, includeReleaseOnlyToolingShards: true }),
       { ...options, compactMode },
       compactMode,
     );
@@ -3219,7 +3274,10 @@ export function createSelectedNodeTestShardBundles(
   targets: readonly string[],
   options: Pick<NodeTestPlanOptions, "runnerBackend"> = {},
 ): CompactNodeTestShard[] | null {
-  const shards = createNodeTestShards({ includeReleaseOnlyPluginShards: false });
+  const shards = createNodeTestShards({
+    includeReleaseOnlyPluginShards: false,
+    includeReleaseOnlyToolingShards: true,
+  });
   const selected = new Set(targets);
   const configs = new Map<string, string>();
   for (const target of selected) {
@@ -3352,6 +3410,7 @@ function createCompactNodeTestShardBundles(
       COMPACT_NODE_TEST_JOB_CAP,
       compactNodeJobCap + bins.filter((bin) => bin[0]?.requiresDist).length,
     );
+  const includeTooling = compactMode !== "push" && includesReleaseOnlyTooling(options);
   const isBlacksmithProfile = (options.runnerBackend ?? "blacksmith") === "blacksmith";
   const packsHostedTooling = compactMode === "pull-request" && options.runnerBackend === "github";
   let bestTailDonation: HostedToolingTailDonation | undefined;
@@ -3371,7 +3430,10 @@ function createCompactNodeTestShardBundles(
         }
       : undefined;
   const shards = sourceShards.filter(
-    (shard) => compactMode !== "push" || !COMPACT_PUSH_EXCLUDED_SHARDS.has(shard.shardName),
+    (shard) =>
+      (compactMode !== "push" || !COMPACT_PUSH_EXCLUDED_SHARDS.has(shard.shardName)) &&
+      (includeTooling ||
+        !shard.configs.every((config) => RELEASE_ONLY_TOOLING_CONFIGS.has(config))),
   );
   const groupsByRunner = new Map<string, [NodeTestShardGroup, ...NodeTestShardGroup[]]>();
   const synthesizedSplitSeconds = new Map<string, number>();
@@ -3421,13 +3483,25 @@ function createCompactNodeTestShardBundles(
             selectedToolingFiles,
           )
         : [{ group, seconds: estimateCompactGroupSeconds(group, options.runnerBackend) }];
-    const selectedTooling = selectedToolingFiles && group.configs.includes(TOOLING_CONFIG);
+    const reducedToolingTier =
+      !includeTooling &&
+      plannedGroups.some((planned) =>
+        (planned.group.includePatterns ?? mixedToolingTestFiles(planned.group.configs))?.some(
+          isReleaseOnlyToolingTestFile,
+        ),
+      );
+    const selectedTooling =
+      (selectedToolingFiles && group.configs.includes(TOOLING_CONFIG)) || reducedToolingTier;
     if (selectedTooling) {
       // Keep the parent's admission cost and partition policy, but never report
       // a precise subset as a sample of the complete canonical stripe.
       plannedGroups = plannedGroups.flatMap((planned) => {
-        const includePatterns = planned.group.includePatterns?.filter((file) =>
-          selectedToolingFiles.has(file),
+        const includePatterns = (
+          planned.group.includePatterns ?? mixedToolingTestFiles(planned.group.configs)
+        )?.filter(
+          (file) =>
+            (!selectedToolingFiles || selectedToolingFiles.has(file)) &&
+            (includeTooling || !isReleaseOnlyToolingTestFile(file)),
         );
         return includePatterns?.length
           ? [{ ...planned, group: { ...planned.group, includePatterns } }]
@@ -3436,7 +3510,7 @@ function createCompactNodeTestShardBundles(
       const generation = createCompactSplitTimingGeneration({
         configs: group.configs,
         env: group.env,
-        parentShardName: group.shard_name,
+        parentShardName: reducedToolingTier ? `changed-${group.shard_name}` : group.shard_name,
         stripes: plannedGroups.map((planned) => planned.group.includePatterns!),
       });
       plannedGroups.forEach((planned, index) => {

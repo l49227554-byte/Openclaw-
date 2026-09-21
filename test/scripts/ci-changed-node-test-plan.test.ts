@@ -230,6 +230,64 @@ function expectAllExtensionConfigs(
 }
 
 describe("CI changed Node test plan", () => {
+  it.each(["blacksmith", "github", "hybrid"])(
+    "defers owner-changing automatic PRs to complete tooling coverage (%s)",
+    (runnerBackend) => {
+      for (const changedPath of [
+        "test/scripts/vitest-report-owner.test.ts",
+        "scripts/lib/vitest-report-owner.mts",
+        "package.json",
+      ]) {
+        expect(
+          createChangedNodeTestShards([changedPath], {
+            runnerBackend,
+            includeReleaseOnlyToolingShards: false,
+          }),
+        ).toBeNull();
+      }
+    },
+  );
+
+  it("keeps product-only precise selections free of maintainer tooling", () => {
+    const shards = createChangedNodeTestShards(["src/infra/retry.test.ts"], {
+      includeReleaseOnlyToolingShards: false,
+    });
+    expect(shards).not.toBeNull();
+    expect(
+      shards?.flatMap((shard) => [
+        ...(shard.targets ?? shard.includePatterns ?? []),
+        ...(shard.groups?.flatMap((group) => group.includePatterns ?? []) ?? []),
+      ]),
+    ).toContain("src/infra/retry.test.ts");
+    expect(
+      shards?.some((shard) =>
+        [...shard.configs, ...(shard.groups?.flatMap((group) => group.configs) ?? [])].some(
+          (config) => config.includes("vitest.tooling"),
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it.each(["blacksmith", "github", "hybrid"])(
+    "retains a directly changed release-only report composition with its tooling owner (%s)",
+    (runnerBackend) => {
+      const target = "test/scripts/vitest-report-owner.test.ts";
+      const shards = createChangedNodeTestShards([target], { runnerBackend });
+      expect(shards).not.toBeNull();
+      const owners = shards?.flatMap((job) =>
+        (job.groups ?? []).filter((group) => group.includePatterns?.includes(target)),
+      );
+      expect(owners).toHaveLength(1);
+      const owner = expectDefined(owners?.[0], "report composition tooling owner");
+      expect(owner).toMatchObject({
+        configs: ["test/vitest/vitest.tooling.config.ts"],
+        env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        requiresDist: false,
+      });
+      expect(shards?.find((job) => job.groups?.includes(owner))?.planConcurrency).toBe(1);
+    },
+  );
+
   it("retains the paired tooling group for direct Docker helper selection", () => {
     const shards = createSelectedNodeTestShardBundles(["test/scripts/docker-build-helper.test.ts"]);
     expect(shards).not.toBeNull();

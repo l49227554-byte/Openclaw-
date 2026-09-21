@@ -26,8 +26,11 @@ import {
   createNodeTestShards,
   createSelectedNodeTestShardBundles,
   isPolicyTestOwnedPath,
+  isToolingTestOwnerPath,
   packNodeTestGroups,
   resolvePolicyTestTargets,
+  RELEASE_ONLY_TOOLING_CONFIGS,
+  isReleaseOnlyToolingTestFile,
   type NodeTestShardGroup,
 } from "./ci-node-test-plan.mts";
 import {
@@ -109,6 +112,7 @@ const publicPluginSdkEntrySources = Object.values(
 
 const fullNodeTestShards = createNodeTestShards({
   includeReleaseOnlyPluginShards: false,
+  includeReleaseOnlyToolingShards: true,
 });
 const configsRequiringCanonicalMetadata = new Set(
   fullNodeTestShards
@@ -625,6 +629,7 @@ export function createChangedNodeTestShards(
   changedPaths: string[],
   options: CwdOptions & {
     runnerBackend?: string;
+    includeReleaseOnlyToolingShards?: boolean;
     dedicatedContractShards?: readonly { task: string; includePatterns: readonly string[] }[];
     dedicatedUiE2e?: boolean;
     dedicatedMaxLinesRatchet?: boolean;
@@ -632,6 +637,13 @@ export function createChangedNodeTestShards(
 ): ChangedNodeTestShard[] | null {
   const cwd = options.cwd ?? process.cwd();
   if (!Array.isArray(changedPaths) || changedPaths.length === 0) {
+    return null;
+  }
+
+  if (
+    options.includeReleaseOnlyToolingShards === false &&
+    changedPaths.some(isToolingTestOwnerPath)
+  ) {
     return null;
   }
 
@@ -705,7 +717,7 @@ export function createChangedNodeTestShards(
     return null;
   }
 
-  const targetPlans = resolvePreciseChangedTargets(regularPaths, cwd, documentationPaths, [
+  const resolvedTargetPlans = resolvePreciseChangedTargets(regularPaths, cwd, documentationPaths, [
     ...[...policyTargetsByPath.values()].flat(),
     // Plugin changes normally select only extension suites. This host-owned
     // proof also exercises the real Copilot entrypoint and manifest discovery.
@@ -713,9 +725,17 @@ export function createChangedNodeTestShards(
       ? ["src/agents/prepared-model-runtime.copilot.integration.test.ts"]
       : []),
   ]);
-  if (targetPlans === null) {
+  if (resolvedTargetPlans === null) {
     return null;
   }
+  const targetPlans =
+    options.includeReleaseOnlyToolingShards === false
+      ? resolvedTargetPlans.filter(
+          ({ target, plans }) =>
+            !isReleaseOnlyToolingTestFile(target) &&
+            !plans.every((plan) => RELEASE_ONLY_TOOLING_CONFIGS.has(plan.config)),
+        )
+      : resolvedTargetPlans;
   const canonicalTargets = targetPlans
     .filter(({ plans }) =>
       plans.some(({ config }) => configsRequiringCanonicalMetadata.has(config)),
@@ -788,5 +808,5 @@ export function createChangedNodeTestShards(
     ...boundaryShards,
   ];
   // Covered source targets keep build-artifacts ownership even with no Node rows.
-  return shards.length > 0 || targets.length < targetPlans.length ? shards : null;
+  return shards.length > 0 || targets.length < resolvedTargetPlans.length ? shards : null;
 }

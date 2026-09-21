@@ -74,6 +74,7 @@ import {
   assertNativeHookRelayForegroundCurrent,
   drainNativeHookRelayWork,
   prepareNativeHookRelayMcpPolicy,
+  resolveNativeHookRelayInvocationBinding,
 } from "./native-hook-relay-work.js";
 export { buildNativeHookRelayCommand } from "./native-hook-relay-command.js";
 export { resolveNativeHookRelayDeferredToolApproval } from "./native-hook-relay-permissions.js";
@@ -422,74 +423,6 @@ function deactivateNativeHookRelayForeground(
   unregisterNativeHookRelay(relayId, registration);
 }
 
-async function resolveNativeHookRelayInvocationBinding(
-  registration: ActiveNativeHookRelayRegistration,
-  event: NativeHookRelayEvent,
-  rawPayload: unknown,
-  signal?: AbortSignal,
-): Promise<NativeHookRelayRegistration> {
-  const lifetime = readRelayLifetime(registration);
-  if (!lifetime) {
-    throw new Error("native hook relay registration is inactive");
-  }
-  // Gateway fallback shares policy readiness without depending on HTTP locator publication.
-  await racePromiseWithAbortSignal(lifetime.policyReady, signal);
-  signal?.throwIfAborted();
-  if (relays.get(registration.relayId) !== registration || Date.now() > registration.expiresAtMs) {
-    throw new Error("native hook relay registration is inactive");
-  }
-  const claim = lifetime.retention?.readClaim(rawPayload);
-  if (claim && event === "pre_tool_use" && lifetime.retained && lifetime.retention) {
-    const retained = lifetime.retained;
-    const retention = lifetime.retention;
-    let assertAdmission: (() => boolean) | undefined;
-    const assertRetainedAuthority = () => {
-      signal?.throwIfAborted();
-      if (
-        relays.get(registration.relayId) !== registration ||
-        Date.now() > registration.expiresAtMs
-      ) {
-        throw new Error("native hook relay registration is inactive");
-      }
-      registration.signal?.throwIfAborted();
-      retained.assertActive();
-      if (assertAdmission && !assertAdmission()) {
-        throw new Error("native hook relay retained invocation not allowed");
-      }
-      if (!retention.allowPreToolUse(claim)) {
-        throw new Error("native hook relay retained invocation not allowed");
-      }
-    };
-    if (lifetime.foregroundOpen && retention.awaitForegroundAdmission) {
-      assertAdmission = await racePromiseWithAbortSignal(
-        retention.awaitForegroundAdmission(claim, signal),
-        signal,
-      );
-      if (!assertAdmission) {
-        throw new Error("native hook relay retained invocation not allowed");
-      }
-      assertRetainedAuthority();
-    } else if (!retention.allowPreToolUse(claim)) {
-      throw new Error("native hook relay retained invocation not allowed");
-    }
-    return {
-      ...registration,
-      assertActive: assertRetainedAuthority,
-      runBeforeToolCall: retained.runBeforeToolCall,
-      signal,
-    };
-  }
-  if (!lifetime.foregroundOpen) {
-    throw new Error("native hook relay foreground invocation not allowed");
-  }
-  const foregroundToken = lifetime.foregroundToken;
-  const assertActive = () => {
-    signal?.throwIfAborted();
-    assertNativeHookRelayForegroundCurrent(registration, lifetime, foregroundToken);
-  };
-  return { ...registration, assertActive, signal };
-}
-
 function normalizeRelayKey(
   value: string | undefined,
   kind: "id" | "generation",
@@ -553,12 +486,14 @@ export async function invokeNativeHookRelay(
     event,
     rawPayload: params.rawPayload,
   });
-  const effectiveRegistration = await resolveNativeHookRelayInvocationBinding(
-    registration,
-    event,
-    params.rawPayload,
-    signal,
-  );
+  const { registration: effectiveRegistration, assertExecutionAdmissionCurrent } =
+    await resolveNativeHookRelayInvocationBinding(
+      registration,
+      readRelayLifetime(registration),
+      event,
+      params.rawPayload,
+      signal,
+    );
   if (event === "pre_tool_use" || event === "permission_request") {
     effectiveRegistration.assertActive?.();
   }
@@ -570,6 +505,7 @@ export async function invokeNativeHookRelay(
       invocation: normalized,
       adapter: getNativeHookRelayProviderAdapter(provider),
       executionAdmission: readRelayLifetime(registration)?.executionAdmission,
+      assertExecutionAdmissionCurrent,
     }),
     signal,
   );

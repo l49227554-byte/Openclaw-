@@ -124,6 +124,7 @@ export async function processNativeHookRelayInvocation(params: {
   invocation: NativeHookRelayInvocation;
   adapter: NativeHookRelayProviderAdapter;
   executionAdmission?: NativeHookRelayExecutionAdmission;
+  assertExecutionAdmissionCurrent: () => void;
 }): Promise<NativeHookRelayProcessResponse> {
   if (params.invocation.event === "pre_tool_use") {
     return runNativeHookRelayPreToolUse(params);
@@ -142,6 +143,7 @@ async function runNativeHookRelayPreToolUse(params: {
   invocation: NativeHookRelayInvocation;
   adapter: NativeHookRelayProviderAdapter;
   executionAdmission?: NativeHookRelayExecutionAdmission;
+  assertExecutionAdmissionCurrent: () => void;
 }): Promise<NativeHookRelayProcessResponse> {
   const toolName = normalizeNativeHookToolName(params.invocation.toolName);
   const toolInput = params.adapter.readToolInput(params.invocation.rawPayload);
@@ -205,12 +207,11 @@ async function runNativeHookRelayPreToolUse(params: {
   }
   try {
     if (params.executionAdmission?.toolNames.includes(toolName)) {
-      const assertCurrent = () => {
-        params.registration.signal?.throwIfAborted();
-        params.registration.assertActive?.();
-      };
-      params.executionAdmission.admit(params.invocation, assertCurrent);
-      assertCurrent();
+      // Accepted execution outlives the one-shot hook transport, while this
+      // request must still be current before returning or publishing approval.
+      params.executionAdmission.admit(params.invocation, params.assertExecutionAdmissionCurrent);
+      params.registration.signal?.throwIfAborted();
+      params.registration.assertActive?.();
     }
   } catch (error) {
     if (outcome.deferredApproval) {

@@ -292,7 +292,7 @@ export type NativeHookRelaySharedState = {
 };
 
 /** Private bundled-runtime callbacks for retained direct-child hook policy. */
-export type NativeHookRelayRetention = Readonly<{
+type NativeHookRelayRetention = Readonly<{
   readClaim: (rawPayload: unknown) => string | undefined;
   shouldRetainAfterForegroundClose: () => boolean;
   allowPreToolUse: (claim: string) => boolean;

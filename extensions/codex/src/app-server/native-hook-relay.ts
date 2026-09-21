@@ -306,12 +306,12 @@ export function createCodexNativeHookRelay(params: {
         successfulYieldRetentionAuthorized && directChildClaims.size > 0,
       allowPreToolUse: (childThreadId) => directChildClaims.has(childThreadId),
       awaitForegroundAdmission: (childThreadId, signal) => {
-        if (foregroundClosed) {
-          return Promise.reject(new Error("native hook relay foreground admission unavailable"));
-        }
         const existingClaim = directChildClaims.get(childThreadId);
         if (existingClaim) {
           return Promise.resolve(assertClaim(childThreadId, existingClaim));
+        }
+        if (foregroundClosed) {
+          return Promise.reject(new Error("native hook relay foreground admission unavailable"));
         }
         let pending = pendingDirectChildAdmissions.get(childThreadId);
         if (!pending) {

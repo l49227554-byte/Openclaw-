@@ -384,23 +384,21 @@ prepare_squash_merge_body() {
   author_commits=$(pr_git log --no-merges --reverse --no-show-signature --no-notes \
     --no-color --no-decorate --format='%H %T %P' "$PR_MAIN_SHA..$PREP_HEAD_SHA") || return 1
 
-  local repo_nwo preview
-  repo_nwo=$(pr_gh repo view --json nameWithOwner --jq .nameWithOwner) || return 1
+  local repo_nwo="$MERGE_REPO_NAME" repo_host="$MERGE_REPO_HOST" preview
   # A git identity alone cannot establish a human contributor. Resolve the
   # published commits through GitHub, which leaves unlinked authors null.
-  authors=$(printf '%s\n' "$author_commits" | while IFS=' ' read -r oid tree parent; do
+  author_commits=$(printf '%s\n' "$author_commits" | while IFS=' ' read -r oid tree parent; do
     [ -n "$oid" ] || continue
     parent_tree=""
     [ -z "$parent" ] || parent_tree=$(pr_git rev-parse "$parent^{tree}") || exit 1
-    pr_gh api "repos/$repo_nwo/commits/$oid" --jq \
-      '{name:.commit.author.name,email:.commit.author.email,user:(.author | if . == null then null else {login,type} end)}' |
-      jq --arg tree "$tree" --arg parentTree "$parent_tree" '. + {changesTree: ($tree != $parentTree)}' || exit 1
+    jq -cn --arg oid "$oid" --arg tree "$tree" --arg parentTree "$parent_tree" \
+      '{oid:$oid,changesTree:($tree != $parentTree)}' || exit 1
   done) || return 1
-  authors=$(printf '%s\n' "$authors" | jq -s .) || return 1
+  authors=$(printf '%s\n' "$author_commits" | jq -s . | pr_gh commit-authors "$repo_nwo" "$repo_host") || return 1
   if [ "${MERGE_TRANSPORT:-graphql}" = rest ]; then
     preview=$(merge_rest preview "$pr") || return 1
   else
-    preview=$(pr_gh_quota_read api graphql \
+    preview=$(pr_gh_quota_read api graphql --hostname "$repo_host" \
     -f 'query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid author{login __typename} isMergeQueueEnabled viewerMergeBodyText(mergeType:SQUASH)}}}' \
     -f owner="${repo_nwo%/*}" -f name="${repo_nwo#*/}" -F number="$pr") || return 1
     if pr_gh_quota_exhausted "$preview"; then
@@ -635,7 +633,7 @@ merge_run() {
   local MERGE_ADMISSION_ACTIVE=true
   local admission_attempt previous_observation=""
   # Only fresh admission waits for calculation; retained intent reconciles immediately.
-  # Pin all other facts and each projection as soon as it becomes known.
+  # Pin PR/policy facts and each projection as soon as it becomes known.
   for admission_attempt in 1 2 3; do
     merge_outcome_observe "$pr" || return 1
     if [ "$MERGE_TRANSPORT" = rest ] &&
@@ -655,11 +653,12 @@ merge_run() {
       merge_outcome_stop "require OPEN, exact prepared head, main base, non-draft, no conflicts, and no existing auto/queue request; inspect current PR state"
       return 1
     fi
-    if [ -n "$previous_observation" ] && ! printf '%s\n' "$MERGE_OBSERVATION" | jq -e --argjson previous "$previous_observation" '
+    if [ -n "$previous_observation" ] && ! printf '%s\n' "$MERGE_OBSERVATION" | jq -e --argjson previous "$previous_observation" --argjson admin "$MERGE_USE_CRABBOX_ADMIN_BYPASS" '
+      def facts: del(.pr.mergeable,.pr.mergeStateStatus) |
+        if $admin then . else del(.main) end;
       (if .transport == "rest" and ($previous.transport // "graphql") == "graphql" then
-         del(.transport,.restPolicy,.pr.mergeable,.pr.mergeStateStatus) ==
-           ($previous | del(.transport,.restPolicy,.pr.mergeable,.pr.mergeStateStatus))
-       else del(.pr.mergeable,.pr.mergeStateStatus) == ($previous | del(.pr.mergeable,.pr.mergeStateStatus)) end) and
+         (facts | del(.transport,.restPolicy)) == ($previous | facts | del(.transport,.restPolicy))
+       else facts == ($previous | facts) end) and
       ($previous.pr.mergeable == "UNKNOWN" or .pr.mergeable == $previous.pr.mergeable) and
       ($previous.pr.mergeStateStatus == "UNKNOWN" or .pr.mergeStateStatus == $previous.pr.mergeStateStatus)
     ' >/dev/null; then

@@ -132,6 +132,17 @@ The launchd stop budget remains 20 seconds; Linux units use the deadlines below.
 This requires a Gateway started with the updated launcher: replacing files cannot
 change a launcher that is already running.
 
+For these managed restarts, if the CLI cannot verify the service command, serving
+owner, or restart-intent recording, it refuses the restart before signaling with
+`GATEWAY_RESTART_PREPARATION_REFUSED`. Restore service inspection or state access,
+verify Gateway status, and retry. An unverified launcher PID is never a fallback.
+
+Running 2026.9.4 Gateways remain eligible through their published state-local lock
+identity. The CLI verifies the service installation, live process start identity,
+and membership in that native service before preparing the restart. Stale or
+mismatched identities cannot authorize a running-service restart. An inactive
+service can still start without restart intent once the prior owner is proven dead.
+
 On Linux, the systemd unit must use `KillMode=mixed` so the initial stop signal
 reaches only the Gateway. Systemd still kills remaining child processes when the
 Gateway exits or its stop deadline expires. Older `KillMode=control-group` units
@@ -603,9 +614,13 @@ For updates, the sentinel carries `stats.runId`, linking the detached updater to
 its durable `update_runs` record. The new Gateway records its observed running
 version, build, and startup facts there. It preserves a terminal outcome already
 written by the updater and waits while a managed handoff is still pending.
-If the existing restart-verification retry window expires, a still-running row
-finishes as failed with `restart-unhealthy`. An already-finalized CLI outcome
-stays intact.
+Before preparing notices or continuations, it reconciles a newer final sentinel
+for that same run and handoff. A pending sentinel keeps its existing bounded
+retry window even when the ledger is already terminal; an unrelated replacement
+remains untouched. If the helper never publishes its final sentinel, expiry
+reports the recorded terminal outcome without changing it. A still-running
+Gateway-owned row finishes as failed with `restart-unhealthy`; CLI-owned runs
+retain their updater's authority and outcome.
 The post-restart notice is rendered from that row using the same report as
 `openclaw update status`. Consuming the sentinel does not remove run history.
 Sentinels left by older releases retain their existing delivery route.

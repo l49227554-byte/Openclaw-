@@ -352,7 +352,7 @@ suite.define(() => {
         "Syncs OpenClaw to the selected runner",
       );
       await captureUiProof(suite, page, "01-cloud-worker-target.png", {
-        surface: checkout.locator('wa-popup [part="popup"]'),
+        surface: checkout.locator(".new-session-page__picker-root"),
         content: [checkout.getByLabel("Name", { exact: true })],
       });
       await page.keyboard.press("Escape");
@@ -690,7 +690,7 @@ suite.define(() => {
       const cloudPlacementBadge = sessionRow.locator('[data-placement-state="active"]');
       await cloudPlacementBadge.waitFor();
       await sessionRow.hover();
-      await sessionRow.getByRole("button", { name: "Open session menu" }).click();
+      await sessionRow.click({ button: "right" });
       const stopWorker = page
         .locator("openclaw-session-menu")
         .getByRole("menuitem", { name: "Stop cloud worker…" });

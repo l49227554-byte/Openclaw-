@@ -48,19 +48,45 @@ export async function runDoctorHealthFlow(
   writeAuthority?: UpdateDoctorWriteAuthority,
   databasePreflight?: DoctorDatabasePreflight,
 ) {
+  let preparedPreflight = databasePreflight;
+  if (process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1" && !writeAuthority?.postCoreSchemaRepair) {
+    const { guardUpdateDoctorSchemaUpgrade, rehearseDeferredUpdateDoctorSchema } =
+      await import("../commands/doctor-update-schema-guard.js");
+    preparedPreflight =
+      (await guardUpdateDoctorSchemaUpgrade({
+        schemas: preparedPreflight,
+        runtime,
+        json: options.json,
+      })) ?? preparedPreflight;
+    if (preparedPreflight?.updateSchemaRehearsal) {
+      await rehearseDeferredUpdateDoctorSchema(preparedPreflight, runtime);
+      return;
+    }
+  }
   const resultPath = process.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]?.trim();
   return withPluginLoadDiagnostics((diagnostics) =>
     resultPath
       ? captureUpdateDoctorConfigWrites(
           resolveConfigPath(),
           (capture) =>
-            runDoctorHealthFlowWithResult(runtime, options, databasePreflight, diagnostics, {
-              resultPath,
-              capture,
-            }),
+            runDoctorHealthFlowWithResult(
+              runtime,
+              options,
+              preparedPreflight,
+              diagnostics,
+              { resultPath, capture },
+              writeAuthority,
+            ),
           writeAuthority,
         )
-      : runDoctorHealthFlowWithResult(runtime, options, databasePreflight, diagnostics),
+      : runDoctorHealthFlowWithResult(
+          runtime,
+          options,
+          preparedPreflight,
+          diagnostics,
+          undefined,
+          writeAuthority,
+        ),
   );
 }
 
@@ -70,6 +96,7 @@ async function runDoctorHealthFlowWithResult(
   databasePreflight: DoctorDatabasePreflight | undefined,
   diagnostics: readonly PluginDiagnostic[],
   updateResult?: { resultPath: string; capture: DoctorConfigCapture },
+  writeAuthority?: UpdateDoctorWriteAuthority,
 ) {
   const effectiveRuntime = runtime ?? (await import("../runtime.js")).defaultRuntime;
   // Config loading can initialize SQLite-backed state before integrity runs.
@@ -95,9 +122,39 @@ async function runDoctorHealthFlowWithResult(
   let exitCode: number | undefined;
   let healthContext: DoctorHealthFlowContext | undefined;
   let doctorResult: UpdatePostInstallDoctorResult = { status: "error" };
+  const recordConfigWriteRefusal = (ctx: DoctorHealthFlowContext): boolean => {
+    if (!ctx.configWriteRefusal) {
+      return false;
+    }
+    // Config fixes were computed but refused by the writer; the warning above
+    // already lists the manual work. This failure outranks a recoverable
+    // post-install advisory because the run did not converge.
+    outro(
+      ctx.configResultWriteCommitted === true
+        ? "Doctor finished, but some config fixes were not applied."
+        : "Doctor finished, but config fixes were not applied.",
+    );
+    exitCode = 1;
+    doctorResult = {
+      status: "error",
+      failureFacts: [
+        createUpdateFailureFact({
+          check: "config-write",
+          code: ctx.configWriteRefusal,
+          message: "Doctor config fixes were not applied.",
+        }),
+      ],
+    };
+    return true;
+  };
   try {
     const { beginDoctorMaintenance } = await import("../commands/doctor-maintenance.js");
-    maintenance = await beginDoctorMaintenance({ options, root, runtime: effectiveRuntime });
+    maintenance = await beginDoctorMaintenance({
+      options,
+      root,
+      runtime: effectiveRuntime,
+      assertCurrent: writeAuthority?.assertCurrent,
+    });
     const runChecks = async () => {
       const { createDoctorPrompter } = await import("../commands/doctor-prompter.js");
       const { prepareDoctorDatabasePreflight } =
@@ -133,6 +190,7 @@ async function runDoctorHealthFlowWithResult(
         schemas,
         runtime: effectiveRuntime,
         json: options.json,
+        postCoreSchemaRepair: writeAuthority?.postCoreSchemaRepair,
       });
 
       if (maintenance && (options.repair === true || options.yes === true)) {
@@ -214,26 +272,7 @@ async function runDoctorHealthFlowWithResult(
       healthContext = ctx;
       const { runDoctorHealthContributions } = await import("./doctor-health-contributions.js");
       await runDoctorHealthContributions(ctx);
-      if (ctx.configWriteRefusal) {
-        // Config fixes were computed but refused by the writer; the warning above
-        // already lists the manual work. This failure outranks a recoverable
-        // post-install advisory because the run did not converge.
-        outro(
-          ctx.configResultWriteCommitted === true
-            ? "Doctor finished, but some config fixes were not applied."
-            : "Doctor finished, but config fixes were not applied.",
-        );
-        exitCode = 1;
-        doctorResult = {
-          status: "error",
-          failureFacts: [
-            createUpdateFailureFact({
-              check: "config-write",
-              code: ctx.configWriteRefusal,
-              message: "Doctor config fixes were not applied.",
-            }),
-          ],
-        };
+      if (recordConfigWriteRefusal(ctx)) {
         return undefined;
       }
       if (options.repair === true || options.yes === true) {
@@ -275,7 +314,14 @@ async function runDoctorHealthFlowWithResult(
     if (!ctx) {
       return;
     }
-    await maintenance?.finish(ctx.cfg);
+    if (maintenance) {
+      const { writeDoctorGatewayConfig } =
+        await import("./doctor-health-contribution-runners.gateway.js");
+      await maintenance.finish(ctx.cfg, (nextConfig) => writeDoctorGatewayConfig(ctx, nextConfig));
+      if (recordConfigWriteRefusal(ctx)) {
+        return;
+      }
+    }
     const pluginWarnings: string[] = [];
     if (diagnostics.length > 0) {
       const { collectPluginLoadHealthFindings } =

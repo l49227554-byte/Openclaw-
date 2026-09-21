@@ -71,6 +71,17 @@ function read(repo, endpoint, paginate = false) {
   );
 }
 
+function readMain(repo) {
+  const reference = read(repo, "/git/ref/heads/main");
+  requireEvidence(
+    reference?.ref === "refs/heads/main" &&
+      reference.object?.type === "commit" &&
+      OID.test(reference.object.sha ?? ""),
+    "main is unavailable",
+  );
+  return reference.object.sha;
+}
+
 function pageArrays(pages) {
   requireEvidence(
     Array.isArray(pages) && pages.length > 0 && pages.every(Array.isArray),
@@ -202,11 +213,7 @@ function beginRead(repo, pr, observe) {
       authority.html_url === repo.url,
     "repository identity changed",
   );
-  const branch = read(repo, "/branches/main");
-  requireEvidence(
-    branch?.name === "main" && OID.test(branch.commit?.sha ?? ""),
-    "main is unavailable",
-  );
+  const mainSha = readMain(repo);
   const record = readPullRequest(repo, authority, pr);
   // An already-merged receipt proves a historical action. New protection or
   // reduced privileges cannot invalidate the retained head and tree proof.
@@ -216,10 +223,10 @@ function beginRead(repo, pr, observe) {
     "policy-reader admin access changed",
   );
   const policy = receipt ? null : readPolicy(repo);
-  return { authority, main: branch.commit.sha, record, policy };
+  return { authority, main: mainSha, record, policy };
 }
 
-function finishRead(repo, pr, snapshot) {
+function finishRead(repo, pr, snapshot, requireStableMain) {
   const current = readPullRequest(repo, snapshot.authority, pr);
   const identity = (record) => {
     const {
@@ -233,14 +240,12 @@ function finishRead(repo, pr, snapshot) {
     JSON.stringify(identity(current)) === JSON.stringify(identity(snapshot.record)),
     "PR identity, head, or lifecycle changed while reading evidence",
   );
-  const mainRef = read(repo, "/branches/main");
+  const mainSha = readMain(repo);
   requireEvidence(
-    mainRef?.name === "main" &&
-      OID.test(mainRef.commit?.sha ?? "") &&
-      (current.merged || mainRef.commit.sha === snapshot.main),
+    !requireStableMain || current.merged || mainSha === snapshot.main,
     "main changed while reading evidence",
   );
-  snapshot.main = mainRef.commit.sha;
+  snapshot.main = mainSha;
   return current;
 }
 
@@ -316,7 +321,7 @@ function latestRequiredChecks(repo, head, checks) {
   }
   const runs = checkPages(
     repo,
-    `/actions/runs?head_sha=${head}&per_page=100`,
+    `/actions/runs?head_sha=${head}&exclude_pull_requests=true&per_page=100`,
     "workflow_runs",
     head,
   );
@@ -383,9 +388,12 @@ function requiredChecks(repo, snapshot) {
       ({ context, app }) => check.name === context && (app === null || check.app.id === app),
     );
   const head = snapshot.record.head.sha;
+  const contexts = new Set(required.map(({ context }) => context));
+  const nameFilter =
+    contexts.size === 1 ? `&check_name=${encodeURIComponent(required[0].context)}` : "";
   const checks = checkPages(
     repo,
-    `/commits/${head}/check-runs?filter=latest&per_page=100`,
+    `/commits/${head}/check-runs?filter=latest${nameFilter}&per_page=100`,
     "check_runs",
     head,
   );
@@ -525,7 +533,7 @@ function mergeBody(value) {
 
 function main([mode, repository, prValue, head, bodySnapshot, expectedObservation, ...extra]) {
   requireEvidence(
-    ["observe", "checks", "preview", "merge"].includes(mode) &&
+    ["observe", "observe-admission", "checks", "preview", "merge"].includes(mode) &&
       /^[1-9][0-9]*$/.test(prValue ?? "") &&
       Number.isSafeInteger(Number(prValue)) &&
       extra.length === 0 &&
@@ -538,10 +546,11 @@ function main([mode, repository, prValue, head, bodySnapshot, expectedObservatio
   );
   const repo = parseRepository(repository);
   const pr = Number(prValue);
+  const observing = mode === "observe" || mode === "observe-admission";
   const body = mode === "merge" ? mergeBody(bodySnapshot) : undefined;
-  const snapshot = beginRead(repo, pr, mode === "observe");
+  const snapshot = beginRead(repo, pr, observing);
   const checks =
-    mode === "checks" || (["observe", "merge"].includes(mode) && snapshot.record.state === "open")
+    mode === "checks" || ((observing || mode === "merge") && snapshot.record.state === "open")
       ? requiredChecks(repo, snapshot)
       : undefined;
   if (mode !== "checks" && checks !== undefined) {
@@ -551,7 +560,7 @@ function main([mode, repository, prValue, head, bodySnapshot, expectedObservatio
     );
     snapshot.policy.requiredChecks = checks;
   }
-  const current = finishRead(repo, pr, snapshot);
+  const current = finishRead(repo, pr, snapshot, mode === "observe");
   let result;
   if (mode === "checks") {
     result = checks;
@@ -575,7 +584,7 @@ function main([mode, repository, prValue, head, bodySnapshot, expectedObservatio
       },
       transport: "rest",
     };
-  } else if (mode === "observe") {
+  } else if (observing) {
     result = {
       data: {
         repository: {
@@ -600,16 +609,16 @@ function main([mode, repository, prValue, head, bodySnapshot, expectedObservatio
         nonemptyString(current.title),
       "immediate squash requires the prepared open, non-draft, clean PR head",
     );
+    const { main: _main, ...expectedFacts } = JSON.parse(expectedObservation);
     requireEvidence(
       JSON.stringify(
         canonical({
-          main: snapshot.main,
           pr: pullRequest(current),
           transport: "rest",
           restPolicy: snapshot.policy,
         }),
-      ) === JSON.stringify(canonical(JSON.parse(expectedObservation))),
-      "PR, main, or policy changed before merge dispatch",
+      ) === JSON.stringify(canonical(expectedFacts)),
+      "PR or policy changed before merge dispatch",
     );
     const suffix = ` (#${pr})`;
     const payload = {

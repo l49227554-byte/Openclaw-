@@ -226,19 +226,29 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
 - CI matrix caps: fast/check lanes at 12, Node test shards at 96, Windows at 2,
   and Android at 2. Every compact profile has an enforced 90-row budget, plugin
   fallback has a 50-row budget, and the final Node matrix enforces 70 push or
-  130 PR rows, including precise plans. Excess inventory fails preflight.
+  130 PR rows, including precise plans. Preflight reserves actual appended
+  plugin Node rows in compact admission so existing hosted tooling compaction
+  can meet that tighter budget; dist rows remain outside the Node budget and
+  inside the compact cap. Excess inventory fails preflight.
 - Windows keeps two disjoint file inventories and at most two concurrent jobs.
   Each job runs project processes serially with one Vitest worker on every
   backend, after runtime preparation completes. Native allocation can be smaller
   than the runner label. Native proof must cover available CPUs/RAM, fixture
   memory and cleanup. This adds no runner registrations.
-- macOS Swift regular PR/main and PR `release_gate` CI retains the complete
-  shared/app test workload plus lint/schema guards in one `tests` phase.
+- macOS Swift regular PR/main and PR `release_gate` CI runs complete app tests
+  plus lint/schema guards in `tests`, alongside independent OpenClawKit trait,
+  OpenClawKit test, and Swabble test graphs in `packages`.
   Ordinary full-scope manual validation adds independent release compilation,
   moves the guards to `release`, and retains health renders in `tests`.
-  Both phases use GitHub-hosted `macos-26`, `max-parallel: 2`, and the existing
-  30-minute budget. Build caches stay phase-owned; the sole eligible shared
+  All phases use GitHub-hosted `macos-26`, `max-parallel: 2`, and the existing
+  30-minute budget. This adds one hosted job and no Blacksmith registrations;
+  measure complete hosted timing including duplicated setup. Packages do not
+  restore or save app build products. Build caches stay phase-owned; the sole eligible shared
   SwiftPM cache writer is regular `tests` or full-validation `release`.
+  Debug test/package builds disable indexing and use Swift line-table debug
+  information, retaining coverage and source-line backtraces. Test build caches
+  use the v7 profile; Release flags and v6 caches remain unchanged. Local debug
+  builds retain full debugger metadata.
 - Android regular CI uses four test/lint rows, including benchmark compilation
   in the Kotlin-lint row when benchmark/build/dependency inputs change or the
   changed-path manifest is unusable. Full manual validation retains all six
@@ -251,8 +261,8 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   npm qualification still defers native jobs. All iOS build phases and screenshot
   shards use `macos-26` from the first attempt.
   The conservative full-tier non-Node inventory, including Control UI performance, is
-  86 rows, or 87 for historical UI targets. Excluding those four hosted rows
-  plus both macOS Swift phases and the always-hosted aggregate gate leaves at
+  87 rows, or 88 for historical UI targets. Excluding those four hosted rows
+  plus all three macOS Swift phases and the always-hosted aggregate gate leaves at
   most 80 potentially eligible jobs. The enforced Node caps therefore give
   150 registrations per main run and 210 per PR:
   `4 × 150 + 21 × 210 = 5,010` in the retained peak arrival envelope.
@@ -333,6 +343,15 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   execution and two-worker pins. This adds no jobs and does not promote hosted
   or hybrid tooling. The native two-CPU/8-GB tails require a larger-host timing
   comparison; capacity alone is not a measured speedup.
+- Numbered tooling measurements are collected in `toolingFileSeconds` ahead of
+  planner activation, which remains blocked on hosted/hybrid row capacity. The daily refit samples the
+  newest five successful PR CI runs because main-push plans omit this family.
+  Those measurements describe the PR merge-ref and update only tooling files;
+  main compact and release sampling retain their existing provenance. Preserve
+  independent-run medians, runner profiles and partial-plan history. An explicit
+  `--tooling-run <id>` seed records its source and may use one successful run.
+  Verbose-only case sums are conservative packing costs when cases overlap,
+  not measured file walls. Do not discount them to make row caps pass.
 - The Docker seed job requests `blacksmith-16vcpu-ubuntu-2404`; its weighted
   scheduler and serial declaration compiler policy stay unchanged.
   Canonical PRs and `main` share `resolveChangedDockerSeedLanes` owner-path
@@ -410,9 +429,10 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
 - `OPENCLAW_CI_RUNNER_BACKEND=github` routes every configurable `ci.yml` job
   to its existing GitHub-hosted fallback label. Unset or `blacksmith` preserves
   the normal Blacksmith-first route.
-- Vitest/test compile caches are restore-only in CI and use immutable Actions
-  caches; the daily/dispatch warmer is their sole writer. Build compile cache
-  writes rotate at most once per UTC day. PRs create no runtime-cache archives.
+- Vitest transform and Node compile caches are restore-only in CI and use
+  immutable Actions caches; the main-push/daily/dispatch warmer is their sole
+  writer. Build, QA and test orchestration consume its shared Node compile seed.
+  PRs create no runtime-cache archives.
 
 When changing one knob, update `docs/ci.md` and the guard test in the same PR.
 

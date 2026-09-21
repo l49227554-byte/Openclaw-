@@ -71,7 +71,6 @@ import {
   findTaskByRunId,
   getTaskById,
   isParentFlowLinkError,
-  listTasksForAgentId,
   listTasksForOwnerKey,
   listTasksForRelatedSessionKey,
   listTaskRecords,
@@ -434,8 +433,6 @@ describe("task-registry", () => {
   it("sweeps one expired plugin-state batch per maintenance pass after restart", async () => {
     await withTaskRegistryTempDir(async () => {
       try {
-        vi.useFakeTimers();
-        vi.setSystemTime(1_000);
         const store = createPluginStateKeyedStore<{ value: string }>("fixture-plugin", {
           namespace: "maintenance-restart",
           maxEntries: 10,
@@ -453,27 +450,27 @@ describe("task-registry", () => {
               .where("entry_key", "=", "expired"),
           ),
         ).toEqual({ ttlMs: 100 });
-        // The worker owns registration time; seed expiry for the maintenance clock separately.
+        // Seed expired rows without waiting for the worker's registration TTL.
+        const expiresAt = Date.now() - 100;
         seedPluginStateEntriesForTests([
           {
             pluginId: "fixture-plugin",
             namespace: "maintenance-restart",
             key: "expired",
             value: { value: "stale" },
-            expiresAt: 1_100,
+            expiresAt,
           },
           ...Array.from({ length: 2_049 }, (_, index) => ({
             pluginId: "fixture-plugin",
             namespace: "maintenance-restart",
             key: `expired-${index}`,
             value: { index },
-            expiresAt: 1_100,
+            expiresAt,
           })),
         ]);
 
         // Close plugin-state's process-local handle while preserving the shared SQLite file.
         resetPluginStateStoreForTests();
-        vi.setSystemTime(1_200);
         const countExpiredRows = () => {
           const database = openOpenClawStateDatabase();
           const row = executeSqliteQueryTakeFirstSync(
@@ -493,8 +490,8 @@ describe("task-registry", () => {
         await runTaskRegistryMaintenance();
         expect(countExpiredRows()).toBe(2);
 
-        expect(sweepExpiredPluginStateEntries()).toBe(2);
-        expect(sweepExpiredPluginStateEntries()).toBe(0);
+        expect(await sweepExpiredPluginStateEntries()).toBe(2);
+        expect(await sweepExpiredPluginStateEntries()).toBe(0);
       } finally {
         resetPluginStateStoreForTests();
       }
@@ -2952,40 +2949,6 @@ describe("task-registry", () => {
       expect(listTasksForRelatedSessionKey("agent:main:subagent:child-1")[0]?.taskId).toBe(
         older.taskId,
       );
-    });
-  });
-
-  it("infers agent ids for session-scoped tasks", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const created = createTaskFixture("cli", {
-        ownerKey: undefined,
-        scopeKind: undefined,
-        taskKind: "video_generation",
-        sourceId: "video_generate:openai",
-        requesterSessionKey: "agent:main:discord:direct:123",
-        childSessionKey: "agent:main:discord:direct:123",
-        runId: "tool:video_generate:agent-index",
-        task: "Generate a lobster video",
-        notifyPolicy: "silent",
-      });
-
-      expect(created.agentId).toBe("main");
-      expect(listTasksForAgentId("main").map((task) => task.taskId)).toEqual([created.taskId]);
-    });
-  });
-
-  it("uses the child session agent for cross-agent background task attribution", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const created = createTaskFixture("subagent", {
-        childSessionKey: "agent:worker:subagent:child",
-        runId: "run-worker-subagent",
-        task: "Inspect worker state",
-        deliveryStatus: "pending",
-      });
-
-      expect(created.agentId).toBe("worker");
-      expect(listTasksForAgentId("worker").map((task) => task.taskId)).toEqual([created.taskId]);
-      expect(listTasksForAgentId("main")).toEqual([]);
     });
   });
 

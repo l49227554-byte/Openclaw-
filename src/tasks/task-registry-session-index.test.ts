@@ -253,6 +253,67 @@ it.each(["native update", "store readback"] as const)(
   },
 );
 
+it.each(["native update", "store readback", "atomic publication"] as const)(
+  "preserves established equal-time membership ordering during %s",
+  async (writer) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    let first: ReturnType<typeof createTask>;
+    let second: ReturnType<typeof createTask>;
+    try {
+      first = createTask({ notifyPolicy: "silent" });
+      const flow = createTaskFlowForTask({ task: first });
+      if (!flow) {
+        throw new Error("task flow creation failed");
+      }
+      first = expectDefined(
+        linkTaskToFlowById({ taskId: first.taskId, flowId: flow.flowId }),
+        "first linked task",
+      );
+      second = createTask({ notifyPolicy: "silent" });
+      second = expectDefined(
+        linkTaskToFlowById({ taskId: second.taskId, flowId: flow.flowId }),
+        "second linked task",
+      );
+    } finally {
+      clock.mockRestore();
+    }
+
+    const expectedBefore = [second.taskId, first.taskId];
+    const membershipIds = () => ({
+      owner: listTasksForOwnerKey(first.ownerKey).map((task) => task.taskId),
+      related: listTasksForRelatedSessionKey(first.requesterSessionKey).map((task) => task.taskId),
+      flow: listTasksForFlowId(first.parentFlowId!).map((task) => task.taskId),
+    });
+    expect(membershipIds()).toEqual({
+      owner: expectedBefore,
+      related: expectedBefore,
+      flow: expectedBefore,
+    });
+
+    const replacement = { ...first, progressSummary: `Published by ${writer}` };
+    if (writer === "native update") {
+      expect(
+        updateTask(first.taskId, { progressSummary: replacement.progressSummary }),
+      ).not.toBeNull();
+    } else {
+      upsertTaskWithDeliveryStateToSqlite({ task: replacement });
+      if (writer === "store readback") {
+        await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
+      } else {
+        publishTaskRecordAfterAtomicStore(replacement);
+      }
+    }
+
+    const expectedAfter =
+      writer === "atomic publication" ? [first.taskId, second.taskId] : expectedBefore;
+    expect(membershipIds()).toEqual({
+      owner: expectedAfter,
+      related: expectedAfter,
+      flow: expectedAfter,
+    });
+  },
+);
+
 it.each(["native update", "atomic publication"] as const)(
   "indexes the row actually replaced after reentrant activity publication during %s",
   (writer) => {

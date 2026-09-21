@@ -9,6 +9,7 @@ import {
   createCodexAppServerToolResultExtensionRunner,
   extractMessagingToolSend,
   extractMessagingToolSendResult,
+  extractMessagingToolSourceReplyPayload,
   finalizeToolTerminalPresentation,
   formatToolExecutionErrorMessage,
   getBeforeToolCallFailureDisposition,
@@ -1174,7 +1175,7 @@ function collectToolTelemetry(params: {
   ) {
     return undefined;
   }
-  const sourceReplyPayload = extractInternalSourceReplyPayload(params.result?.details);
+  const sourceReplyPayload = extractMessagingToolSourceReplyPayload(params.result);
   if (sourceReplyPayload) {
     return recordAgentHarnessMessagingDelivery({
       facts: params.telemetry,
@@ -1195,40 +1196,6 @@ function collectToolTelemetry(params: {
     mediaUrls: collectMediaUrls(params.args),
     sourceReplyFinal: params.sourceReplyFinal,
   });
-}
-function extractInternalSourceReplyPayload(
-  details: unknown,
-): MessagingToolSourceReplyPayload | undefined {
-  if (!isRecord(details) || details.sourceReplySink !== "internal-ui") {
-    return undefined;
-  }
-  const rawPayload = details.sourceReply;
-  if (!isRecord(rawPayload)) {
-    return undefined;
-  }
-  const text = readFirstString(rawPayload, ["text", "message"]);
-  const mediaUrls = collectMediaUrls(rawPayload);
-  const mediaUrl =
-    typeof rawPayload.mediaUrl === "string" && rawPayload.mediaUrl.trim()
-      ? rawPayload.mediaUrl.trim()
-      : mediaUrls[0];
-  const payload: MessagingToolSourceReplyPayload = {
-    ...(text ? { text } : {}),
-    ...(mediaUrl ? { mediaUrl } : {}),
-    ...(mediaUrls.length > 0 ? { mediaUrls } : {}),
-    ...(rawPayload.audioAsVoice === true ? { audioAsVoice: true } : {}),
-    ...(isRecord(rawPayload.presentation)
-      ? { presentation: rawPayload.presentation as never }
-      : {}),
-    ...(isRecord(rawPayload.interactive) ? { interactive: rawPayload.interactive as never } : {}),
-    ...(isRecord(rawPayload.channelData) ? { channelData: rawPayload.channelData } : {}),
-    ...(typeof details.idempotencyKey === "string" && details.idempotencyKey.trim()
-      ? { idempotencyKey: details.idempotencyKey.trim() }
-      : {}),
-  };
-  return text || mediaUrls.length > 0 || payload.presentation || payload.interactive
-    ? payload
-    : undefined;
 }
 function isToolResultYield(result: AgentToolResult<unknown>): boolean {
   const details = result.details;

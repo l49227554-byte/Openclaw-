@@ -123,6 +123,15 @@ function scheduleNativeTextareaBottomAnchor(el: HTMLTextAreaElement) {
       }
       ensureComposerPaneAnchorState(owner, currentThread);
       state.pendingBottomAnchor = false;
+      const requestBottomAnchor =
+        "requestComposerBottomAnchor" in owner &&
+        typeof owner.requestComposerBottomAnchor === "function"
+          ? owner.requestComposerBottomAnchor
+          : null;
+      if (requestBottomAnchor !== null) {
+        state.anchorToEnd = requestBottomAnchor.call(owner);
+        return;
+      }
       currentThread.scrollTop = currentThread.scrollHeight;
       state.anchorToEnd = true;
     });

@@ -341,6 +341,10 @@ export abstract class ChatPaneBase extends OpenClawLightDomElement {
     canFollowEnd: () => this.state !== undefined && !this.state.chatFollowLocked,
     onReaderScroll: (towardEnd) => this.state && handleChatScrollTakeover(this.state, towardEnd),
   });
+
+  requestComposerBottomAnchor(): boolean {
+    return this.transcript.scrollToEnd({ behavior: "auto", source: "auto" });
+  }
   protected readonly progressCard = new SessionProgressCardController(this, {
     gateway: () => this.context?.gateway,
     target: () => this.initialProgressCardTarget(),

@@ -103,6 +103,39 @@ describe("native chat composer sizing", () => {
 
     expect(scrollTop).toBe(1_000);
   });
+
+  it("honors a remote-input follow lock before applying the deferred anchor", () => {
+    const flushAnimationFrames = stubAnimationFrames();
+    const container = renderChatView({});
+    const { textarea, thread } = getComposerElements(container);
+    let scrollTop = 1_500;
+    Object.defineProperties(thread, {
+      scrollHeight: { configurable: true, get: () => 2_000 },
+      clientHeight: { configurable: true, get: () => 500 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    let followLocked = false;
+    const requestComposerBottomAnchor = vi.fn(() => !followLocked);
+    const pane = Object.assign(document.createElement("openclaw-chat-pane"), {
+      requestComposerBottomAnchor,
+    });
+    pane.append(container);
+
+    textarea.value = "line 1\nline 2\nline 3";
+    textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    flushAnimationFrames();
+    followLocked = true;
+    flushAnimationFrames();
+
+    expect(requestComposerBottomAnchor).toHaveBeenCalledOnce();
+    expect(scrollTop).toBe(1_500);
+  });
 });
 
 describe("manual chat composer sizing fallback", () => {

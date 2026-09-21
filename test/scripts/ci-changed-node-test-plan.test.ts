@@ -47,7 +47,7 @@ import { isGatewayServerTestFile } from "../vitest/vitest.gateway-server-paths.m
 import { startupCorpusTestFiles } from "../vitest/vitest.startup-corpus-paths.mjs";
 import { boundaryTestFiles } from "../vitest/vitest.unit-paths.mjs";
 
-const CODEX_TEST_PROCESS_FILE_LIMIT = 12;
+const CODEX_TEST_PROCESS_FILE_LIMIT = 24;
 const argvTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 it.each([

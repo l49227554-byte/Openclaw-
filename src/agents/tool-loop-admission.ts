@@ -7,8 +7,8 @@ import type {
 import type { SessionState } from "../logging/diagnostic-session-state.js";
 import {
   beforeToolCallLog as log,
+  emitLoopWarning,
   loadBeforeToolCallRuntime,
-  shouldEmitLoopWarning,
 } from "./agent-tools.before-tool-call.diagnostics.js";
 import {
   recordBatchAdmittedToolCall,
@@ -28,6 +28,11 @@ type ToolLoopBatchAdmission = InternalBeforeToolBatchResult & {
   commitReadyCalls?: (calls: readonly { toolCallId: string; args: unknown }[]) => void;
   releaseSkippedCalls?: (toolCallIds: readonly string[]) => void;
 };
+
+function toolLoopScope(ctx: HookContext) {
+  const cwd = ctx.cwd ?? ctx.workspaceDir;
+  return ctx.runId || cwd ? { runId: ctx.runId, cwd } : undefined;
+}
 
 async function evaluateToolLoopCall(
   call: ToolLoopCall,
@@ -50,7 +55,7 @@ async function evaluateToolLoopCall(
     toolName,
     call.params,
     ctx.loopDetection,
-    ctx.runId ? { runId: ctx.runId } : undefined,
+    toolLoopScope(ctx),
   );
   if (!result.stuck) {
     return undefined;
@@ -78,21 +83,7 @@ async function evaluateToolLoopCall(
       reason: result.message,
     };
   }
-  const baseWarningKey = result.warningKey ?? `${result.detector}:${toolName}`;
-  const warningKey = ctx.runId ? `${ctx.runId}:${baseWarningKey}` : baseWarningKey;
-  if (shouldEmitLoopWarning(sessionState, warningKey, result.count)) {
-    log.warn(`Loop warning for ${toolName}: ${result.message}`);
-    logToolLoopAction({
-      sessionKey: ctx.sessionKey,
-      sessionId: ctx.sessionId,
-      toolName,
-      level: "warning",
-      action: "warn",
-      detector: result.detector,
-      count: result.count,
-      message: result.message,
-      pairedToolName: result.pairedToolName,
-    });
+  if (emitLoopWarning({ ctx, sessionState, toolName, warning: result, logToolLoopAction })) {
     return {
       kind: "tool-loop-warning",
       toolCallId: call.toolCallId ?? "",
@@ -113,7 +104,7 @@ async function recordToolLoopCall(call: ToolLoopCall, ctx: HookContext): Promise
     call.params,
     call.toolCallId,
     ctx.loopDetection,
-    ctx.runId ? { runId: ctx.runId } : undefined,
+    toolLoopScope(ctx),
   );
 }
 
@@ -142,7 +133,9 @@ export async function admitToolCallBatch(
     return {};
   }
   const {
+    buildArgumentChurnWarning,
     getDiagnosticSessionState,
+    logToolLoopAction,
     markDiagnosticArgumentChurnObservation,
     reconcileToolCallExecutionParams,
     recordToolCall,
@@ -164,7 +157,7 @@ export async function admitToolCallBatch(
       call.args,
       call.toolCall.id,
       ctx.loopDetection,
-      ctx.runId ? { runId: ctx.runId } : undefined,
+      toolLoopScope(ctx),
     );
     const projectedCall = state.toolCallHistory?.at(-1);
     if (projectedCall) {
@@ -240,21 +233,44 @@ export async function admitToolCallBatch(
       readyCall.args,
       readyCall.toolCallId,
       ctx.loopDetection,
-      ctx.runId ? { runId: ctx.runId } : undefined,
+      toolLoopScope(ctx),
     );
     const churn = reconcileToolCallExecutionParams(sessionState, {
       toolName: admitted.toolName,
       toolParams: readyCall.args,
       toolCallId: readyCall.toolCallId,
       runId: ctx.runId,
+      cwd: ctx.cwd ?? ctx.workspaceDir,
       warningThreshold,
     });
-    markDiagnosticArgumentChurnObservation({
-      sessionKey: ctx.sessionKey,
-      sessionId: ctx.sessionId,
-      runId: ctx.runId,
-      active: churn.active,
-    });
+    if (
+      churn.active &&
+      churn.kind === "write_mutation" &&
+      emitLoopWarning({
+        ctx,
+        sessionState,
+        toolName: admitted.toolName,
+        warning: buildArgumentChurnWarning(admitted.toolName, churn),
+        logToolLoopAction,
+      })
+    ) {
+      warnings.push({
+        kind: "tool-loop-warning",
+        toolCallId: readyCall.toolCallId,
+        count: churn.count,
+      });
+    }
+    // Batch admission is advisory until the call completes. Do not let an
+    // inactive partial verdict clear a lease owned by an earlier completed
+    // mutation; recordLoopOutcome owns the authoritative clear.
+    if (churn.active) {
+      markDiagnosticArgumentChurnObservation({
+        sessionKey: ctx.sessionKey,
+        sessionId: ctx.sessionId,
+        runId: ctx.runId,
+        active: true,
+      });
+    }
     committedIds.add(readyCall.toolCallId);
   };
   return {

@@ -1,5 +1,5 @@
-import { useProviderCatalogMetadata } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { buildOpenAICompatibleLiveModelProviderConfig } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
+import { useProviderCatalogMetadata } from "openclaw/plugin-sdk/provider-metadata-test-runtime";
 // Qwen tests cover provider catalog plugin behavior.
 import { describe, expect, it } from "vitest";
 import {

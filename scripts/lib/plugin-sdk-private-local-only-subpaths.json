@@ -123,6 +123,7 @@
   "provider-env-vars",
   "provider-http",
   "provider-http-test-mocks",
+  "provider-metadata-test-runtime",
   "provider-model-metadata",
   "provider-model-shared",
   "provider-model-types",

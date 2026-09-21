@@ -62,6 +62,7 @@ const nonProductionPluginSdkSubpathSet = new Set([
   "plugin-state-test-runtime",
   "plugin-test-runtime",
   "provider-http-test-mocks",
+  "provider-metadata-test-runtime",
   "provider-test-contracts",
   ...privateQaPluginSdkEntrypoints,
   "reply-payload-testing",

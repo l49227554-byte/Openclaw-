@@ -1,5 +1,5 @@
 // Moonshot tests cover provider catalog plugin behavior.
-import { useProviderCatalogMetadata } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { useProviderCatalogMetadata } from "openclaw/plugin-sdk/provider-metadata-test-runtime";
 import { describe, expect, it } from "vitest";
 import {
   applyMoonshotNativeStreamingUsageCompat,

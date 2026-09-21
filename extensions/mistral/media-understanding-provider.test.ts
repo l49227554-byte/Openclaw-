@@ -1,4 +1,5 @@
 // Mistral tests cover media understanding provider plugin behavior.
+import { useProviderCatalogMetadata } from "openclaw/plugin-sdk/provider-metadata-test-runtime";
 import {
   createRequestCaptureJsonFetch,
   installPinnedHostnameTestHooks,
@@ -7,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { mistralMediaUnderstandingProvider } from "./media-understanding-provider.js";
 
 installPinnedHostnameTestHooks();
+useProviderCatalogMetadata(new URL(".", import.meta.url));
 
 describe("mistralMediaUnderstandingProvider", () => {
   it("has expected provider metadata", () => {

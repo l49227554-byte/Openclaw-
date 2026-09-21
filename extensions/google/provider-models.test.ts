@@ -1,5 +1,6 @@
 // Google tests cover provider models plugin behavior.
 import type { ProviderRuntimeModel } from "openclaw/plugin-sdk/plugin-entry";
+import { useProviderCatalogMetadata } from "openclaw/plugin-sdk/provider-metadata-test-runtime";
 import { describe, expect, it } from "vitest";
 import { createProviderDynamicModelContext as createContext } from "../test-support/provider-model-test-helpers.js";
 import {
@@ -8,6 +9,8 @@ import {
   isModernGoogleModel,
   resolveGoogleGeminiForwardCompatModel,
 } from "./provider-models.js";
+
+useProviderCatalogMetadata(new URL(".", import.meta.url));
 
 function createTemplateModel(
   provider: string,

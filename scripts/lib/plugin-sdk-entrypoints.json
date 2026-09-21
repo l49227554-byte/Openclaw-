@@ -150,6 +150,7 @@
   "plugin-test-contracts",
   "plugin-test-runtime",
   "provider-http-test-mocks",
+  "provider-metadata-test-runtime",
   "provider-test-contracts",
   "test-env",
   "test-fixtures",

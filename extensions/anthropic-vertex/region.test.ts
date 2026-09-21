@@ -1,6 +1,9 @@
 // Anthropic Vertex tests cover region plugin behavior.
+import { useProviderCatalogMetadata } from "openclaw/plugin-sdk/provider-metadata-test-runtime";
 import { describe, expect, it } from "vitest";
 import { resolveAnthropicVertexRegion, resolveAnthropicVertexRegionFromBaseUrl } from "./api.js";
+
+useProviderCatalogMetadata(new URL(".", import.meta.url), new URL("../google/", import.meta.url));
 
 describe("anthropic vertex region helpers", () => {
   it("accepts well-formed regional env values", () => {

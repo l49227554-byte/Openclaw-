@@ -255,10 +255,15 @@ describe("my-channel plugin", () => {
 
 For bundled catalog tests that resolve provider endpoint capabilities, call
 `useProviderCatalogMetadata(new URL(".", import.meta.url))` from
-`openclaw/plugin-sdk/plugin-test-runtime` at file or suite scope. It prepares
+`openclaw/plugin-sdk/provider-metadata-test-runtime` at file or suite scope. It prepares
 the plugin's manifest metadata once, installs and clears that snapshot around
 each test, and rejects Jiti loading during assertions. This keeps cold runtime
 discovery out of catalog test deadlines without changing provider behavior.
+This test subpath is private and local-only; it is excluded from packaged builds.
+For cross-provider routes, pass additional manifest directories in order, such as
+`useProviderCatalogMetadata(new URL(".", import.meta.url), new URL("../google/", import.meta.url))`
+for Anthropic tests that also classify Google Vertex endpoints. These fixtures
+read real manifest facts without loading provider runtime code.
 
 ```typescript
 import { describe, it, expect } from "vitest";

@@ -5,6 +5,7 @@ import type { LegacyConfigIssue } from "./types.js";
 
 export { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
 export { migrateLegacyContextBudgetConfig } from "./legacy.context-budget.js";
+export { migrateBlankAgentCwd } from "./legacy.blank-agent-cwd.js";
 
 // Legacy checks use raw dotted paths so doctor can report exact config keys.
 function getPathValue(root: Record<string, unknown>, path: string[]): unknown {

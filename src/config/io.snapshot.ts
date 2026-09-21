@@ -53,6 +53,7 @@ import type {
   ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "./io.types.js";
 import { warnIfConfigFromFuture } from "./io.warnings.js";
+import { migrateBlankAgentCwd } from "./legacy.blank-agent-cwd.js";
 import {
   findLegacyConfigIssues,
   migrateLegacyContextBudgetConfig,
@@ -262,7 +263,21 @@ async function readConfigSnapshotWithPreparation(
       ...contextBudgetMigration.warnings,
       ...rosterMigration.diagnostics.map((message) => ({ path: "agents.entries", message })),
     );
-    const effectiveConfigRaw = rosterMigration.config;
+    // The blank cwd migration runs on this snapshot path only for runtime
+    // consumption (default / "runtime" preparation): the Gateway startup and
+    // other runtime readers must keep loading a saved blank cwd with its
+    // unchanged defaulted cwd. Strict CLI validation (`openclaw config
+    // validate`, prepareValidation: "strict") deliberately skips the migration
+    // so an explicitly blank cwd stays visible and the field-level error is
+    // reported — validation is the diagnostic surface, not the loader.
+    const shouldMigrateBlankCwd = options.prepareValidation !== "strict";
+    const blankCwdMigration = shouldMigrateBlankCwd
+      ? migrateBlankAgentCwd(rosterMigration.config)
+      : { config: rosterMigration.config, changed: false, changes: [], warnings: [] };
+    if (shouldMigrateBlankCwd) {
+      envVarWarnings.push(...blankCwdMigration.changes, ...blankCwdMigration.warnings);
+    }
+    const effectiveConfigRaw = blankCwdMigration.config;
     const validationConfigRaw = effectiveConfigRaw;
     const snapshotRaw = raw;
     const snapshotParsed = effectiveParsed;

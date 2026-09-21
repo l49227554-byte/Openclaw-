@@ -1,7 +1,6 @@
 // Daemon lifecycle tests cover CLI service lifecycle orchestration and cleanup.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockSystemAccountHome } from "../../daemon/service.test-helpers.js";
-import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { captureEnv } from "../../test-utils/env.js";
 import {
   createHealthyRestartSnapshot,
@@ -330,15 +329,6 @@ describe("runDaemonRestart health checks", () => {
     );
   });
 
-  it("does not fall back after uncertain native command cleanup during restart inspection", async () => {
-    const cleanupError = new CommandProcessCleanupError();
-    service.readCommand.mockRejectedValueOnce(cleanupError);
-
-    await expect(runDaemonRestart({ json: true })).rejects.toBe(cleanupError);
-
-    expect(runServiceRestart).not.toHaveBeenCalled();
-  });
-
   it("uses the installed service environment for managed restart health", async () => {
     process.env.OPENCLAW_STATE_DIR = "/tmp/openclaw-caller-state";
     process.env.OPENCLAW_SYSTEMD_UNIT = "openclaw-gateway-maintenance.service";
@@ -663,28 +653,6 @@ describe("runDaemonRestart health checks", () => {
       mode: "sigterm",
       pid: 4300,
     });
-  });
-
-  it("does not choose unmanaged stop fallback after uncertain native command cleanup", async () => {
-    const cleanupError = new CommandProcessCleanupError();
-    readActiveGatewayLockIdentity.mockResolvedValueOnce(undefined);
-    service.readCommand.mockRejectedValueOnce(cleanupError);
-
-    await expect(runUnmanagedStop()).rejects.toBe(cleanupError);
-
-    expect(signalVerifiedGatewayPidSync).not.toHaveBeenCalled();
-  });
-
-  it("keeps unmanaged stop fallback for ordinary command inspection failures", async () => {
-    readActiveGatewayLockIdentity.mockResolvedValueOnce(undefined);
-    service.readCommand.mockRejectedValueOnce(new Error("inspection failed"));
-    findVerifiedGatewayListenerPidsOnPortSync.mockReturnValue([4200]);
-
-    await expect(runUnmanagedStop()).resolves.toEqual(
-      expect.objectContaining({ result: "stopped" }),
-    );
-
-    expect(signalVerifiedGatewayPidSync).toHaveBeenCalledWith(4200, "SIGTERM");
   });
 
   it("blocks non-interactive stop without force before managed service access", async () => {

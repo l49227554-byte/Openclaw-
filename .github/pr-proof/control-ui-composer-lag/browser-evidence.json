@@ -1,0 +1,83 @@
+{
+  "sourceCommit": "10684f60cb91085b1bb6d50d2a1fb4eb94603a61",
+  "generatedAt": "2026-09-21T05:35:54.998Z",
+  "fixture": {
+    "messages": 400,
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "syntheticDataOnly": true
+  },
+  "scenario": {
+    "mode": "native-after",
+    "timing": {
+      "samplesMs": [
+        0.2,
+        0.1,
+        0.2,
+        0.1,
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.3,
+        0.2,
+        0.1,
+        0.1,
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.3,
+        0.1,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "medianMs": 0.2,
+      "p95Ms": 0.3,
+      "maxMs": 0.3
+    },
+    "transitions": [
+      {
+        "lines": 1,
+        "height": 36,
+        "clientHeight": 36,
+        "scrollHeight": 36,
+        "overflowY": "hidden",
+        "fieldSizing": "content",
+        "bottomGap": 0
+      },
+      {
+        "lines": 3,
+        "height": 84,
+        "clientHeight": 84,
+        "scrollHeight": 84,
+        "overflowY": "hidden",
+        "fieldSizing": "content",
+        "bottomGap": 0
+      },
+      {
+        "lines": 20,
+        "height": 156,
+        "clientHeight": 156,
+        "scrollHeight": 492,
+        "overflowY": "auto",
+        "fieldSizing": "content",
+        "bottomGap": 0
+      }
+    ]
+  },
+  "keyboardTakeover": {
+    "key": "PageUp",
+    "readerOffset": 46723,
+    "finalOffset": 46644,
+    "maxOffset": 47005,
+    "bottomGap": 361,
+    "didNotSnapToEnd": true
+  }
+}

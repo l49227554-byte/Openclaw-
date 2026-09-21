@@ -448,7 +448,9 @@ function createPollingSession(params: {
 }) {
   return new TelegramPollingSession({
     token: "tok",
-    config: {},
+    // Transport suites disable thread bindings: restoration has a dedicated
+    // suite, and keeping it off avoids opening real state stores here.
+    config: { session: { threadBindings: { enabled: false } } },
     accountId: "default",
     runtime: undefined,
     proxyFetch: undefined,

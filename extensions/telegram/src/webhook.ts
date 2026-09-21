@@ -366,6 +366,15 @@ export async function startTelegramWebhook(opts: {
   const botFetchAbortSignal = opts.abortSignal
     ? AbortSignal.any([opts.abortSignal, botAbortController.signal])
     : botAbortController.signal;
+  // Restore persisted thread bindings off the event loop before the sync bot
+  // factory performs its compatibility cold read. Loaded lazily from the state
+  // module so the manager/sweeper graph stays out of the webhook transport's
+  // import graph, mirroring Discord's channel.loaders.ts.
+  const { ensureTelegramBotThreadBindingsLoaded } = await import("./thread-bindings.state.js");
+  await ensureTelegramBotThreadBindingsLoaded({
+    cfg: opts.config ?? readConfig(),
+    accountId: opts.accountId,
+  });
   const bot = createTelegramBot({
     token: opts.token,
     runtime,

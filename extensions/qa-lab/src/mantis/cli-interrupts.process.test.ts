@@ -62,7 +62,7 @@ async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> 
   }
 }
 
-it.skipIf(process.platform === "win32").each([
+it.skipIf(process.platform === "win32").concurrent.each([
   { signal: "SIGINT", code: 130 },
   { signal: "SIGTERM", code: 143 },
   { signal: "SIGHUP", code: 129 },
@@ -100,10 +100,10 @@ it.skipIf(process.platform === "win32").each([
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       stderr += chunk;
     });
-    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve, reject) => {
         child.once("error", reject);
-        child.once("exit", (exitCode, exitSignal) =>
+        child.once("close", (exitCode, exitSignal) =>
           resolve({ code: exitCode, signal: exitSignal }),
         );
       },
@@ -114,7 +114,7 @@ it.skipIf(process.platform === "win32").each([
       expect(child.kill(signal)).toBe(true);
       await waitForMarker(() => stdout, "cleanup-started\n");
       expect(child.kill(signal)).toBe(true);
-      const outcome = await withTimeout(exited, "timeout waiting for Mantis signal child");
+      const outcome = await withTimeout(closed, "timeout waiting for Mantis signal child");
       const diagnostics = JSON.stringify({ outcome, stderr, stdout }, null, 2);
 
       expect(stdout, diagnostics).toContain("cleanup-complete\n");

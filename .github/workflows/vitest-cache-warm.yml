@@ -209,7 +209,9 @@ jobs:
       - name: Warm transform and compile caches
         id: warm-caches
         continue-on-error: true
+        shell: bash
         env:
+          CACHE_WARM_PLATFORM: ${{ matrix.platform }}
           # Match the CI shard lanes running the same envelopes: without the
           # raised ceiling a heavy suite's worker can die under default heap
           # (run 31874567859), skipping every cache save for the day.
@@ -220,7 +222,12 @@ jobs:
           # Keep compiled imports and per-file cleanup in the normal runner;
           # ordinary CI owns test-body validation.
           OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '["--testNamePattern=(?!)"]'
-        run: ${{ matrix.platform == 'linux-hosted' && 'node --import tsx scripts/ci-warm-hosted-vitest-caches.mts' || 'node --import tsx scripts/ci-run-node-test-shard.mts' }}
+        run: |
+          if [[ "$CACHE_WARM_PLATFORM" == "linux-hosted" ]]; then
+            node --import tsx scripts/ci-warm-hosted-vitest-caches.mts
+          else
+            node --import tsx scripts/ci-run-node-test-shard.mts
+          fi
 
       - name: Save Vitest transform cache
         if: ${{ steps.setup-node-env.outputs.cache-mode == 'read-write' && steps.setup-node-env.outputs.vitest-cache-key != '' }}

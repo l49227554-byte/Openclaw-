@@ -13,16 +13,20 @@ struct WebChatWindowLifetimeTests {
             try JSONSerialization.data(withJSONObject: CronSourceFixture.configuration(revision: 1))
                 .write(to: URL(fileURLWithPath: configPath))
             // Only injected primary connections participate; no child owns a shared fleet connection.
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                for admission in ["ordinary", "transcript"] {
-                    for closeOwner in ["manager", "native window", "hide"] {
-                        group.addTask { @MainActor in
-                            try await self.checkPendingPrimaryOpen(admission: admission, closeOwner: closeOwner)
-                        }
-                    }
-                }
-                try await group.waitForAll()
-            }
+            async let ordinaryManager: Void = self.checkPendingPrimaryOpen(admission: "ordinary", closeOwner: "manager")
+            async let ordinaryWindow: Void = self.checkPendingPrimaryOpen(
+                admission: "ordinary",
+                closeOwner: "native window")
+            async let ordinaryHide: Void = self.checkPendingPrimaryOpen(admission: "ordinary", closeOwner: "hide")
+            async let transcriptManager: Void = self.checkPendingPrimaryOpen(
+                admission: "transcript",
+                closeOwner: "manager")
+            async let transcriptWindow: Void = self.checkPendingPrimaryOpen(
+                admission: "transcript", closeOwner: "native window")
+            async let transcriptHide: Void = self.checkPendingPrimaryOpen(admission: "transcript", closeOwner: "hide")
+            _ = try await (
+                ordinaryManager, ordinaryWindow, ordinaryHide,
+                transcriptManager, transcriptWindow, transcriptHide)
         }
     }
 

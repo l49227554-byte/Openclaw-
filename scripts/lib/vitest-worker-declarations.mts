@@ -35,6 +35,8 @@ export const vitestWorkerDeclarationEntries = {
     "extensions/workboard/src/sqlite-backend-entrypoint.test-support.ts",
   "infra/update-managed-service-handoff-runtime-assets":
     "src/infra/update-managed-service-handoff-runtime-assets.ts",
+  "infra/package-update-activation-runtime-assets":
+    "src/infra/package-update-activation-runtime-assets.ts",
   "infra/triage-runtime.test-support": "src/infra/triage-runtime.test-support.ts",
   "cli/cli-entrypoint.test-support": "src/cli/cli-entrypoint.test-support.ts",
   ...(nativeSchtasksIntegrationEnabled

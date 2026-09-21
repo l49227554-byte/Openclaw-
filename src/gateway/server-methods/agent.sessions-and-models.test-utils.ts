@@ -27,11 +27,14 @@ import { createAgentTurnIo } from "../agent-turn/io.js";
 import { bindInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import { bindParentSubagentResume } from "../session-subagent-resume.js";
 import { registerPluginSubagentRunFromGateway } from "./agent-task-tracking.js";
-import { spyDetachedCreateRunningTaskRun } from "./agent-task-tracking.test-helpers.js";
+import {
+  mockSpawnedChildSessionEntry,
+  spyDetachedCreateRunningTaskRun,
+} from "./agent-task-tracking.test-helpers.js";
+import { registerNativeSubagentTaskTrackingTests } from "./agent.native-subagent-task-tracking.test-utils.js";
 import {
   confirmedAcpMeta,
   createPluginSubagentTestLifetime,
-  nativeSubagentClient,
 } from "./agent.spawned-child.test-support.js";
 import { registerAgentTaskCancellationTests } from "./agent.task-cancellation.test-utils.js";
 import {
@@ -64,23 +67,6 @@ import {
 } from "./agent.test-harness.js";
 
 const mocks = getAgentTestMocks();
-
-// Shared by ACP manual spawns, plugin subagents, and native subagent handler fixtures.
-function mockSpawnedChildSessionEntry(childSessionKey: string, root: string) {
-  // The real transcript target reader must stay inside this fixture's state directory.
-  mocks.userTurnStorePath = path.join(root, "agents", "main", "sessions", "sessions.json");
-  mocks.loadSessionEntry.mockReturnValue({
-    cfg: {},
-    storePath: mocks.userTurnStorePath,
-    entry: { sessionId: "spawned-child-session", updatedAt: Date.now() },
-    canonicalKey: childSessionKey,
-  });
-  mocks.updateSessionStore.mockResolvedValue(undefined);
-  mocks.agentCommand.mockResolvedValue({
-    payloads: [{ text: "ok" }],
-    meta: { durationMs: 100 },
-  });
-}
 
 describe("gateway agent handler", () => {
   afterEach(describe0AfterEach0);
@@ -3182,62 +3168,6 @@ describe("gateway agent handler", () => {
     });
   });
 
-  describe("native subagent child run task tracking", () => {
-    it("suppresses the gateway CLI task row for native subagent child runs", async () => {
-      await withTestDir({ prefix: "openclaw-gateway-native-subagent-" }, async (root) => {
-        useTestStateDir(root);
-        resetAgentTaskRegistryForTests();
-        const childSessionKey = "agent:main:subagent:native-child";
-        const runId = "native-subagent-run";
-        mockSpawnedChildSessionEntry(childSessionKey, root);
-        const createRunningTaskRunSpy = spyDetachedCreateRunningTaskRun();
-
-        const respond = await invokeAgent(
-          {
-            message: "native subagent child run",
-            sessionKey: childSessionKey,
-            idempotencyKey: runId,
-          },
-          { reqId: runId, client: nativeSubagentClient() },
-        );
-        expect(respond.mock.calls[0]?.slice(0, 3)).toEqual([
-          true,
-          expect.objectContaining({ status: "accepted", runId }),
-          undefined,
-        ]);
-        await waitForAgentCommandCall();
-
-        // src/agents/subagent-spawn.ts owns the `subagent` row for this runId.
-        expect(createRunningTaskRunSpy).not.toHaveBeenCalled();
-        expect(findTaskByRunId(runId)).toBeUndefined();
-      });
-    });
-
-    it("keeps CLI tracking for an unmarked backend turn on a subagent session", async () => {
-      await withTestDir({ prefix: "openclaw-gateway-native-subagent-unmarked-" }, async (root) => {
-        useTestStateDir(root);
-        resetAgentTaskRegistryForTests();
-        const childSessionKey = "agent:main:subagent:unmarked-child";
-        const runId = "native-subagent-unmarked";
-        mockSpawnedChildSessionEntry(childSessionKey, root);
-        const createRunningTaskRunSpy = spyDetachedCreateRunningTaskRun();
-
-        // An operator follow-up to a subagent session owns no registry row, so
-        // suppressing here would lose the run from the tasks rail entirely.
-        await invokeAgent(
-          { message: "operator follow-up", sessionKey: childSessionKey, idempotencyKey: runId },
-          { reqId: runId, client: backendGatewayClient() },
-        );
-        await waitForAgentCommandCall();
-
-        expect(createRunningTaskRunSpy).toHaveBeenCalledTimes(1);
-        expectRecordFields(mockCallArg(createRunningTaskRunSpy), {
-          runtime: "cli",
-          runId,
-          childSessionKey,
-        });
-      });
-    });
-  });
+  registerNativeSubagentTaskTrackingTests();
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

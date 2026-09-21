@@ -11,7 +11,7 @@ import {
   createBundledPluginBuildInventory,
 } from "./scripts/lib/bundled-plugin-build-entries.mjs";
 import { createGatewayRunChunkMetadataPlugin } from "./scripts/lib/gateway-run-chunk-metadata.mts";
-import { createManagedHandoffBuildConfig } from "./scripts/lib/managed-handoff-build-config.mts";
+import { createManagedHandoffBuildConfigs } from "./scripts/lib/managed-handoff-build-config.mts";
 import { createPluginInventoryModuleRefsPlugin } from "./scripts/lib/plugin-inventory-module-refs.mts";
 import {
   buildPluginSdkEntrySources,
@@ -932,7 +932,11 @@ const configs: UserConfig[] = [
   workerDeployBuildConfig({
     "worker/image-processor.worker": "src/worker/worker-deploy-image-processor.ts",
   }),
-  { ...createManagedHandoffBuildConfig(), name: TSDOWN_UNIFIED_CONFIG_GROUP, env },
+  ...createManagedHandoffBuildConfigs().map((config) => ({
+    ...config,
+    name: TSDOWN_UNIFIED_CONFIG_GROUP,
+    env,
+  })),
   nodeBuildConfig(
     {
       name: TSDOWN_UNIFIED_CONFIG_GROUP,

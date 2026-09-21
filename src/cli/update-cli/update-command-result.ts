@@ -9,7 +9,7 @@ import {
 } from "../../infra/error-diagnostics.js";
 import { collectNestedErrorCandidates } from "../../infra/error-graph-internal.js";
 import { formatErrorMessage, formatUncaughtError } from "../../infra/errors.js";
-import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
+import type { PackageUpdateTransaction } from "../../infra/package-update-swap-contract.js";
 import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import type { readUpdateStateSchemaVersions } from "../../infra/update-candidate-state.js";
 import {
@@ -36,7 +36,7 @@ import type { UpdateRunRecord } from "../../infra/update-run-record.js";
 import { loadUpdateRecovery } from "../../infra/update-run-recovery.js";
 import { updateRunReportInputFromResult } from "../../infra/update-run-report.js";
 import { isFailedUpdateStep, updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
-import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import { isVerifiedUpdateRollback, type UpdateRecoveryStep } from "../../shared/update-outcome.js";

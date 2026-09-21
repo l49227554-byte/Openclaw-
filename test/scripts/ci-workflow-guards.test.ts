@@ -58,6 +58,7 @@ import {
 } from "../vitest/vitest.ui-e2e.config.ts";
 import { runCiGitStep } from "./ci-git-owner.test-support.js";
 import { runDependencyFreePreflight } from "./ci-preflight-dependencies.test-support.js";
+import { assertStartupCorpusCommand } from "./ci-startup-corpus.test-support.js";
 import { assertControlUiE2eOwnership } from "./ci-ui-e2e-ownership.test-support.js";
 import { runGeneratedPublisherScenario } from "./generated-publisher.test-support.js";
 
@@ -13761,6 +13762,36 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         }
       }
     }
+  });
+
+  it.each([
+    { cpus: 2, slots: 1 },
+    { cpus: 1, slots: 1 },
+    { cpus: 8, slots: 2, fail: "1/4" },
+    { cpus: 32, slots: 5 },
+  ])("bounds legacy frozen startup corpus admission: %j", (scenario) => {
+    const steps: WorkflowStep[] = readCiWorkflow().jobs["checks-fast-core"].steps;
+    const step = steps.find((entry) =>
+      entry.run?.includes("src/config/state-startup-corpus.test.ts"),
+    );
+    const script = expectDefined(step?.run, "startup corpus command").replace(
+      /\$\{\{[\s\S]*?\}\}/gu,
+      (expression) =>
+        String(
+          evaluateWorkflowExpression(expression, {
+            eventName: "workflow_dispatch",
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            frozenTarget: true,
+          }),
+        ),
+    );
+    assertStartupCorpusCommand(
+      script,
+      tempDirs.make("startup-corpus-command-"),
+      { ...scenario, frozenTarget: true },
+      runWorkflowShellScript,
+    );
   });
 
   it("runs all baseline ratchets against the exact tested tree", () => {

@@ -157,6 +157,8 @@ Gateway startup checks. The explicit step prepares the runtime once with
 one Vitest process with at most four workers. A failed preparation stops the step
 before workers consume memory or attempt their own builds. Frozen targets from
 before the file split retain their config process and four state processes.
+Those legacy runs use CPU-bounded batches, reserving four CPUs per invocation
+with at least one slot, while retaining all five runs and failure continuation.
 The corpus uses the normal bundled-plugin resolver to select the prepared
 runtime from this checkout instead of forcing TypeScript plugin entrypoints.
 Plugins whose Doctor contracts require source loading retain that behavior;

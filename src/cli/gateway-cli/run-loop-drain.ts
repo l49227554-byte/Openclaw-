@@ -15,7 +15,7 @@ export function resolveRestartDrainTimeoutMs(
   restartIntent: GatewayRunSignalRequest["restartIntent"],
   runtime: Pick<typeof import("./lifecycle.runtime.js"), "resolveGatewayRestartDeferralTimeoutMs">,
 ): number | undefined {
-  if (restartIntent?.force) {
+  if (restartIntent?.drainBudgetExhausted) {
     return 0;
   }
   if (typeof restartIntent?.waitMs === "number" && Number.isFinite(restartIntent.waitMs)) {
@@ -78,27 +78,23 @@ export async function drainGatewayActiveWork({
         }
 
         reportDrainSnapshot(initialSnapshot);
-        if (restartIntent?.force) {
-          logger.warn("forced restart requested; skipping active work drain");
-        } else {
-          const remainingDrainTimeoutMs =
-            restartDrainDeadlineAt === undefined
-              ? undefined
-              : Math.max(0, restartDrainDeadlineAt - Date.now());
-          const drain = await waitForGatewayActiveWork(remainingDrainTimeoutMs, {
-            onSnapshot: reportDrainSnapshot,
-          });
-          if (drain.drained) {
-            if (!initialSnapshot.idle) {
-              logger.info("all active work drained");
-            }
-            return;
+        const remainingDrainTimeoutMs =
+          restartDrainDeadlineAt === undefined
+            ? undefined
+            : Math.max(0, restartDrainDeadlineAt - Date.now());
+        const drain = await waitForGatewayActiveWork(remainingDrainTimeoutMs, {
+          onSnapshot: reportDrainSnapshot,
+        });
+        if (drain.drained) {
+          if (!initialSnapshot.idle) {
+            logger.info("all active work drained");
           }
-          drainTimedOut = true;
-          logger.warn(
-            `active-work drain timeout reached; proceeding with restart: ${formatDrainCounts(drain.snapshot)}`,
-          );
+          return;
         }
+        drainTimedOut = true;
+        logger.warn(
+          `active-work drain timeout reached; proceeding with restart: ${formatDrainCounts(drain.snapshot)}`,
+        );
         // Connection work can retain cron cleanup; cancel before close joins it.
         runtime.abortActiveCronTaskRuns("Gateway restarting.");
       },

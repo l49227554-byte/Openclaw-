@@ -68,7 +68,7 @@ the refusal, and deep status reports it instead of an unavailable shutdown recor
 Foreground/manual Gateways, in-process restarts selected by `OPENCLAW_NO_RESPAWN=1`, and other supervisors retain exit status `1` when
 cleanup cannot finish before the shutdown deadline.
 
-`--force` skips the active-work drain and requests cancellation of active cron runs before cleanup. The normal shutdown path still joins accepted work; existing shutdown deadlines still apply. Plain `restart` normally uses the service-manager restart path.
+`--force` begins restart immediately and closes new admissions. Already admitted work still receives the normal drain budget, capped by the native service shutdown deadline. Only work remaining at that deadline is cancelled before cleanup. A safe restart whose deferral budget has already expired does not get a second drain budget. Plain `restart` normally uses the service-manager restart path.
 
 During an upgrade, restart records its reason and drain options in the existing
 Gateway state without starting a schema migration while the old Gateway is still

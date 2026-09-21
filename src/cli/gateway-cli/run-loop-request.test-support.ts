@@ -11,6 +11,7 @@ import {
   createCloseMock,
   createRuntimeWithExitSignal,
   createSignaledStart,
+  expectRestartCloseCall,
   waitForStart,
   waitForLoopCondition,
   withIsolatedSignals,
@@ -18,6 +19,9 @@ import {
 } from "./run-loop.test-support.js";
 
 type RequestFixtures = {
+  createSignaledLoopHarness: UpdateRespawnFixtures["createSignaledLoopHarness"];
+  createGatewayActiveWorkSnapshot: Mock<() => GatewayActiveWorkSnapshot>;
+  abortActiveCronTaskRuns: Mock<(_reason?: string) => number>;
   acquireGatewayLock: Mock<
     (opts?: { port?: number }) => Promise<{ release: Mock<() => Promise<void>> }>
   >;
@@ -50,6 +54,9 @@ type RequestFixtures = {
 };
 
 export function registerGatewayRequestTests({
+  createSignaledLoopHarness,
+  createGatewayActiveWorkSnapshot,
+  abortActiveCronTaskRuns,
   acquireGatewayLock,
   reloadTaskRuntimeStateFromStore,
   runLoopWithStart,
@@ -66,6 +73,53 @@ export function registerGatewayRequestTests({
   gatewayLog,
 }: RequestFixtures): void {
   const idleActiveWorkSnapshot = createActiveWorkSnapshot();
+  it.each(["SIGTERM", "SIGUSR2"] as const)(
+    "drains admitted work before a forced %s restart",
+    async (signal) => {
+      (signal === "SIGTERM"
+        ? consumeGatewayRestartIntentPayloadSync
+        : consumeGatewayRestartIntent
+      ).mockReturnValueOnce({ force: true });
+      createGatewayActiveWorkSnapshot.mockReturnValueOnce(
+        createActiveWorkSnapshot({ activeTasks: 1, embeddedRuns: 1 }, [
+          {
+            kind: "task",
+            count: 1,
+            message: "taskId=task-force runId=run-force status=running runtime=cron label=forced",
+          },
+          { kind: "embedded-run", count: 1, message: "1 active embedded run(s)" },
+        ]),
+      );
+      const drain = createDeferredCore<{ drained: boolean; snapshot: GatewayActiveWorkSnapshot }>();
+      waitForGatewayActiveWork.mockImplementationOnce(() => drain.promise);
+      await withIsolatedSignals(async ({ captureSignal }) => {
+        const { close, start, exited } = await createSignaledLoopHarness();
+        const sigint = captureSignal("SIGINT");
+        vi.useFakeTimers();
+        try {
+          captureSignal(signal)();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(isGatewayWorkAdmissionClosed()).toBe(true);
+          expect(close).not.toHaveBeenCalled();
+          expect(waitForGatewayActiveWork).toHaveBeenCalledWith(300_000, expect.any(Object));
+          expect(abortActiveCronTaskRuns).not.toHaveBeenCalled();
+          expect(gatewayLog.info.mock.calls.flat().join("\n")).not.toContain("task-force");
+          drain.resolve({ drained: true, snapshot: idleActiveWorkSnapshot });
+          await vi.advanceTimersByTimeAsync(0);
+          expectRestartCloseCall(close, 300_000);
+          expect(start).toHaveBeenCalledTimes(signal === "SIGTERM" ? 1 : 2);
+        } finally {
+          drain.resolve({ drained: true, snapshot: idleActiveWorkSnapshot });
+          await vi.advanceTimersByTimeAsync(0);
+          sigint();
+          await vi.advanceTimersByTimeAsync(0);
+          await expect(exited).resolves.toBe(0);
+          vi.useRealTimers();
+        }
+      });
+    },
+  );
+
   it("keeps replacement shutdown behind an owned pre-park Stop settlement", async () => {
     const joined = createDeferredCore<boolean>();
     const settle = vi.fn(() => joined.promise);

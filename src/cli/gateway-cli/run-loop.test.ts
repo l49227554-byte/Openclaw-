@@ -543,6 +543,9 @@ afterEach(() => {
 
 describe("runGatewayLoop", () => {
   registerGatewayRequestTests({
+    createSignaledLoopHarness,
+    createGatewayActiveWorkSnapshot,
+    abortActiveCronTaskRuns,
     acquireGatewayLock,
     reloadTaskRuntimeStateFromStore,
     runLoopWithStart,
@@ -623,8 +626,8 @@ describe("runGatewayLoop", () => {
           );
           sigterm();
           expect(host?.externalRestart?.isCurrent()).toBe(false);
-          expectRestartCloseCall(close, 0);
-          expect(waitForGatewayActiveWork).not.toHaveBeenCalled();
+          expectRestartCloseCall(close, DEFAULT_RESTART_DEFERRAL_TIMEOUT_MS);
+          expect(waitForGatewayActiveWork).toHaveBeenCalledOnce();
           expect(runtime.exit).not.toHaveBeenCalled();
         } finally {
           joined.resolve();
@@ -1771,13 +1774,14 @@ describe("runGatewayLoop", () => {
   );
 
   it.each([true, false])(
-    "bounds abandoned cleanup after managed parking (restore commit=%s)",
+    "bounds abandoned cleanup after an exhausted deferral and managed parking (restore commit=%s)",
     async (restoreCommitted) => {
       vi.clearAllMocks();
       process.env.OPENCLAW_SYSTEMD_UNIT = "openclaw-gateway.service";
       setPlatform("linux");
       consumeGatewayRestartIntent.mockReturnValueOnce({
         force: true,
+        drainBudgetExhausted: true,
         reason: "update.run",
         successorOwner: managedUpdateSuccessorOwner,
       });
@@ -1819,7 +1823,7 @@ describe("runGatewayLoop", () => {
   it("retains external supervisor recovery when timeout prevents a restart handoff", async () => {
     vi.clearAllMocks();
     process.env.OPENCLAW_SUPERVISOR_MODE = "external";
-    consumeGatewayRestartIntent.mockReturnValueOnce({ force: true });
+    consumeGatewayRestartIntent.mockReturnValueOnce({ force: true, drainBudgetExhausted: true });
     await withIsolatedSignals(async ({ captureSignal }) => {
       const { close, runtime } = await createSignaledLoopHarness();
       close.mockReturnValue(new Promise<void>(() => {}));
@@ -2042,9 +2046,9 @@ describe("runGatewayLoop", () => {
   });
 
   it("skips a second active-work drain after a SIGUSR2 deferral timeout intent", async () => {
-    vi.clearAllMocks();
     consumeGatewayRestartIntent.mockReturnValueOnce({
       force: true,
+      drainBudgetExhausted: true,
       reason: "config reload forced restart",
     });
     createGatewayActiveWorkSnapshot.mockReturnValue(
@@ -2067,52 +2071,12 @@ describe("runGatewayLoop", () => {
         setImmediate(resolve);
       });
 
-      expect(waitForGatewayActiveWork).not.toHaveBeenCalled();
+      expect(waitForGatewayActiveWork).toHaveBeenCalledWith(0, expect.any(Object));
       expect(markGatewayRestartHandled).toHaveBeenCalledOnce();
       expectRestartCloseCall(close, 0);
       expect(start).toHaveBeenCalledTimes(2);
 
       sigint();
-      await expect(exited).resolves.toBe(0);
-    });
-  });
-
-  it("forces SIGTERM restarts without waiting for active task drain", async () => {
-    vi.clearAllMocks();
-    consumeGatewayRestartIntentPayloadSync.mockReturnValueOnce({ force: true });
-    createGatewayActiveWorkSnapshot.mockReturnValue(
-      createActiveWorkSnapshot({ activeTasks: 1, embeddedRuns: 1 }, [
-        {
-          kind: "task",
-          count: 1,
-          message: "taskId=task-force runId=run-force status=running runtime=cron label=forced",
-        },
-        { kind: "embedded-run", count: 1, message: "1 active embedded run(s)" },
-      ]),
-    );
-    await withIsolatedSignals(async ({ captureSignal }) => {
-      const { close, start, exited } = await createSignaledLoopHarness();
-      const sigterm = captureSignal("SIGTERM");
-
-      sigterm();
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-
-      expect(waitForGatewayActiveWork).not.toHaveBeenCalled();
-      expect(gatewayLog.info).toHaveBeenCalledWith(
-        expect.stringContaining("embeddedRuns=1 activeTasks=1"),
-      );
-      expect(gatewayLog.info.mock.calls.flat().join("\n")).not.toContain("task-force");
-      expect(gatewayLog.warn).toHaveBeenCalledWith(
-        "forced restart requested; skipping active work drain",
-      );
-      expectRestartCloseCall(close, 0);
-      expect(start).toHaveBeenCalledOnce();
-
       await expect(exited).resolves.toBe(0);
     });
   });

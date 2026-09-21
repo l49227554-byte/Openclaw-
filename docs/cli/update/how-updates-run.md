@@ -424,7 +424,7 @@ If schema state cannot be verified, rollback is refused with
 Service-manager commands and helper acknowledgements share the activation or
 recovery allowance. Slow inspection or teardown does not impose a separate
 five- or thirty-second command cutoff. Service installation also forwards one
-caller budget through staging, sealing, and load; the parent owns cancellation.
+caller budget through installation and activation; the parent owns cancellation.
 
 When an agent runs `openclaw update` inside a systemd user service or macOS
 LaunchAgent Gateway, the CLI hands the update to the same managed-service helper

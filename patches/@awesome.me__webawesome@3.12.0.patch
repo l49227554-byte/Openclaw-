@@ -723,7 +723,7 @@ index 593bac0b7708fc0e908f9f8de650e45f8b3610ec..66e09365025b0e593e38d8410c8019d6
    }
  };
 diff --git a/dist/chunks/chunk.KZJTFPDQ.js b/dist/chunks/chunk.KZJTFPDQ.js
-index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..7c076a5462bf77d2e3dc1f73335eaddbbb6054b9 100644
+index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..6f4a0984d142114f8fa8eb94f0b1c97d78dbe0fc 100644
 --- a/dist/chunks/chunk.KZJTFPDQ.js
 +++ b/dist/chunks/chunk.KZJTFPDQ.js
 @@ -58,17 +58,16 @@ var openDropdowns = /* @__PURE__ */ new Set();
@@ -910,7 +910,7 @@ index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..7c076a5462bf77d2e3dc1f73335eaddb
      }
      if (changedProperties.has("size")) {
        this.syncItemSizes();
-@@ -300,104 +265,73 @@ var WaDropdown = class extends WebAwesomeElement {
+@@ -300,104 +265,98 @@ var WaDropdown = class extends WebAwesomeElement {
      );
      items.forEach((item) => item.size = this.size);
    }
@@ -1028,21 +1028,33 @@ index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..7c076a5462bf77d2e3dc1f73335eaddb
 +    // Join canceled animation cleanup before reusing its class. Show and hide share
 +    // one CSS animation name, so overlapping helpers cannot own separate animations.
 +    this.menu.classList.remove("show", "hide");
-+    await this.menuAnimation;
-+    if (!isCurrent()) return;
-+    this.menuAnimation = animateWithClass(this.menu, open ? "show" : "hide");
-+    await this.menuAnimation;
-+    if (!isCurrent()) return;
++    // The popup renders visibility asynchronously. Initialize focus as soon as it
++    // is usable, without waiting for an interrupted animation or the new show.
++    // A newer focus owner during that render already supersedes initial focus.
++    const focused = [...activeElements()].pop();
 +    if (open) {
-+      const items = this.getItems();
-+      if (items.length > 0) {
-+        items.forEach((item, index) => item.active = index === 0);
-+        items[0].focus({ preventScroll: true });
++      await this.popup.updateComplete;
++      if (!isCurrent()) return;
++      // A newly mounted popup resolves its anchor after rendering. Join that
++      // owner before focusing: updateComplete alone can leave the popover hidden.
++      if (!this.popup.anchorEl) {
++        await new Promise((resolve) => {
++          const done = (event) => {
++            if (event.type === "wa-reposition" && event.target !== this.popup) return;
++            this.popup.removeEventListener("wa-reposition", done);
++            signal.removeEventListener("abort", done);
++            resolve();
++          };
++          this.popup.addEventListener("wa-reposition", done);
++          signal.addEventListener("abort", done, { once: true });
++        });
++        if (!isCurrent()) return;
 +      }
-+      if (isCurrent()) this.dispatchEvent(new WaAfterShowEvent());
-+    } else {
-+      this.popup.active = false;
-+      this.dispatchEvent(new WaAfterHideEvent());
++      if ([...activeElements()].pop() === focused) {
++        const items = this.getItems();
++        items.forEach((item, index) => item.active = index === 0);
++        items[0]?.focus({ preventScroll: true });
++      }
      }
 -    this.dispatchEvent(new WaAfterShowEvent());
 -  }
@@ -1054,7 +1066,19 @@ index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..7c076a5462bf77d2e3dc1f73335eaddb
 -    if (hideEvent.defaultPrevented) {
 -      this.open = true;
 -      return;
--    }
++    // Focus handlers may synchronously close, disconnect, or reconnect the menu.
++    if (!isCurrent()) return;
++    await this.menuAnimation;
++    if (!isCurrent()) return;
++    this.menuAnimation = animateWithClass(this.menu, open ? "show" : "hide");
++    await this.menuAnimation;
++    if (!isCurrent()) return;
++    if (open) {
++      this.dispatchEvent(new WaAfterShowEvent());
++    } else {
++      this.popup.active = false;
++      this.dispatchEvent(new WaAfterHideEvent());
+     }
 -    this.open = false;
 -    openDropdowns.delete(this);
 -    unregisterDismissible(this);
@@ -1069,7 +1093,7 @@ index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..7c076a5462bf77d2e3dc1f73335eaddb
    }
    /** Handles clicks on the menu. */
    handleMenuClick(event) {
-@@ -405,8 +339,6 @@ var WaDropdown = class extends WebAwesomeElement {
+@@ -405,8 +364,6 @@ var WaDropdown = class extends WebAwesomeElement {
      if (!item || item.disabled) return;
      if (item.hasSubmenu) {
        if (!item.submenuOpen) {
@@ -1078,7 +1102,7 @@ index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..7c076a5462bf77d2e3dc1f73335eaddb
          item.submenuOpen = true;
        }
        event.stopPropagation();
-@@ -433,60 +365,57 @@ var WaDropdown = class extends WebAwesomeElement {
+@@ -433,60 +390,57 @@ var WaDropdown = class extends WebAwesomeElement {
    handleTriggerClick() {
      this.open = !this.open;
    }
@@ -1178,7 +1202,7 @@ index 11de1ac9d650dc1e2db6922f8fb6cd217bc13a4d..7c076a5462bf77d2e3dc1f73335eaddb
      if (!item.submenuElement) return;
      const isRtl = this.localize.dir() === "rtl";
      const placement = isRtl ? "left-start" : "right-start";
-@@ -506,6 +435,7 @@ var WaDropdown = class extends WebAwesomeElement {
+@@ -506,6 +460,7 @@ var WaDropdown = class extends WebAwesomeElement {
          })
        ]
      }).then(({ x, y, placement: placement2 }) => {
@@ -1499,7 +1523,7 @@ index bedb1923179f2a73be2eaf24e8c1a3c35718683d..04dc1c15097ad58de31a8670e2c870d3
  /** Parses a CSS duration and returns the number of milliseconds. */
  export declare function parseDuration(duration: number | string): number;
 diff --git a/dist-cdn/chunks/chunk.63RYV7SI.js b/dist-cdn/chunks/chunk.63RYV7SI.js
-index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..93d65f3128c2a4acb30c51ac3899b8d809f7ab33 100644
+index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..a17d7fb69e5811c583d4d033460b1fdc811ff231 100644
 --- a/dist-cdn/chunks/chunk.63RYV7SI.js
 +++ b/dist-cdn/chunks/chunk.63RYV7SI.js
 @@ -68,17 +68,16 @@ var openDropdowns = /* @__PURE__ */ new Set();
@@ -1686,7 +1710,7 @@ index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..93d65f3128c2a4acb30c51ac3899b8d8
      }
      if (changedProperties.has("size")) {
        this.syncItemSizes();
-@@ -310,104 +275,73 @@ var WaDropdown = class extends WebAwesomeElement {
+@@ -310,104 +275,98 @@ var WaDropdown = class extends WebAwesomeElement {
      );
      items.forEach((item) => item.size = this.size);
    }
@@ -1804,21 +1828,33 @@ index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..93d65f3128c2a4acb30c51ac3899b8d8
 +    // Join canceled animation cleanup before reusing its class. Show and hide share
 +    // one CSS animation name, so overlapping helpers cannot own separate animations.
 +    this.menu.classList.remove("show", "hide");
-+    await this.menuAnimation;
-+    if (!isCurrent()) return;
-+    this.menuAnimation = animateWithClass(this.menu, open ? "show" : "hide");
-+    await this.menuAnimation;
-+    if (!isCurrent()) return;
++    // The popup renders visibility asynchronously. Initialize focus as soon as it
++    // is usable, without waiting for an interrupted animation or the new show.
++    // A newer focus owner during that render already supersedes initial focus.
++    const focused = [...activeElements()].pop();
 +    if (open) {
-+      const items = this.getItems();
-+      if (items.length > 0) {
-+        items.forEach((item, index) => item.active = index === 0);
-+        items[0].focus({ preventScroll: true });
++      await this.popup.updateComplete;
++      if (!isCurrent()) return;
++      // A newly mounted popup resolves its anchor after rendering. Join that
++      // owner before focusing: updateComplete alone can leave the popover hidden.
++      if (!this.popup.anchorEl) {
++        await new Promise((resolve) => {
++          const done = (event) => {
++            if (event.type === "wa-reposition" && event.target !== this.popup) return;
++            this.popup.removeEventListener("wa-reposition", done);
++            signal.removeEventListener("abort", done);
++            resolve();
++          };
++          this.popup.addEventListener("wa-reposition", done);
++          signal.addEventListener("abort", done, { once: true });
++        });
++        if (!isCurrent()) return;
 +      }
-+      if (isCurrent()) this.dispatchEvent(new WaAfterShowEvent());
-+    } else {
-+      this.popup.active = false;
-+      this.dispatchEvent(new WaAfterHideEvent());
++      if ([...activeElements()].pop() === focused) {
++        const items = this.getItems();
++        items.forEach((item, index) => item.active = index === 0);
++        items[0]?.focus({ preventScroll: true });
++      }
      }
 -    this.dispatchEvent(new WaAfterShowEvent());
 -  }
@@ -1830,7 +1866,19 @@ index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..93d65f3128c2a4acb30c51ac3899b8d8
 -    if (hideEvent.defaultPrevented) {
 -      this.open = true;
 -      return;
--    }
++    // Focus handlers may synchronously close, disconnect, or reconnect the menu.
++    if (!isCurrent()) return;
++    await this.menuAnimation;
++    if (!isCurrent()) return;
++    this.menuAnimation = animateWithClass(this.menu, open ? "show" : "hide");
++    await this.menuAnimation;
++    if (!isCurrent()) return;
++    if (open) {
++      this.dispatchEvent(new WaAfterShowEvent());
++    } else {
++      this.popup.active = false;
++      this.dispatchEvent(new WaAfterHideEvent());
+     }
 -    this.open = false;
 -    openDropdowns.delete(this);
 -    unregisterDismissible(this);
@@ -1845,7 +1893,7 @@ index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..93d65f3128c2a4acb30c51ac3899b8d8
    }
    /** Handles clicks on the menu. */
    handleMenuClick(event) {
-@@ -415,8 +349,6 @@ var WaDropdown = class extends WebAwesomeElement {
+@@ -415,8 +374,6 @@ var WaDropdown = class extends WebAwesomeElement {
      if (!item || item.disabled) return;
      if (item.hasSubmenu) {
        if (!item.submenuOpen) {
@@ -1854,7 +1902,7 @@ index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..93d65f3128c2a4acb30c51ac3899b8d8
          item.submenuOpen = true;
        }
        event.stopPropagation();
-@@ -443,60 +375,57 @@ var WaDropdown = class extends WebAwesomeElement {
+@@ -443,60 +400,57 @@ var WaDropdown = class extends WebAwesomeElement {
    handleTriggerClick() {
      this.open = !this.open;
    }
@@ -1954,7 +2002,7 @@ index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..93d65f3128c2a4acb30c51ac3899b8d8
      if (!item.submenuElement) return;
      const isRtl = this.localize.dir() === "rtl";
      const placement = isRtl ? "left-start" : "right-start";
-@@ -516,6 +445,7 @@ var WaDropdown = class extends WebAwesomeElement {
+@@ -516,6 +470,7 @@ var WaDropdown = class extends WebAwesomeElement {
          })
        ]
      }).then(({ x: x2, y, placement: placement2 }) => {

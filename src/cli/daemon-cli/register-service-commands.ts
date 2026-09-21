@@ -93,7 +93,6 @@ export function addGatewayServiceCommands(parent: Command, opts?: { statusDescri
   parent
     .command("install")
     .description("Install and start the Gateway service (launchd/systemd/schtasks)")
-    .addOption(new Option("--defer-activation", "Updater service-load handoff").hideHelp())
     .option("--port <port>", "Gateway port")
     .option("--runtime <runtime>", "Daemon runtime (node|bun). Default: node")
     .option("--runtime-path <path>", "Pin an absolute Node/Bun executable path")

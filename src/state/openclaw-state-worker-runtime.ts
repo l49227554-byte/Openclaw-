@@ -351,6 +351,7 @@ export function executeSharedStateCommand(
   if (
     command.type === "userProfiles.list" ||
     command.type === "userProfiles.directory" ||
+    command.type === "userProfiles.email.ensure" ||
     command.type === "userProfiles.avatar.inspect" ||
     command.type === "userProfiles.avatar.adopt"
   ) {

@@ -68,7 +68,10 @@ it("reads prepared history catalogs without querying the unused requester identi
     );
     expect(measuredStatements).toEqual([0]);
     expect(readChatStartupProjection).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ requesterProfileId: undefined, readPolicy: "ready" }),
+      expect.objectContaining({ readPolicy: "ready" }),
+    );
+    expect(readChatStartupProjection.mock.calls[0]?.[0]).not.toHaveProperty(
+      "readRequesterProfileId",
     );
   });
 });

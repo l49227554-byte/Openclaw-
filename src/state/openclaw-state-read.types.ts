@@ -47,7 +47,8 @@ export type OpenClawStateReadCommand =
   | { type: "exec-approvals.read" }
   | { type: "agentDatabaseRegistry.read" }
   | { type: "onboardingRecommendations.read"; configKey: string }
-  | { type: "userProfiles.avatar.reconcile"; profileId: string }
+  | { type: "userProfiles.reconcile"; profileId: string }
+  | { type: "userProfiles.email.resolve"; email: string }
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "updateRuns.get"; runId: string }
   | { type: "updateRuns.list"; input: UpdateRunListInput }
@@ -72,6 +73,12 @@ export type OpenClawStateReadReply = (
   | PluginBlobReadReply
   | {
       ok: true;
+      type: "userProfiles.email.resolve";
+      sourceAdmitted: true;
+      profileId: string | undefined;
+    }
+  | {
+      ok: true;
       type: "agentDatabaseRegistry.read";
       sourceAdmitted?: true;
       result: OpenClawAgentDatabaseRegistryReadResult;
@@ -84,7 +91,7 @@ export type OpenClawStateReadReply = (
     }
   | {
       ok: true;
-      type: "userProfiles.avatar.reconcile";
+      type: "userProfiles.reconcile";
       sourceAdmitted: true;
       profile: ProfileDisplayRow | undefined;
     }

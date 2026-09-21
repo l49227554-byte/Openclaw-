@@ -27,7 +27,7 @@ Custom plugin UI flag below controls user-installed native browser code only.
 | Cloud workers    | `cloudWorkers.desktop`                                                  | You want to watch or control desktop-capable cloud worker environments from the Control UI                                        | [Cloud Worker Desktop](/gateway/cloud-workers#desktop-interactive)                     |
 | Custom plugin UI | `gateway.controlUi.experimental.customPlugins`                          | You want trusted user-installed plugins to add native Control UI views or replace built-in views                                  | [Feature plugins](/plugins/feature-plugins#enable-custom-plugin-ui)                    |
 | Host Desktop     | `desktop.host.enabled`                                                  | You want to watch or control the Gateway host through its VNC or Screen Sharing server                                            | [Desktop](/gateway/configuration-reference#desktop)                                    |
-| Tool Search      | `tools.toolSearch.enabled`                                              | You want to defer tool schemas for all models instead of using each model's default                                               | [Tool Search](/tools/tool-search)                                                      |
+| Tool Search      | `tools.toolSearch.enabled`                                              | You want to control the global Tool Search default, which is enabled                                                              | [Tool Search](/tools/tool-search)                                                      |
 
 ## Control UI Labs
 
@@ -54,8 +54,9 @@ Code Mode remains disabled until you turn on its Labs switch or explicitly set
 engages only for models marked as preferred Code Mode performers; it does not
 force Code Mode on for every model.
 
-Local models use Tool Search automatically when `tools.toolSearch` is unset.
-The Labs switch enables an override for all models.
+Tool Search is enabled by default when `tools.toolSearch` is unset.
+Turning its Labs switch off disables the global default; turning it on restores
+that default.
 
 ## Local model lean mode
 

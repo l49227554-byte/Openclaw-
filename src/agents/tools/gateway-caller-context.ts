@@ -64,7 +64,6 @@ type GatewayToolCallerIdentity = {
   cronManagementGrant?: CronCreatorAuthorityGrant;
   /** Cron permission can end while the admitted run retains its other tools. */
   cronAuthorityCheck?: () => boolean;
-  admissionSource?: AdmittedRunContext["admissionSource"];
   // Trusted run context, carried separately from model-authored tool arguments.
   turnSourceChannel?: string;
   turnSourceLocal?: true;
@@ -167,7 +166,6 @@ export function createAdmittedGatewayToolCallerIdentity(
     ...(delegatedAuthority ? { approvalAuthority: delegatedAuthority } : {}),
     ...(params.receiptAuthority ? { approvalAuthorityCheck: params.receiptAuthority } : {}),
     ...(params.cronAuthorityCheck ? { cronAuthorityCheck: params.cronAuthorityCheck } : {}),
-    admissionSource: params.admittedRunContext.admissionSource,
     executionIdentityToken: params.admittedRunContext.executionIdentityToken,
     gatewayContextResolver: bindGatewayToolContextResolver(
       getGatewayContextResolver(params.admittedRunContext),
@@ -289,7 +287,6 @@ export async function withGatewayToolCallerIdentity<T>(
     inheritedOwner?.cronAuthorityCheck,
     identity.cronAuthorityCheck,
   );
-  const admissionSource = inheritedOwner?.admissionSource ?? identity.admissionSource;
   const turnSourceChannel = inheritedOwner?.turnSourceChannel ?? identity.turnSourceChannel?.trim();
   const turnSourceLocal = inheritedOwner?.turnSourceLocal ?? identity.turnSourceLocal;
   const turnSourceTo = inheritedOwner?.turnSourceTo ?? identity.turnSourceTo?.trim();
@@ -320,7 +317,6 @@ export async function withGatewayToolCallerIdentity<T>(
       ...(mintCronRequesterGrant ? { mintCronRequesterGrant } : {}),
       ...(cronManagementGrant ? { cronManagementGrant } : {}),
       ...(cronAuthorityCheck ? { cronAuthorityCheck } : {}),
-      ...(admissionSource ? { admissionSource } : {}),
       ...(executionIdentityToken ? { executionIdentityToken } : {}),
       ...(receiptAuthority ? { receiptAuthority } : {}),
       ...(assertToolAllowed ? { assertToolAllowed } : {}),

@@ -1,3 +1,4 @@
+import { isTranscriptScrollKey } from "../chat-scroll-input.ts";
 import { captureChatSessionScrollPosition } from "../scroll.ts";
 
 const COMPOSER_CHROME_INTERACTIVE_SELECTOR = [
@@ -79,10 +80,13 @@ function ensureComposerPaneAnchorState(
       },
       { passive: true },
     );
-    const cancelPendingAnchor = () => {
+    const cancelPendingAnchor = (event: Event) => {
+      if (event instanceof KeyboardEvent && !isTranscriptScrollKey(event)) {
+        return;
+      }
       state.pendingBottomAnchor = false;
     };
-    for (const type of ["wheel", "pointerdown", "touchstart"]) {
+    for (const type of ["wheel", "pointerdown", "touchstart", "keydown"]) {
       thread.addEventListener(type, cancelPendingAnchor, { passive: true });
     }
   }

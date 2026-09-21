@@ -76,6 +76,33 @@ describe("native chat composer sizing", () => {
     flushAnimationFrames();
     expect(scrollTop).toBe(2_000);
   });
+
+  it("leaves reader navigation in control while bottom anchoring is pending", () => {
+    const flushAnimationFrames = stubAnimationFrames();
+    const container = renderChatView({});
+    const { textarea, thread } = getComposerElements(container);
+    let scrollTop = 1_500;
+    Object.defineProperties(thread, {
+      scrollHeight: { configurable: true, get: () => 2_000 },
+      clientHeight: { configurable: true, get: () => 500 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+
+    textarea.value = "line 1\nline 2\nline 3";
+    textarea.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    flushAnimationFrames();
+    thread.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "PageUp" }));
+    scrollTop = 1_000;
+    flushAnimationFrames();
+
+    expect(scrollTop).toBe(1_000);
+  });
 });
 
 describe("manual chat composer sizing fallback", () => {

@@ -425,12 +425,23 @@ prepare_squash_merge_body() {
     return 1
   fi
 
+  local messages='[]'
+  if [ "$MERGE_TRANSPORT" = rest ] &&
+    [ "$(printf '%s\n' "$preview" | jq -r '.data.repository.squashMergeCommitMessage')" = COMMIT_MESSAGES ]; then
+    # Message defaults include every published commit, not only the non-merge,
+    # tree-changing author subset. Local-only fixups contribute trailers above.
+    messages=$(pr_git log --reverse --topo-order --no-show-signature --no-notes \
+      --no-color --no-decorate --encoding=UTF-8 -z --format=%B \
+      "$PR_MAIN_SHA..$PREP_HEAD_SHA" | jq -Rs 'split("\u0000")[:-1]') || return 1
+  fi
+
   local body_file
   body_file=$(mktemp .local/merge-body.XXXXXX) || return 1
   printf '%s\n' "$preview" | jq -c \
     --arg source "$source_trailers" --argjson authors "$authors" --arg captured "$captured" \
-    --argjson queue "$queue_enabled" --arg transport "${MERGE_TRANSPORT:-graphql}" '
-    {preview:.data.repository.pullRequest.viewerMergeBodyText,prAuthor:.data.repository.pullRequest.author,source:$source,authors:$authors,captured:$captured,queue:$queue,sourceCredit:($transport == "rest")}
+    --argjson queue "$queue_enabled" --arg transport "${MERGE_TRANSPORT:-graphql}" --argjson messages "$messages" '
+    {preview:.data.repository.pullRequest.viewerMergeBodyText,prAuthor:.data.repository.pullRequest.author,source:$source,authors:$authors,captured:$captured,queue:$queue,sourceCredit:($transport == "rest"),
+     squashDefault:(if $transport == "rest" then {title:.data.repository.squashMergeCommitTitle,message:.data.repository.squashMergeCommitMessage,commits:$messages} else null end)}
   ' | node "${BASH_SOURCE[0]%/*}/merge-body.mjs" compose > "$body_file" || return 1
   # Queue admission cannot accept an override, but its preview still needs validation.
   if [ "$queue_enabled" = true ]; then

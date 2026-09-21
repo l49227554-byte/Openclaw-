@@ -57,10 +57,11 @@ Each PR-head observation and merge snapshot explicitly requests
 `Cache-Control: max-age=0`: the relay revalidates that read and may publish its
 result, while separate before/after observations must never reuse one cached fact.
 Writer identity uses the protected selected CLI with included headers on both
-transports, keeping relay callers on the native writer route. Reviewer assignment
-uses REST and verifies that GitHub retained the requested assignee. The CI watcher
-polls GraphQL summaries, expanding check details only for failure analysis or
-pending checks after CI succeeds. Primary GraphQL exhaustion selects a bounded
+transports, keeping relay callers on the native writer route. Repository selection
+uses the CLI's local default and host resolution without a quota-dependent HEAD.
+Reviewer assignment uses REST and verifies that GitHub retained the requested
+assignee. The CI watcher polls GraphQL summaries, expanding check details only for
+failure analysis or pending checks after CI succeeds. Primary GraphQL exhaustion selects a bounded
 REST fallback; secondary throttles and access failures never authorize a transport
 switch. The watcher retains complete check/status and workflow evidence. Ordinary
 immediate squash prefers REST; admission reads can switch in either direction on
@@ -69,6 +70,8 @@ GraphQL before dispatch. REST landing requires authoritative absence
 of classic protection, supported effective rules without a merge queue, exact-head
 publisher-bound checks, and the existing retained-outcome lifecycle. Choose the
 transport before dispatch; never retry an uncertain mutation through another API.
+REST squash preserves configured message content from the pinned published commits
+or PR body and leaves the configured title to GitHub.
 Completion comments use the successful receipt observation's transport and retain
 their one-attempt marker. Native auto-merge, queues, admin admission, and non-squash
 merges retain their GraphQL contracts; GitHub has no REST auto-merge endpoint.

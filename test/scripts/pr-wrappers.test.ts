@@ -237,7 +237,7 @@ function createMismatchedWrapperTemplate({
   const ghStub = join(bin, "gh");
   writeFileSync(
     ghStub,
-    '#!/bin/sh\nif [ "$1 $2" = "browse --no-browser" ]; then\n  printf \'https://github.com/fixture/repo\\n\'\n  exit 0\nfi\nif [ "$1" = "api" ]; then\n  printf \'{"base":{"ref":"not-main"}}\\n\'\n  exit 0\nfi\necho "Unexpected gh call: $*" >&2\nexit 99\n',
+    '#!/bin/sh\nif [ "$1" = "browse" ]; then\n  printf \'https://github.com/fixture/repo\\n\'\n  exit 0\nfi\nif [ "$1" = "api" ]; then\n  printf \'{"base":{"ref":"not-main"}}\\n\'\n  exit 0\nfi\necho "Unexpected gh call: $*" >&2\nexit 99\n',
   );
   chmodSync(ghStub, 0o755);
 
@@ -699,7 +699,7 @@ describe("scripts/pr wrappers", () => {
     const fixture = makeMismatchedWrapperRepo();
     writeFileSync(
       join(fixture.bin, "gh"),
-      `#!/bin/sh\nif [ "$1 $2" = "browse --no-browser" ]; then printf 'https://github.com/fixture/repo\\n'; else printf '{"base":{"ref":"main"}}\\n'; fi\n`,
+      `#!/bin/sh\nif [ "$1" = "browse" ]; then printf 'https://github.com/fixture/repo\\n'; else printf '{"base":{"ref":"main"}}\\n'; fi\n`,
     );
     writeFileSync(
       join(fixture.canonical, "scripts/pr-lib/merge.sh"),
@@ -733,7 +733,7 @@ describe("scripts/pr wrappers", () => {
     mkdirSync(caller);
     writeFileSync(
       join(fixture.bin, "gh"),
-      `#!/bin/sh\nif [ "$1 $2" = "browse --no-browser" ]; then printf 'https://github.com/fixture/repo\\n'; else printf '{"base":{"ref":"main"}}\\n'; fi\n`,
+      `#!/bin/sh\nif [ "$1" = "browse" ]; then printf 'https://github.com/fixture/repo\\n'; else printf '{"base":{"ref":"main"}}\\n'; fi\n`,
     );
     writeFileSync(
       join(fixture.canonical, "scripts/pr-lib/merge.sh"),
@@ -2433,7 +2433,7 @@ process.exit(${scenario.code});
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.OPENCLAW_TEST_CALLS, JSON.stringify(args) + "\\n");
-if (args[0] === "browse" && args[1] === "--no-browser") {
+if (args[0] === "browse") {
   console.log("https://${host}/fixture/repo");
 } else if (args[0] === "api" && args[1] === "user") {
   if (args.includes("--include")) {

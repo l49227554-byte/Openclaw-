@@ -74,7 +74,7 @@ require("node:module").syncBuiltinESMExports();
   if (fixture.probeGit) {
     writeFileSync(
       selectedGit,
-      "#!/bin/sh\ncase \"$*\" in\n  --version) printf 'selected fixture Git\\n' ;;\n  'remote get-url origin') printf 'https://github.com/origin-owner/origin-repo.git\\n' ;;\n  *) exit 79 ;;\nesac\n",
+      "#!/bin/sh\ncase \"$*\" in\n  --version) printf 'selected fixture Git\\n' ;;\n  *) exit 79 ;;\nesac\n",
       { mode: 0o755 },
     );
     writeFileSync(join(dir, "git"), "#!/bin/sh\necho 'poisoned PATH Git' >&2\nexit 79\n", {
@@ -103,16 +103,19 @@ const qualifyRepository = (repository) => {
     : "https://" + (repository.split("/").length === 3 ? repository : defaultHost + "/" + repository);
 };
 const operation = args[0] === "browse" ? "browse" : args.find((arg) => arg.startsWith("repos/") || arg === "user");
-if (fixture.coreQuotaAt?.includes(operation)) {
+if (fixture.coreQuotaAt?.includes(operation) && (operation !== "browse" || args.includes("--no-browser"))) {
+  if (operation === "browse") {
+    console.error("HTTP 403: Forbidden (https://api.github.com/repos/base-owner/base-repo)");
+    process.exit(1);
+  }
   console.log('HTTP/2 403 Forbidden\\nX-RateLimit-Resource: core\\nX-RateLimit-Remaining: 0\\n\\n'+JSON.stringify({message:"API rate limit exceeded"}));
   console.error("gh: API rate limit exceeded");
   process.exit(1);
 }
-if (args[0] === "repo" && args[1] === "set-default" && args[2] === "--view") {
-  console.log(fixture.defaultRepoURL || "base-owner/base-repo");
-  process.exit(0);
+if (args[0] === "pr" && args[1] === "view") {
+  throw new Error("Top-level pr view can spend REST quota again; use the GraphQL endpoint");
 }
-if ((args[0] === "api" && args.includes("graphql")) || (args[0] === "pr" && args[1] === "view")) {
+if (args[0] === "api" && args.includes("graphql")) {
   if (args.includes("--input")) JSON.parse(fs.readFileSync(0,"utf8"));
   if (fixture.graphqlQuota) {
     console.error("gh: API rate limit exceeded");
@@ -122,11 +125,18 @@ if ((args[0] === "api" && args.includes("graphql")) || (args[0] === "pr" && args
   fs.writeFileSync(path.join(root,"graphql-count"),String(count+1));
   if (!fixture.graphqlResponses || count >= fixture.graphqlResponses.length) throw new Error("Unexpected GraphQL request");
   if (args.includes("--include")) process.stdout.write("HTTP/2 200 OK\\n\\n");
-  out(fixture.graphqlResponses[count]);
+  let response = fixture.graphqlResponses[count];
+  if (fixture.cacheUntilRevalidated && !args.includes("Cache-Control: max-age=0") && response.data?.repository?.pullRequest?.headRefOid) {
+    response = fixture.graphqlResponses[0];
+  }
+  out(response);
   process.exit(0);
 }
-if (args[0] === "browse" && args[1] === "--no-browser") {
-  if (fixture.failure === "quota" && fixture.failureTarget === "browse") {
+if (args[0] === "browse") {
+  if (!args.includes("--no-browser") && !process.env.GH_BROWSER) {
+    throw new Error("Repository discovery must not open the configured browser");
+  }
+  if (args.includes("--no-browser") && fixture.failure === "quota" && fixture.failureTarget === "browse") {
     console.error("HTTP 403: API rate limit exceeded");
     process.exit(1);
   }
@@ -295,7 +305,7 @@ describe("PR metadata through REST", () => {
     });
 
     it.each([false, true])(
-      "resolves authoritative repository identity with exhausted core quota (both budgets=%s)",
+      "resolves authoritative repository identity without a quota-blind HEAD (both budgets=%s)",
       (graphqlQuota) => {
         const result = readPrMetadata(
           {
@@ -314,6 +324,7 @@ describe("PR metadata through REST", () => {
           });
         }
         expect(result.calls.filter((call) => call.includes("graphql"))).toHaveLength(1);
+        expect(result.calls).toContainEqual(["browse"]);
         expect(
           result.calls.filter((call) => call.includes("repos/base-owner/base-repo")),
         ).toHaveLength(1);
@@ -495,17 +506,31 @@ describe("PR metadata through REST", () => {
           {
             coreQuotaAt: ["repos/base-owner/base-repo/pulls/42"],
             graphqlResponses: [
-              { headRefOid: head },
+              {
+                data: {
+                  repository: {
+                    pullRequest: {
+                      headRefOid: head,
+                      author: null,
+                      headRepository: null,
+                      headRepositoryOwner: null,
+                    },
+                  },
+                },
+              },
               page("src/a.ts", !truncated),
               page("src/b.ts", false),
             ],
           },
-          "pr_gh pr view 42 --json headRefOid,files",
+          "pr_gh pr view 42 --json headRefOid,author,headRepository,headRepositoryOwner,files",
         );
         expect(result.status, result.stderr).toBe(truncated ? 65 : 0);
         if (!truncated) {
           expect(JSON.parse(result.stdout)).toEqual({
             headRefOid: head,
+            author: null,
+            headRepository: null,
+            headRepositoryOwner: null,
             files: ["src/a.ts", "src/b.ts"].map((path) => ({
               path,
               additions: 1,
@@ -516,6 +541,12 @@ describe("PR metadata through REST", () => {
         } else {
           expect(result.stdout).toBe("");
         }
+        expect(result.calls.some((args) => args[0] === "pr")).toBe(false);
+        expect(
+          result.calls
+            .filter((args) => args.includes("graphql"))
+            .every((args) => args.includes("Cache-Control: max-age=0")),
+        ).toBe(true);
       },
     );
   });
@@ -753,10 +784,7 @@ describe("PR metadata through REST", () => {
     );
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout).url).toBe("https://github.com/base-owner/base-repo/pull/42");
-    expect(result.calls.filter((args) => args[0] === "browse")).toEqual([
-      ["browse", "--no-browser"],
-      ["browse", "--no-browser"],
-    ]);
+    expect(result.calls.filter((args) => args[0] === "browse")).toEqual([["browse"], ["browse"]]);
     expect(result.calls).toContainEqual([
       "pr",
       "edit",
@@ -784,12 +812,7 @@ describe("PR metadata through REST", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({ number: 42, headRefOid: head });
       expect(result.calls.filter((args) => args[0] === "browse")).toEqual(
-        explicit
-          ? []
-          : [
-              ["browse", "--no-browser"],
-              ["browse", "--no-browser"],
-            ],
+        explicit ? [] : [["browse"], ["browse"]],
       );
     },
   );
@@ -834,9 +857,7 @@ describe("PR metadata through REST", () => {
         repoURL,
       ]);
       expect(result.calls).toContainEqual(
-        selection === "--repo"
-          ? ["browse", "--no-browser", "--repo", "base-owner/base-repo"]
-          : ["browse", "--no-browser"],
+        selection === "--repo" ? ["browse", "--repo", "base-owner/base-repo"] : ["browse"],
       );
     },
   );
@@ -906,9 +927,7 @@ describe("PR metadata through REST", () => {
     expect(result.attempts).toBe(2);
     expect(
       result.calls.every(
-        (args) =>
-          (args[0] === "api" && !args.includes("graphql")) ||
-          (args[0] === "browse" && args[1] === "--no-browser"),
+        (args) => (args[0] === "api" && !args.includes("graphql")) || args[0] === "browse",
       ),
     ).toBe(true);
     const metadata = JSON.parse(result.stdout);
@@ -1037,14 +1056,50 @@ describe("PR metadata through REST", () => {
     );
   });
 
-  it("revalidates both observations and rejects files collected while the PR head moves", () => {
-    const result = readPrMetadata({
-      cacheUntilRevalidated: true,
-      finalPatch: { head: { sha: "b".repeat(40), ref: "topic" } },
-    });
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("PR head changed while collecting file metadata");
-  });
+  it.each(["REST", "GraphQL"])(
+    "revalidates both %s observations and rejects files collected while the PR head moves",
+    (transport) => {
+      const metadata = {
+        number: 42,
+        title: "Fixture",
+        state: "OPEN",
+        isDraft: false,
+        author: null,
+        baseRefName: "main",
+        baseRefOid: base,
+        headRefName: "topic",
+        headRefOid: head,
+        headRepository: null,
+        headRepositoryOwner: null,
+        url: "https://github.com/base-owner/base-repo/pull/42",
+        body: "",
+        changedFiles: 0,
+        additions: 0,
+        deletions: 0,
+      };
+      const response = (pullRequest: unknown) => ({ data: { repository: { pullRequest } } });
+      const emptyPage = { totalCount: 0, nodes: [], pageInfo: { hasNextPage: false } };
+      const result = readPrMetadata({
+        cacheUntilRevalidated: true,
+        finalPatch: { head: { sha: "b".repeat(40), ref: "topic" } },
+        ...(transport === "GraphQL"
+          ? {
+              coreQuotaAt: ["repos/base-owner/base-repo/pulls/42"],
+              graphqlResponses: [
+                response(metadata),
+                response({ labels: emptyPage }),
+                response({ assignees: emptyPage }),
+                response({ files: emptyPage }),
+                response({ ...metadata, headRefOid: "b".repeat(40) }),
+              ],
+            }
+          : {}),
+      });
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("PR head changed while collecting file metadata");
+    },
+  );
 
   it("rejects an invalid changed-file count", () => {
     const result = readPrMetadata({ changedFiles: null });

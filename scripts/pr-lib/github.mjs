@@ -191,42 +191,24 @@ function repositoryLocator(explicit, route, readOptions = () => ({})) {
   if (qualified) {
     return { host: qualified[1], name: qualified[2] };
   }
-  // gh browse shares PR commands' SmartBaseRepoFunc and preserves the configured
-  // default and host. --no-browser only verifies it with REST HEAD and prints its URL.
-  let value;
-  try {
-    value = execPrGh(
-      ["browse", "--no-browser", ...(explicit ? ["--repo", explicit] : [])],
-      { ...readOptions(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-      route,
-    ).trim();
-  } catch (error) {
-    if (!error.coreQuotaExhausted) {
-      throw error;
-    }
-    value = explicit || process.env.GH_REPO;
-    if (!value) {
-      try {
-        value = execPrGh(
-          ["repo", "set-default", "--view"],
-          { ...readOptions(), encoding: "utf8" },
-          route,
-        ).trim();
-        if (!value) {
-          throw invalidMetadata("No default repository is configured.");
-        }
-      } catch {
-        value = execFileSync(
-          process.env.OPENCLAW_PR_GIT || process.env.GIT_EXEC || "git",
-          ["remote", "get-url", "origin"],
-          { ...readOptions(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-        ).trim();
-      }
-    }
-    if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)) {
-      value = `https://${process.env.GH_HOST || "github.com"}/${value}`;
-    }
-  }
+  // Noninteractive browse keeps gh's default/host resolution local. --no-browser
+  // adds a REST HEAD whose generic 403 hides quota evidence. The child-only
+  // launcher prints the address; the subsequent API read validates authority.
+  const options = readOptions();
+  const value = execPrGh(
+    ["browse", ...(explicit ? ["--repo", explicit] : [])],
+    {
+      ...options,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...(options.env ?? process.env),
+        // gh parses its launcher with shlex, then appends the URL as one argument.
+        GH_BROWSER: `'${process.execPath.replaceAll("'", "'\\''")}' -p 'process.argv[1]'`,
+      },
+    },
+    route,
+  ).trim();
   const match =
     /^(?:(?:https?:\/\/|ssh:\/\/git@|git@)?([^/:]+(?::[0-9]+)?)[:/])?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(
       value,
@@ -274,7 +256,15 @@ function restPreferred(read, fallback) {
 
 function graphql(repo, query, variables, route, options = {}) {
   const result = execPrGhJson(
-    ["api", "--hostname", repo.host, "graphql", "--input", "-"],
+    [
+      "api",
+      "--hostname",
+      repo.host,
+      "graphql",
+      "--input",
+      "-",
+      ...(route === "plain" || options.revalidate ? ["-H", "Cache-Control: max-age=0"] : []),
+    ],
     {
       ...options.readOptions?.(),
       input: JSON.stringify({ query, variables }),
@@ -639,43 +629,76 @@ function readPr(repo, pr, fields, route, options = {}) {
   return restPreferred(
     () => readPrRest(repo, pr, fields, route, options),
     () => {
-      const scalarFields = fields.filter((field) => field !== "files");
+      const connections = {
+        files: "path additions deletions changeType",
+        labels: "id name description color",
+        assignees: "id login name __typename",
+      };
+      const selections = {
+        number: "number",
+        title: "title",
+        state: "state",
+        isDraft: "isDraft",
+        author: "author{login __typename ... on User{id name} ... on Bot{id}}",
+        baseRefName: "baseRefName",
+        baseRefOid: "baseRefOid",
+        headRefName: "headRefName",
+        headRefOid: "headRefOid",
+        headRepository: "headRepository{id name nameWithOwner url}",
+        headRepositoryOwner: "headRepositoryOwner{id login __typename ... on User{name}}",
+        isCrossRepository: "isCrossRepository",
+        url: "url",
+        body: "body",
+        changedFiles: "changedFiles",
+        additions: "additions",
+        deletions: "deletions",
+        mergeable: "mergeable",
+        mergeStateStatus: "mergeStateStatus",
+      };
+      const scalarFields = fields.filter((field) => !Object.hasOwn(connections, field));
+      const selection = Object.values(selectFields(selections, scalarFields, "PR")).join(" ");
+      const freshOptions = { ...options, revalidate: true };
+      const variables = { ...repositoryVariables(repo), number: Number(pr) };
+      // A top-level pr view can be projected back to REST by a relay. An explicit
+      // GraphQL request both selects the independent quota and carries freshness.
       const result = scalarFields.length
-        ? execPrGhJson(
-            [
-              "pr",
-              "view",
-              pr,
-              "--repo",
-              `https://${repo.host}/${repo.name}`,
-              "--json",
-              scalarFields.join(","),
-            ],
-            options.readOptions?.(),
+        ? graphql(
+            repo,
+            `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){${selection}}}}`,
+            variables,
             route,
-          )
+            freshOptions,
+          ).repository?.pullRequest
         : {};
       if (!result || typeof result !== "object" || Array.isArray(result)) {
         throw invalidMetadata("GitHub did not return one PR JSON object.");
       }
-      if (fields.includes("files")) {
-        const files = connectionNodes(
+      const actor = (record) =>
+        record == null ? record : user({ ...record, node_id: record.id, type: record.__typename });
+      for (const field of ["author", "headRepositoryOwner"]) {
+        if (fields.includes(field)) {
+          result[field] = actor(result[field]);
+        }
+      }
+      for (const field of fields.filter((candidate) => Object.hasOwn(connections, candidate))) {
+        const nodes = connectionNodes(
           (cursor) =>
             graphql(
               repo,
-              "query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){files(first:100,after:$cursor){totalCount pageInfo{hasNextPage endCursor} nodes{path additions deletions changeType}}}}}",
-              { ...repositoryVariables(repo), number: Number(pr), cursor },
+              `query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){${field}(first:100,after:$cursor){totalCount pageInfo{hasNextPage endCursor} nodes{${connections[field]}}}}}}`,
+              { ...variables, cursor },
               route,
-              options,
-            ).repository?.pullRequest?.files,
+              freshOptions,
+            ).repository?.pullRequest?.[field],
         );
         if (
-          files.some((file) => typeof file?.path !== "string") ||
-          new Set(files.map((file) => file.path)).size !== files.length
+          field === "files" &&
+          (nodes.some((file) => typeof file?.path !== "string") ||
+            new Set(nodes.map((file) => file.path)).size !== nodes.length)
         ) {
           throw invalidMetadata("GitHub returned invalid PR files.");
         }
-        result.files = files;
+        result[field] = field === "assignees" ? nodes.map(actor) : nodes;
       }
       return selectFields(result, fields, "PR");
     },

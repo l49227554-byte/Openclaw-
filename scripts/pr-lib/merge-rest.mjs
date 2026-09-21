@@ -589,6 +589,8 @@ function main([mode, repository, prValue, head, bodySnapshot, expectedObservatio
     result = {
       data: {
         repository: {
+          squashMergeCommitTitle: snapshot.authority.squash_merge_commit_title,
+          squashMergeCommitMessage: snapshot.authority.squash_merge_commit_message,
           pullRequest: {
             headRefOid: current.head.sha,
             author: { login: current.user.login, __typename: current.user.type },
@@ -635,11 +637,9 @@ function main([mode, repository, prValue, head, bodySnapshot, expectedObservatio
       ) === JSON.stringify(canonical(expectedFacts)),
       "PR or policy changed before merge dispatch",
     );
-    const suffix = ` (#${pr})`;
     const payload = {
       sha: head,
       merge_method: "squash",
-      commit_title: current.title.endsWith(suffix) ? current.title : `${current.title}${suffix}`,
       commit_message: body,
     };
     result = execPrGhJson(

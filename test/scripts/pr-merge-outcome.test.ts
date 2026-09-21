@@ -178,6 +178,8 @@ function fixture(
       full_name: "fixture/repo",
       html_url: "https://github.com/fixture/repo",
       permissions: { admin: true },
+      squash_merge_commit_title: "PR_TITLE",
+      squash_merge_commit_message: "PR_BODY",
     } as Record<string, unknown>,
     repoAuthorityUnavailable: false,
     repoGraphql: {
@@ -907,6 +909,7 @@ describePosix("native merge with exhausted GraphQL quota", () => {
     expect(f.record()).toMatchObject({ phase: "complete", transport: "rest", head: f.head });
     expect(f.state().mutations).toBe(1);
     expect(f.state().restMergePayload).toMatchObject({ sha: f.head, merge_method: "squash" });
+    expect(f.state().restMergePayload).not.toHaveProperty("commit_title");
     expect(f.state().calls.filter((call) => call.includes("PUT"))).toHaveLength(1);
     expect(
       f
@@ -2916,8 +2919,11 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
           : `mergeStateStatus: observed="${fault === "final UNKNOWN status" ? "UNKNOWN" : "BEHIND"}"; expected="CLEAN"`,
       );
       for (const [label, expected] of [
-        ["observation", { main: f.base, pr: observedPr }],
-        ["reread", { main: step.main ?? f.base, pr: { ...observedPr, ...step.pr } }],
+        ["observation", { main: f.base, pr: observedPr, transport: "graphql" }],
+        [
+          "reread",
+          { main: step.main ?? f.base, pr: { ...observedPr, ...step.pr }, transport: "graphql" },
+        ],
       ] as const) {
         const prefix = `Merge stability ${label}: `;
         const snapshots = run.stderr
@@ -2941,7 +2947,9 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
         .split("\n")
         .filter((line) => line.startsWith(prefix))
         .map((line) => JSON.parse(line.slice(prefix.length)));
-      expect(rejected, run.output).toEqual([{ main: f.base, pr: { ...observedPr, ...step.pr } }]);
+      expect(rejected, run.output).toEqual([
+        { main: f.base, pr: { ...observedPr, ...step.pr }, transport: "graphql" },
+      ]);
     }
   });
   it.each(["OPEN", "MERGED"])(

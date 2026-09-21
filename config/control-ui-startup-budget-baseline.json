@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 365261,
-  "reason": "Approved #153178 rebase measurement with frozen Pako 3.0.2: 365172 B rounds up to 365261 B (356.7 KiB), above the previous 364954 B baseline. The existing 512 B growth and 64 B build-variance allowances remain unchanged, giving an explicit 365837 B enforcement limit.",
-  "updatedAt": "2026-09-20"
+  "startupJsGzipBytes": 367728,
+  "reason": "Portable theme branding, critters, and avatar hats measured 368304 B startup JS, 2467 B (0.6744%) above the original 365837 B enforcement limit. The approved sub-1% adjustment sets baseline and cap to 367728 B, preserving the 512 B growth and 64 B build-variance allowances. The CSS ceiling remains at its original 51200 B; measured CSS is 51180 B.",
+  "updatedAt": "2026-09-21"
 }

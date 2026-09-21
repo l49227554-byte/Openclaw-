@@ -253,7 +253,7 @@ it.each(["native update", "store readback"] as const)(
   },
 );
 
-it.each(["native update", "store readback", "atomic publication"] as const)(
+it.each(["native update", "scoped store readback", "atomic publication"] as const)(
   "preserves established equal-time membership ordering during %s",
   async (writer) => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
@@ -295,13 +295,22 @@ it.each(["native update", "store readback", "atomic publication"] as const)(
       expect(
         updateTask(first.taskId, { progressSummary: replacement.progressSummary }),
       ).not.toBeNull();
+    } else if (writer === "scoped store readback") {
+      const context = captureOpenClawStateWorkerContext();
+      const store = getTaskRegistryStore();
+      const scope = { taskId: first.taskId };
+      await runTaskRegistryWorkerMutation(
+        {
+          admission: context.admission,
+          scope,
+          publicationRecords: () => new Map([[first.taskId, replacement]]),
+        },
+        async () => store.upsertTaskWithDeliveryState({ task: replacement }),
+        () => store.loadMutationSnapshotAsync(context, scope),
+      );
     } else {
       upsertTaskWithDeliveryStateToSqlite({ task: replacement });
-      if (writer === "store readback") {
-        await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
-      } else {
-        publishTaskRecordAfterAtomicStore(replacement);
-      }
+      publishTaskRecordAfterAtomicStore(replacement);
     }
 
     const expectedAfter =

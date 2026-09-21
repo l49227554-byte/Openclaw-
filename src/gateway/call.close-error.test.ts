@@ -12,12 +12,11 @@ import {
   formatGatewayTransportErrorJson,
 } from "./call.js";
 import type { GatewayClientOptions } from "./client.js";
-import { waitForFast } from "./client.test-support.js";
 
 const fixture = vi.hoisted(() => ({
   clientOptions: null as GatewayClientOptions | null,
   closeOnStart: false,
-  requested: [] as string[],
+  dispatchSignal: null as (() => void) | null,
   identity: {
     deviceId: "close-error-test-device",
     publicKeyPem: "test-public-key",
@@ -39,8 +38,8 @@ vi.mock("./client.js", () => ({
       fixture.clientOptions = options;
     }
     // A dispatched request never settles here; the close is what rejects the call.
-    request = async (method: string) => {
-      fixture.requested.push(method);
+    request = async () => {
+      fixture.dispatchSignal?.();
       return await createDeferred<unknown>().promise;
     };
     start() {
@@ -88,7 +87,7 @@ beforeEach(() => {
   }
   fixture.clientOptions = null;
   fixture.closeOnStart = false;
-  fixture.requested = [];
+  fixture.dispatchSignal = null;
 });
 
 afterEach(() => {
@@ -107,12 +106,14 @@ describe("gateway close after dispatch", () => {
     { dispatched: true, label: "after dispatch" },
   ])("scopes 1006 outcome guidance to dispatch ($label)", async ({ dispatched }) => {
     fixture.closeOnStart = !dispatched;
+    const dispatchSignal = createDeferred();
+    fixture.dispatchSignal = () => dispatchSignal.resolve();
 
     const rejection = callGateway({ ...localConnection, method: "health" }).catch(
       (caught: unknown) => caught,
     );
     if (dispatched) {
-      await waitForFast(() => expect(fixture.requested).toEqual(["health"]));
+      await dispatchSignal.promise;
       fixture.clientOptions?.onClose?.(1006, "");
     }
     const error = await rejection;

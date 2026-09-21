@@ -12,6 +12,7 @@ import type {
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import type { readInterruptedUpdateCandidate } from "../infra/update-run-interruption-store.js";
 import type {
   readUpdateRunRecord,
   readUpdateRuns,
@@ -51,6 +52,7 @@ export type OpenClawStateReadCommand =
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "updateRuns.get"; runId: string }
   | { type: "updateRuns.list"; input: UpdateRunListInput }
+  | { type: "updateRuns.interruptedCandidate" }
   | { type: "fleet.list" }
   | { type: "fleet.get"; tenantId: string }
   | { type: "nodeHost.config" }
@@ -112,6 +114,12 @@ export type OpenClawStateReadReply = (
       type: "updateRuns.list";
       sourceAdmitted: true;
       runs: ReturnType<typeof readUpdateRuns>;
+    }
+  | {
+      ok: true;
+      type: "updateRuns.interruptedCandidate";
+      sourceAdmitted: true;
+      run: ReturnType<typeof readInterruptedUpdateCandidate>;
     }
   | { ok: true; type: "fleet.list"; sourceAdmitted: true; cells: FleetCellRecord[] }
   | { ok: true; type: "fleet.get"; sourceAdmitted: true; cell: FleetCellRecord | undefined }

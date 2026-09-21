@@ -49,7 +49,7 @@ import {
   restoreProvisionedFiles,
   SNAPSHOT_CHUNK_BYTES,
 } from "./provisioned-files.js";
-import { readRegistryWorktrees } from "./registry-read.js";
+import { readLiveRegistryWorktreeIds, readRegistryWorktrees } from "./registry-read.js";
 import {
   clearRegistryWorktreeProvisionedChunks,
   findLiveRegistryWorktreeByOwner,
@@ -1516,7 +1516,9 @@ export class ManagedWorktreeService {
     if (limits.maxCount === undefined && limits.maxTotalSizeBytes === undefined) {
       return [];
     }
-    const live = listRegistryWorktrees(this.env).filter((record) => record.removedAt === undefined);
+    const live = (await readRegistryWorktrees(this.env)).filter(
+      (record) => record.removedAt === undefined,
+    );
     const sizes = new Map<string, number>();
     let totalBytes = 0;
     if (limits.maxTotalSizeBytes !== undefined) {
@@ -1547,12 +1549,8 @@ export class ManagedWorktreeService {
     // totals are recomputed from the registry per iteration. Sizes reuse the
     // up-front measurements; worktrees created after them are too fresh to be
     // eviction candidates in this pass.
-    const refreshTotals = () => {
-      const liveIds = new Set(
-        listRegistryWorktrees(this.env)
-          .filter((record) => record.removedAt === undefined)
-          .map((record) => record.id),
-      );
+    const refreshTotals = async () => {
+      const liveIds = new Set(await readLiveRegistryWorktreeIds(this.env));
       liveCount = liveIds.size;
       if (limits.maxTotalSizeBytes !== undefined) {
         totalBytes = 0;
@@ -1569,7 +1567,7 @@ export class ManagedWorktreeService {
       .filter((record) => record.ownerKind === "workboard" || record.ownerKind === "session")
       .toSorted((a, b) => a.lastActiveAt - b.lastActiveAt);
     for (const record of candidates) {
-      const liveIds = refreshTotals();
+      const liveIds = await refreshTotals();
       if (!overLimit()) {
         break;
       }
@@ -1591,7 +1589,7 @@ export class ManagedWorktreeService {
       }
       removed.push(record.id);
     }
-    refreshTotals();
+    await refreshTotals();
     if (overLimit()) {
       log.warn(
         `worktree cleanup limits still exceeded after evicting ${removed.length}; remaining worktrees are protected or manual`,

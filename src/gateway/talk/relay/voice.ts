@@ -1,9 +1,12 @@
 import { formatErrorMessage } from "../../../infra/errors.js";
+import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
+import { readClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation.js";
 import {
   appendRelayVoiceTranscript,
   closeRelayVoiceSessionRecord,
   createOrResumeClientVoiceSession,
 } from "../../../talk/client-voice-session.js";
+import type { TalkEvent } from "../../../talk/talk-events.js";
 import {
   normalizeVoiceTranscriptText,
   VOICE_TRANSCRIPT_QUEUE_POLICY,
@@ -11,6 +14,9 @@ import {
 import { drainingRelaySessions, type RelaySession } from "./state.js";
 
 const RELAY_TRANSCRIPT_RETRY_DELAYS_MS = [0, 500, 2_000] as const;
+// A held final is written once its input item goes this long without a revision. The
+// longest gap measured between live xAI re-finalizations of one item was about 1.3 s.
+const RELAY_PENDING_USER_FINAL_SETTLE_MS = 2_000;
 
 function logRelayVoiceFailure(session: RelaySession, message: string, error: unknown): void {
   session.context.logGateway?.warn(`${message}: ${formatErrorMessage(error)}`);
@@ -37,19 +43,137 @@ export function ensureRelayVoiceSession(session: RelaySession): boolean {
   }
 }
 
+/** Write the held user final once its provider utterance can no longer be revised. */
+export function commitPendingRelayVoiceTranscript(session: RelaySession | undefined): boolean {
+  const pending = session?.voicePendingUserFinal;
+  if (!session || !pending) {
+    return true;
+  }
+  clearTimeout(pending.settleTimer);
+  session.voicePendingUserFinal = undefined;
+  return appendRelayVoiceTranscriptEntry(session, "user", pending.text, pending.observed);
+}
+
+// Turn and response terminals settle a hold early, but none is guaranteed: a late partial
+// can reopen a turn that no response will end. The deadline is the settlement guarantee.
+function holdRelayUserFinal(
+  session: RelaySession,
+  utteranceId: string,
+  text: string,
+  observed: NonNullable<RelaySession["voicePendingUserFinal"]>["observed"],
+): void {
+  const settleTimer = setTimeout(() => {
+    if (session.voicePendingUserFinal?.settleTimer === settleTimer) {
+      commitPendingRelayVoiceTranscript(session);
+    }
+  }, RELAY_PENDING_USER_FINAL_SETTLE_MS);
+  settleTimer.unref?.();
+  session.voicePendingUserFinal = { utteranceId, text, observed, settleTimer };
+}
+
+/**
+ * Every turn terminal settles held speech, including a client cancellation whose provider
+ * terminal output ownership consumes before the relay's onResponseDone can run.
+ */
+export function settleRelayVoiceOnTurnTerminal(
+  getRelay: () => RelaySession | undefined,
+): (event: TalkEvent) => void {
+  return (event) => {
+    if (event.type === "turn.ended" || event.type === "turn.cancelled") {
+      commitPendingRelayVoiceTranscript(getRelay());
+    }
+  };
+}
+
+/**
+ * Anything that gates on finalized user speech must settle the held final first:
+ * readiness blocks on the pending observation before it ever flushes the queue.
+ */
+export function settleRelayVoiceSpeech(
+  session: RelaySession | undefined,
+  gate: (session: RelaySession) => Promise<void>,
+): Promise<void> {
+  commitPendingRelayVoiceTranscript(session);
+  return session ? gate(session) : Promise.resolve();
+}
+
+/** Readiness for one relay session; its flush contract owns the held final. */
+export function createRelayVoiceConfirmationReadiness(
+  agentId: string,
+  voiceSessionId: string,
+  getActiveRelay: () => RelaySession | undefined,
+): RelaySession["confirmationReadiness"] {
+  return createClientVoiceConfirmationReadiness({
+    agentId,
+    voiceSessionId,
+    flushTranscript: () =>
+      settleRelayVoiceSpeech(getActiveRelay(), (relay) => relay.voiceTranscriptQueue.flush()),
+  });
+}
+
 export function enqueueRelayVoiceTranscript(
   session: RelaySession,
   role: "user" | "assistant",
   text: string,
+  utteranceId?: string,
 ): boolean {
   const observed =
     role === "user" && !session.closing
       ? session.confirmationReadiness.observeUserTranscript(text, true)
       : undefined;
   const normalizedText = normalizeVoiceTranscriptText(text);
+  if (role !== "user") {
+    // Assistant output never joins a held user utterance, but it must not overtake one.
+    if (!commitPendingRelayVoiceTranscript(session)) {
+      return false;
+    }
+    return normalizedText
+      ? appendRelayVoiceTranscriptEntry(session, role, normalizedText, observed)
+      : true;
+  }
   if (!normalizedText) {
     return true;
   }
+  // Two independent questions decide whether this final may wait for a revision.
+  //
+  // What may coalesce: only the provider's own input-item id proves two finals are
+  // revisions of one utterance. Text similarity cannot -- "Hi." is a prefix of "History
+  // please.", and a repeated sentence is indistinguishable from a re-transcription.
+  //
+  // Whether waiting is safe: a held final settles at the next turn terminal (response end,
+  // cancellation, continuity reset, close) or at its revision deadline, whichever is first.
+  // With no live turn there is nothing to revise within, so it persists immediately.
+  //
+  // A live spoken-confirmation challenge is already blocked on this final's durable row,
+  // so it also keeps the immediate append; only ordinary speech is held and revised.
+  const revisable =
+    utteranceId !== undefined &&
+    session.harness?.talk?.activeTurnId !== undefined &&
+    !readClientVoiceConfirmationReadiness(session.sessionTarget.agentId, session.id);
+  const pending = session.voicePendingUserFinal;
+  if (revisable && pending?.utteranceId === utteranceId) {
+    // The superseded observation owns no row; release it so readiness never waits on it.
+    clearTimeout(pending.settleTimer);
+    pending.observed?.persisted();
+    holdRelayUserFinal(session, utteranceId, normalizedText, observed);
+    return true;
+  }
+  if (!commitPendingRelayVoiceTranscript(session)) {
+    return false;
+  }
+  if (!revisable) {
+    return appendRelayVoiceTranscriptEntry(session, role, normalizedText, observed);
+  }
+  holdRelayUserFinal(session, utteranceId, normalizedText, observed);
+  return true;
+}
+
+function appendRelayVoiceTranscriptEntry(
+  session: RelaySession,
+  role: "user" | "assistant",
+  normalizedText: string,
+  observed: ReturnType<RelaySession["confirmationReadiness"]["observeUserTranscript"]>,
+): boolean {
   if (!ensureRelayVoiceSession(session)) {
     session.confirmationReadiness.fail(new Error("Realtime voice session could not be recorded"));
     return true;
@@ -108,6 +232,7 @@ export function closeRelayVoiceSession(session: RelaySession): Promise<void> {
   if (session.voiceSessionClose) {
     return session.voiceSessionClose;
   }
+  commitPendingRelayVoiceTranscript(session);
   session.voiceTranscriptQueue.seal();
   if (!ensureRelayVoiceSession(session)) {
     session.voiceSessionClose = Promise.resolve();

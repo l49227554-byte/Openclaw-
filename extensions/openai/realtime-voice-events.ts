@@ -150,7 +150,7 @@ export abstract class OpenAIRealtimeEvents extends OpenAIRealtimeProtocol {
 
       case "conversation.item.input_audio_transcription.completed":
         if (event.transcript) {
-          this.config.onTranscript?.("user", event.transcript, true);
+          this.config.onTranscript?.("user", event.transcript, true, event.item_id);
         }
         return;
 

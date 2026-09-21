@@ -82,7 +82,12 @@ export type RealtimeVoiceBridgeSessionParams = {
   triggerGreetingOnReady?: boolean;
   tools?: RealtimeVoiceTool[];
   runAgentConsult?: RealtimeVoiceAgentConsultRunner;
-  onTranscript?: (role: RealtimeVoiceRole, text: string, isFinal: boolean) => void;
+  onTranscript?: (
+    role: RealtimeVoiceRole,
+    text: string,
+    isFinal: boolean,
+    utteranceId?: string,
+  ) => void;
   handleDelegationInput?: RealtimeVoiceBridgeCallbacks["handleDelegationInput"];
   onEvent?: (event: RealtimeVoiceBridgeEvent) => void;
   onResponseDone?: (outcome: RealtimeVoiceResponseOutcome) => void;
@@ -316,9 +321,9 @@ export function createRealtimeVoiceBridgeSession(
         }
       }
     },
-    onTranscript: (role, text, isFinal) => {
+    onTranscript: (role, text, isFinal, utteranceId) => {
       if (isAdmitting() || (phase === "closing" && isFinal)) {
-        params.onTranscript?.(role, text, isFinal);
+        params.onTranscript?.(role, text, isFinal, utteranceId);
       }
     },
     ...(handleDelegationInput

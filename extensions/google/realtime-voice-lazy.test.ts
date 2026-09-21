@@ -529,7 +529,7 @@ describe("Google lazy realtime voice", () => {
         firstRequest?.onTranscript?.("assistant", "partial tail", false);
         firstRequest?.onTranscript?.("assistant", "final tail", true);
         expect(onTranscript.mock.calls).toEqual(
-          earlyReconnect ? [] : [["assistant", "final tail", true]],
+          earlyReconnect ? [] : [["assistant", "final tail", true, undefined]],
         );
         let settled = false;
         const completion = Promise.resolve(closing).then(() => {

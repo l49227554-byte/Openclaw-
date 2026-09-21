@@ -53,7 +53,12 @@ import {
   resolveRelayProviderToolCallId,
   type RelaySession,
 } from "./state.js";
-import { closeRelayVoiceSession, ensureRelayVoiceSession } from "./voice.js";
+import {
+  closeRelayVoiceSession,
+  commitPendingRelayVoiceTranscript,
+  ensureRelayVoiceSession,
+  settleRelayVoiceSpeech,
+} from "./voice.js";
 
 export function adoptTalkRealtimeRelaySession(
   session: RelaySession,
@@ -482,7 +487,9 @@ export async function flushTalkRealtimeRelayVoiceWrites(params: {
   relaySessionId: string;
   connId: string;
 }): Promise<void> {
-  await getRelaySession(params.relaySessionId, params.connId).voiceTranscriptQueue.flush();
+  await settleRelayVoiceSpeech(getRelaySession(params.relaySessionId, params.connId), (relay) =>
+    relay.voiceTranscriptQueue.flush(),
+  );
 }
 
 /** Applies realtime voice-control text to the active agent-consult chat run. */
@@ -678,6 +685,8 @@ export function resetTalkRealtimeRelayContinuity(
   session: RelaySession,
   reason = "session.continuity.reset",
 ): TalkEvent | undefined {
+  // A continuity reset abandons the provider's input items; write what was accepted.
+  commitPendingRelayVoiceTranscript(session);
   session.toolResultEpoch += 1;
   const retiredCallIds = new Set<string>([
     ...session.activeAgentToolCalls.keys(),

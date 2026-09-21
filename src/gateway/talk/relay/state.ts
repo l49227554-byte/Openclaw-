@@ -281,6 +281,15 @@ export type RelaySession = {
   voiceConfig?: OpenClawConfig;
   voiceSessionCreated: boolean;
   voiceTranscriptSeq: number;
+  // The latest final for one provider input item, held while that item can still be revised.
+  voicePendingUserFinal?: {
+    utteranceId: string;
+    text: string;
+    observed: ReturnType<
+      ReturnType<typeof createClientVoiceConfirmationReadiness>["observeUserTranscript"]
+    >;
+    settleTimer: ReturnType<typeof setTimeout>;
+  };
   voiceTranscriptQueue: BoundedSerialQueue;
   confirmationReadiness: ReturnType<typeof createClientVoiceConfirmationReadiness>;
   voiceSessionClose?: Promise<void>;

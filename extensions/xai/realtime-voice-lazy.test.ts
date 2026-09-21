@@ -516,7 +516,7 @@ describe("xAI lazy realtime voice", () => {
     expect(onAudio).toHaveBeenCalledWith(currentAudio, { itemId: "current-item" });
     expect(onClearAudio).toHaveBeenCalledWith("barge-in");
     expect(onMark).toHaveBeenCalledWith("current-mark");
-    expect(onTranscript).toHaveBeenCalledWith("assistant", "current", true);
+    expect(onTranscript).toHaveBeenCalledWith("assistant", "current", true, undefined);
     expect(onEvent).toHaveBeenCalledWith(currentEvent);
     expect(onToolCall).toHaveBeenCalledWith(currentToolCall);
     expect(onReady).toHaveBeenCalledOnce();
@@ -730,7 +730,7 @@ describe("xAI lazy realtime voice", () => {
         firstRequest?.onTranscript?.("assistant", "partial tail", false);
         firstRequest?.onTranscript?.("assistant", "final tail", true);
         expect(onTranscript.mock.calls).toEqual(
-          earlyReconnect ? [] : [["assistant", "final tail", true]],
+          earlyReconnect ? [] : [["assistant", "final tail", true, undefined]],
         );
         let settled = false;
         const completion = Promise.resolve(closing).then(() => {

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../../../talk/agent-consult-tool.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../../../talk/agent-run-control-shared.js";
-import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
 import {
   REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
   type RealtimeVoiceAudioClearReason,
@@ -56,7 +55,12 @@ import {
   MAX_RELAY_TOOL_CALL_IDENTITY_BYTES,
   RelayToolCallLedger,
 } from "./tool-call-ledger.js";
-import { enqueueRelayVoiceTranscript } from "./voice.js";
+import {
+  createRelayVoiceConfirmationReadiness,
+  enqueueRelayVoiceTranscript,
+  settleRelayVoiceOnTurnTerminal,
+  settleRelayVoiceSpeech,
+} from "./voice.js";
 
 // The relay contract is 20 ms of 24 kHz mono PCM16 per browser event.
 const RELAY_OUTPUT_AUDIO_FRAME_BYTES = 960;
@@ -77,6 +81,7 @@ export function createTalkRealtimeRelaySession(
   if (expiresAtMs === undefined) {
     throw new Error("Realtime relay session expiry is outside the supported Date range");
   }
+  const relayRef: { current?: RelaySession } = {};
   const harness = createRealtimeVoiceSessionHarness({
     talk: {
       sessionId: relaySessionId,
@@ -97,6 +102,7 @@ export function createTalkRealtimeRelaySession(
     },
     transcriptLookbackMs: RELAY_TRANSCRIPT_ECHO_LOOKBACK_MS,
     captureBridgeEvents: false,
+    onTalkEvent: settleRelayVoiceOnTurnTerminal(() => relayRef.current),
   });
   const emit = (event: TalkRealtimeRelayEventPayload, talkEvent?: TalkEventInput) =>
     broadcastToOwner(params.context, params.connId, {
@@ -112,7 +118,6 @@ export function createTalkRealtimeRelaySession(
   const constructionTerminal: {
     current?: { kind: "error"; error: Error } | { kind: "close"; reason: RealtimeVoiceCloseReason };
   } = {};
-  const relayRef: { current?: RelaySession } = {};
   const getActiveRelay = (): RelaySession | undefined => {
     const relay = relayRef.current;
     return relay && relaySessions.get(relay.id) === relay ? relay : undefined;
@@ -142,13 +147,11 @@ export function createTalkRealtimeRelaySession(
     },
   );
   const { agentId: relayAgentId, canonicalKey } = params.sessionTarget;
-  const confirmationReadiness = createClientVoiceConfirmationReadiness({
-    agentId: relayAgentId,
-    voiceSessionId: relaySessionId,
-    flushTranscript: async () => {
-      await getActiveRelay()?.voiceTranscriptQueue.flush();
-    },
-  });
+  const confirmationReadiness = createRelayVoiceConfirmationReadiness(
+    relayAgentId,
+    relaySessionId,
+    getActiveRelay,
+  );
   const consultRunner = createTalkClientAgentConsultRunner({
     config: params.cfg ?? params.context.getRuntimeConfig(),
     context: params.context,
@@ -175,7 +178,8 @@ export function createTalkRealtimeRelaySession(
   const runAgentConsult = bindTalkRealtimeRelayAgentConsult(
     consultRunner.runPrompt,
     () => getActiveRelay() !== undefined,
-    (signal) => confirmationReadiness.wait(signal),
+    // Guards a challenge raised between a hold and its commit, which would block wait().
+    (signal) => settleRelayVoiceSpeech(getActiveRelay(), () => confirmationReadiness.wait(signal)),
   );
   const runControl = createTalkRealtimeRunControlOwner({
     controlSource: params.controlSource,
@@ -411,7 +415,7 @@ export function createTalkRealtimeRelaySession(
         });
       }
     },
-    onTranscript: (role, text, final) => {
+    onTranscript: (role, text, final, utteranceId) => {
       const relay = getActiveRelay() ?? (relayRef.current?.closing ? relayRef.current : undefined);
       if (!relay || relay.voiceSessionClose) {
         return;
@@ -422,7 +426,7 @@ export function createTalkRealtimeRelaySession(
       if (!relay.closing && role === "user" && !final) {
         confirmationReadiness.observeUserTranscript(text, false);
       }
-      if (final && !enqueueRelayVoiceTranscript(relay, role, text)) {
+      if (final && !enqueueRelayVoiceTranscript(relay, role, text, utteranceId)) {
         return;
       }
       if (relay.closing) {

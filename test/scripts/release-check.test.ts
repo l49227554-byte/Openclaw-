@@ -20,6 +20,7 @@ import {
   listBundledPluginPackArtifacts,
 } from "../../scripts/lib/bundled-plugin-build-entries.mjs";
 import { collectRuntimeImportClosure } from "../../scripts/lib/runtime-import-closure.mts";
+import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import {
   createPackedTarballInstallArgs,
   prepareReleaseCheckLocalPackageTarballs,
@@ -135,7 +136,7 @@ describe("release-check", () => {
       const moduleUrl = pathToFileURL(join(toolingRoot, "scripts/release-check.ts")).href;
       const runtimeArgs = process.versions.bun
         ? []
-        : ["--import", join(toolingRoot, "scripts/tsx.mjs")];
+        : [...resolveVitestNodeArgs(), "--import", join(toolingRoot, "scripts/tsx.mjs")];
       const fixtureEnv = {
         ...process.env,
         TSX_TSCONFIG_PATH: join(toolingRoot, "tsconfig.json"),
@@ -153,7 +154,8 @@ describe("release-check", () => {
             `createPackedPluginSdkTypescriptSmokeProject({ consumerDir: "consumer", packageSpec: "file:fixture.tgz" });\n` +
             `console.log(JSON.stringify({\n` +
             `  fixture: readFileSync("consumer/src/index.ts", "utf8"),\n` +
-            `  setupConsumer: readFileSync("consumer/src/packed-plugin-sdk-setup-consumer.ts", "utf8")\n` +
+            `  setupConsumer: readFileSync("consumer/src/packed-plugin-sdk-setup-consumer.ts", "utf8"),\n` +
+            `  concurrentSparkplugDisabled: process.execArgv.includes("--no-concurrent-sparkplug")\n` +
             `}));`,
         ],
         {
@@ -173,6 +175,7 @@ describe("release-check", () => {
           join(toolingRoot, "scripts/fixtures/packed-plugin-sdk-setup-consumer.ts"),
           "utf8",
         ),
+        concurrentSparkplugDisabled: !process.versions.bun,
       });
 
       copyFileSync("appcast.xml", join(root, "appcast.xml"));

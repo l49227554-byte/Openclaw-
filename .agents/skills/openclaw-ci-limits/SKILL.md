@@ -31,6 +31,17 @@ availability, Blacksmith control-plane health, and downstream queue drains.
 
 ## Rejected Experiments
 
+- **Windows pnpm store (2026-09-20):** Original receipts from
+  [run 35547255790](https://github.com/openclaw/openclaw/actions/runs/35547255790)
+  measured median complete setup at 45.295s cold versus 52.738s restored
+  (+16.4%), despite reusing all 1,453 packages with zero downloads. The
+  763.8-MiB archive took 23.601–26.980s to restore; producer setup/save added
+  62.527s. All seven native jobs passed, but the qualification reducer failed
+  on a 24-KiB reported-RAM difference. No assertions were relaxed or jobs
+  rerun. The exactly RAM-matched subset was still 11.3% slower; that is
+  descriptive evidence, not a replacement passing qualification. Keep normal
+  Windows setup uncached. Reconsider only with net complete-setup savings,
+  including restore, extraction, frozen reconciliation, and producer work.
 - **Hosted Mac exact dependencies (2026-09-01):** The same-head publisher and
   consumer in [run 33458856298](https://github.com/openclaw/openclaw/actions/runs/33458856298)
   successfully saved and restored a 1.66-GB dependency archive, but setup took

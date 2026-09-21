@@ -48,9 +48,10 @@ import { healthHandlers } from "../../server-methods/health.js";
 import type { GatewayRequestContext } from "../../server-methods/types.js";
 import {
   enforceSharedGatewaySessionGenerationForConfigWrite,
-  getRequiredSharedGatewaySessionGeneration,
+  SharedGatewaySessionGenerationState,
 } from "../../server-shared-auth-generation.js";
 import { resolveSharedGatewaySessionGeneration } from "../ws-shared-generation.js";
+import { createConnectedTestClient } from "./message-handler.post-connect-health.test-support.js";
 import { GatewayNodeLifecycleDispatchTracker } from "./node-lifecycle-dispatch.js";
 
 const {
@@ -281,48 +282,8 @@ async function createTestAgentRuntimeIdentityLease() {
   };
 }
 
-type ConnectedTestClient = {
-  invalidated: boolean;
-  invalidatedReason?: string;
-  connect: {
-    client: {
-      id: string;
-      version: string;
-      platform: string;
-      mode: string;
-    };
-    role: "operator";
-    scopes: string[];
-  };
-  connId: string;
-  usesSharedGatewayAuth: false;
-};
-
 type CloseGatewayConnection = (code?: number, reason?: string) => void;
 type SetCloseCause = (cause: string, meta?: Record<string, unknown>) => void;
-
-function createConnectedTestClient(params: {
-  connId: string;
-  invalidated?: boolean;
-  invalidatedReason?: string;
-}): ConnectedTestClient {
-  return {
-    invalidated: params.invalidated ?? false,
-    ...(params.invalidatedReason ? { invalidatedReason: params.invalidatedReason } : {}),
-    connect: {
-      client: {
-        id: "openclaw-control-ui",
-        version: "dev",
-        platform: "test",
-        mode: "ui",
-      },
-      role: "operator",
-      scopes: [],
-    },
-    connId: params.connId,
-    usesSharedGatewayAuth: false,
-  };
-}
 
 function createCloseMock() {
   return vi.fn<CloseGatewayConnection>();
@@ -2182,7 +2143,10 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
     );
     expect(oldGeneration).toBeTypeOf("string");
     expect(newGeneration).toBeTypeOf("string");
-    const generationState = { current: oldGeneration, required: null };
+    const generationState = new SharedGatewaySessionGenerationState({
+      current: oldGeneration,
+      required: null,
+    });
     const preparationStarted = createDeferred();
     const releasePreparation = createGatewayHarnessGate();
     prepareGatewayNodeConnectMock.mockImplementationOnce(async () => {
@@ -2196,8 +2160,7 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
       connId: "conn-token-rotated-during-connect",
       connectNonce: "nonce-token-rotated-during-connect",
       resolvedAuth: oldAuth,
-      getRequiredSharedGatewaySessionGeneration: () =>
-        getRequiredSharedGatewaySessionGeneration(generationState),
+      getRequiredSharedGatewaySessionGeneration: () => generationState.requiredGeneration,
       close,
       setCloseCause,
     });

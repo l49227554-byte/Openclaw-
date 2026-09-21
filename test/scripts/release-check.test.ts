@@ -1,5 +1,4 @@
 // Release Check tests cover release check script behavior.
-import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -14,12 +13,14 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { create } from "tar";
-import { describe, expect, it } from "vitest";
+import { describe, expect } from "vitest";
 import { parse } from "yaml";
 import {
   collectRootPackageExcludedExtensionDirs,
   listBundledPluginPackArtifacts,
 } from "../../scripts/lib/bundled-plugin-build-entries.mjs";
+import { collectRuntimeImportClosure } from "../../scripts/lib/runtime-import-closure.mts";
+import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import {
   createPackedTarballInstallArgs,
   prepareReleaseCheckLocalPackageTarballs,
@@ -29,6 +30,9 @@ import {
   writePackedTarballInstallManifest,
   writePackedBundledPluginActivationConfig,
 } from "../../scripts/release-check.ts";
+import { createCommandTest } from "../helpers/command-fixture.js";
+
+const it = createCommandTest();
 
 function requirePluginEntries(config: { plugins?: { entries?: Record<string, unknown> } }) {
   if (!config.plugins?.entries) {
@@ -68,23 +72,45 @@ describe("release-check", () => {
     );
   });
 
-  it("loads sparse release tooling and checks the target worker contract", () => {
-    const root = mkdtempSync(join(tmpdir(), "openclaw-release-check-target-"));
-    try {
+  it("loads sparse release tooling and checks the target worker contract", async ({ command }) => {
+    await command.lifetime.run(async () => {
+      const root = command.createTempDir("openclaw-release-check-target-");
       const toolingRoot = join(root, "tooling");
       const workflow = parse(readFileSync(".github/workflows/openclaw-npm-preflight.yml", "utf8"));
       const checkout = workflow.jobs.check_contents_npm.steps.find(
         (step: { name?: string }) => step.name === "Checkout trusted Plugin SDK API tooling",
       );
       const sparseRoots = checkout.with["sparse-checkout"].trim().split(/\s+/u) as string[];
-      const trackedPaths = execFileSync(
+      const tracked = await command.run(
         "git",
         ["ls-files", "-z", "--", ":(top,glob)*", ...sparseRoots],
-        { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-      )
-        .split("\0")
-        .filter(Boolean);
-      for (const relativePath of trackedPaths) {
+        { maxBuffer: 10 * 1024 * 1024 },
+      );
+      expect(tracked.error, "sparse tooling file inventory").toBeUndefined();
+      expect(tracked.status, tracked.stderr).toBe(0);
+      const trackedPaths = tracked.stdout.split("\0").filter(Boolean);
+      // Preserve the workflow's sparse boundary without copying the whole source tree.
+      const requiredPaths = new Set([
+        ...collectRuntimeImportClosure(process.cwd(), [
+          "scripts/release-check.ts",
+          "scripts/tsx.mjs",
+          ...(process.versions.bun ? ["src/plugins/sdk-alias.ts"] : []),
+        ]),
+        "scripts/fixtures/packed-plugin-sdk-type-smoke.ts",
+        "scripts/fixtures/packed-plugin-sdk-setup-consumer.ts",
+        "scripts/fixtures/packed-plugin-sdk-progress-consumer.ts",
+        ...(process.versions.bun
+          ? ["scripts/lib/plugin-sdk-private-local-only-subpaths.json"]
+          : []),
+      ]);
+      const sparsePaths = new Set(trackedPaths);
+      expect(
+        [...requiredPaths].filter((file) => !sparsePaths.has(file)),
+        "release tooling dependencies must belong to the workflow sparse checkout",
+      ).toEqual([]);
+      for (const relativePath of trackedPaths.filter(
+        (file) => !file.includes("/") || requiredPaths.has(file),
+      )) {
         const destination = join(toolingRoot, relativePath);
         mkdirSync(dirname(destination), { recursive: true });
         copyFileSync(relativePath, destination);
@@ -110,8 +136,14 @@ describe("release-check", () => {
       const moduleUrl = pathToFileURL(join(toolingRoot, "scripts/release-check.ts")).href;
       const runtimeArgs = process.versions.bun
         ? []
-        : ["--import", join(toolingRoot, "scripts/tsx.mjs")];
-      const output = execFileSync(
+        : [...resolveVitestNodeArgs(), "--import", join(toolingRoot, "scripts/tsx.mjs")];
+      const fixtureEnv = {
+        ...process.env,
+        TSX_TSCONFIG_PATH: join(toolingRoot, "tsconfig.json"),
+        // npm runs its notifier separately from the offline tarball inspection.
+        npm_config_update_notifier: "false",
+      };
+      const probe = await command.run(
         process.execPath,
         [
           ...runtimeArgs,
@@ -121,6 +153,7 @@ describe("release-check", () => {
             `const { createPackedPluginSdkTypescriptSmokeProject } = await import(${JSON.stringify(moduleUrl)});\n` +
             `createPackedPluginSdkTypescriptSmokeProject({ consumerDir: "consumer", packageSpec: "file:fixture.tgz" });\n` +
             `console.log(JSON.stringify({\n` +
+            `  execArgv: process.execArgv,\n` +
             `  fixture: readFileSync("consumer/src/index.ts", "utf8"),\n` +
             `  setupConsumer: readFileSync("consumer/src/packed-plugin-sdk-setup-consumer.ts", "utf8")\n` +
             `}));`,
@@ -128,10 +161,18 @@ describe("release-check", () => {
         {
           cwd: root,
           encoding: "utf8",
-          env: { ...process.env, TSX_TSCONFIG_PATH: join(toolingRoot, "tsconfig.json") },
+          env: fixtureEnv,
         },
       );
-      expect(JSON.parse(output)).toEqual({
+      expect(probe.error, "sparse release tooling import").toBeUndefined();
+      expect(probe.status, probe.stderr).toBe(0);
+      const { execArgv, ...smokeProject } = JSON.parse(probe.stdout);
+      if (!process.versions.bun) {
+        expect(execArgv, "CLI fixtures inherit the Node shutdown policy").toContain(
+          "--no-concurrent-sparkplug",
+        );
+      }
+      expect(smokeProject).toEqual({
         fixture: readFileSync(
           join(toolingRoot, "scripts/fixtures/packed-plugin-sdk-type-smoke.ts"),
           "utf8",
@@ -275,15 +316,16 @@ describe("release-check", () => {
         }
         create({ cwd: root, file: tarball, gzip: true, sync: true }, ["package"]);
         writeFileSync(join(root, "src/shared/worker-bundle-hash.ts"), workerContract);
-        const result = spawnSync(
+        const result = await command.run(
           process.execPath,
           [...runtimeArgs, join(toolingRoot, "scripts/release-check.ts"), "--tarball", tarball],
           {
             cwd: root,
             encoding: "utf8",
-            env: { ...process.env, TSX_TSCONFIG_PATH: join(toolingRoot, "tsconfig.json") },
+            env: fixtureEnv,
           },
         );
+        expect(result.error, name).toBeUndefined();
         expect(result.status, name).toBe(1);
         // Valid target-specific artifacts reach the SDK check; this fixture omits SDK output.
         expect(result.stderr, name).toContain(expected);
@@ -323,15 +365,16 @@ describe("release-check", () => {
       ];
       for (const { source, expected } of invalidContracts) {
         writeFileSync(join(root, "src/shared/worker-bundle-hash.ts"), source);
-        const result = spawnSync(
+        const result = await command.run(
           process.execPath,
           [...runtimeArgs, join(toolingRoot, "scripts/release-check.ts"), "--tarball", tarball],
           {
             cwd: root,
             encoding: "utf8",
-            env: { ...process.env, TSX_TSCONFIG_PATH: join(toolingRoot, "tsconfig.json") },
+            env: fixtureEnv,
           },
         );
+        expect(result.error, "invalid worker contract").toBeUndefined();
         expect(result.status, source).toBe(1);
         expect(result.stderr, source).toContain(expected);
       }
@@ -346,7 +389,7 @@ describe("release-check", () => {
       rmSync(join(packedRoot, "dist/worker"), { recursive: true, force: true });
       const noWorkerTarball = join(root, "target-without-workers.tgz");
       create({ cwd: root, file: noWorkerTarball, gzip: true, sync: true }, ["package"]);
-      const noWorkerResult = spawnSync(
+      const noWorkerResult = await command.run(
         process.execPath,
         [
           ...runtimeArgs,
@@ -357,17 +400,16 @@ describe("release-check", () => {
         {
           cwd: root,
           encoding: "utf8",
-          env: { ...process.env, TSX_TSCONFIG_PATH: join(toolingRoot, "tsconfig.json") },
+          env: fixtureEnv,
         },
       );
+      expect(noWorkerResult.error, "target without a worker producer").toBeUndefined();
       expect(noWorkerResult.status).toBe(1);
       expect(noWorkerResult.stderr).toContain(
         "release-check: packed dist/plugin-sdk directory not found.",
       );
       expect(noWorkerResult.stderr).not.toContain("Worker deploy artifact");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
   });
 
   it("installs the prepared tarball with its real package lifecycle", () => {

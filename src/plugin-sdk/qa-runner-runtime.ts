@@ -25,6 +25,7 @@ type QaRunnerTransportPolicy = {
 
 type QaRunnerAdapterOptions = {
   explicitScenarioSelection?: boolean;
+  agentE2e?: boolean;
   repoRoot?: string;
   scenarioIds?: readonly string[];
   sutAccountId?: string;
@@ -42,6 +43,7 @@ type QaRunnerMessageRecorder = {
 
 type QaRunnerCredentialLease<TPayload> = {
   credentialId?: string;
+  assertHealthy?: () => void;
   heartbeat(): Promise<void>;
   heartbeatIntervalMs: number;
   kind: string;
@@ -56,6 +58,8 @@ type QaRunnerCredentialLease<TPayload> = {
 
 type QaRunnerCredentialLeaseOptions<TPayload> = {
   kind: string;
+  cwd?: string;
+  signal?: AbortSignal;
   parsePayload: (payload: unknown) => TPayload;
   resolveEnvPayload: () => TPayload;
   role?: string;
@@ -129,6 +133,8 @@ type QaRunnerTransportAdapterDefinition = {
   requiredPluginIds: readonly string[];
   supportedActions: readonly ("delete" | "edit" | "react" | "thread-create")[];
   assertTransportHealthy?: () => void;
+  /** Resolves with a terminal transport failure; the host cancels and joins the run. */
+  whenUnhealthy?: Promise<Error>;
   describeTransportState?: () => string;
   resetTransport?: () => void | Promise<void>;
   sendInbound: (input: QaBusInboundMessageInput) => Promise<QaBusMessage>;
@@ -191,6 +197,8 @@ type QaRunnerTransportAdapterDefinition = {
     isolatedWorkers?: boolean;
   }) => string[];
   cleanup?: () => Promise<void>;
+  /** Capture final receipts after the Gateway stops, before its temporary files are removed. */
+  captureBeforeGatewayCleanup?: () => Promise<void>;
   cleanupAfterGatewayStop?: () => Promise<void>;
 };
 

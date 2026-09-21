@@ -793,7 +793,7 @@ function selectRecords(
 }
 
 function parseOptionalNonNegativeInteger(value: unknown, field: string): number | undefined {
-  if (value === undefined || value === null || value === "") {
+  if (value === undefined || value === null) {
     return undefined;
   }
   if (typeof value === "string") {
@@ -811,7 +811,7 @@ function parseOptionalNonNegativeInteger(value: unknown, field: string): number 
 }
 
 function parseOptionalType(value: unknown): string | undefined {
-  if (value === undefined || value === null || value === "") {
+  if (value === undefined || value === null) {
     return undefined;
   }
   if (typeof value !== "string" || value.trim() === "") {

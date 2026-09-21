@@ -240,7 +240,7 @@ it.concurrent.each([
                   "sparse-checkout set --no-cone /.github/actions/ /scripts/ios-screenshot-evidence.mjs /scripts/lib/direct-run.mjs",
                   ...(linux
                     ? ["/scripts/lib/release-upgrade-baseline.mjs /scripts/lib/release-version.mjs"]
-                    : []),
+                    : ["/scripts/lib/swift-toolchain.sh"]),
                 ].join(" "),
             ),
           ).toBe(true);
@@ -334,6 +334,9 @@ it.concurrent.each([
       "scripts/ios-screenshot-evidence.mjs": "workflow evidence script\n",
       "scripts/lib/direct-run.mjs": "workflow direct-run script\n",
     };
+    const platformScripts = {
+      "scripts/lib/swift-toolchain.sh": "workflow Swift toolchain helper\n",
+    };
     const releasePolicy = Object.fromEntries(
       [
         "scripts/lib/release-context.mjs",
@@ -351,6 +354,7 @@ it.concurrent.each([
     let workflowRevision = "";
     let candidateAction = files[action];
     let candidateEvidenceScripts: Record<string, string> = evidenceScripts;
+    let candidatePlatformScripts: Record<string, string> = platformScripts;
     const existingExcludes = retained
       ? "/saved-artifact/\n/.ci-harness/\n"
       : "# Existing local excludes\r\n/saved-artifact/";
@@ -400,6 +404,7 @@ it.concurrent.each([
         for (const [name, contents] of Object.entries({
           ...files,
           ...evidenceScripts,
+          ...platformScripts,
           ...releasePolicy,
           ...candidateFiles,
         })) {
@@ -431,10 +436,25 @@ it.concurrent.each([
           for (const [name, contents] of Object.entries(candidateEvidenceScripts)) {
             writeFileSync(path.join(source, name), contents);
           }
+          candidatePlatformScripts = Object.fromEntries(
+            Object.keys(platformScripts).map((name) => [
+              name,
+              "candidate Swift toolchain helper\n",
+            ]),
+          );
+          for (const [name, contents] of Object.entries(candidatePlatformScripts)) {
+            writeFileSync(path.join(source, name), contents);
+          }
           for (const name of Object.keys(releasePolicy)) {
             writeFileSync(path.join(source, name), "throw new Error('candidate policy');\n");
           }
-          run("add", action, ...Object.keys(evidenceScripts), ...Object.keys(releasePolicy));
+          run(
+            "add",
+            action,
+            ...Object.keys(evidenceScripts),
+            ...Object.keys(platformScripts),
+            ...Object.keys(releasePolicy),
+          );
           run("commit", "--no-gpg-sign", "-m", "selected candidate");
           revision = run("rev-parse", "HEAD");
         } else if (workflow === "missing") {
@@ -515,6 +535,11 @@ it.concurrent.each([
             candidateEvidenceScripts[name],
           );
         }
+        for (const name of Object.keys(platformScripts)) {
+          expect(readFileSync(path.join(workspace, name), "utf8")).toBe(
+            candidatePlatformScripts[name],
+          );
+        }
         if (workflow === "missing-action") {
           expect(existsSync(path.join(workspace, action))).toBe(false);
           expect(existsSync(path.join(harness, action))).toBe(false);
@@ -540,6 +565,12 @@ it.concurrent.each([
         for (const [name, contents] of Object.entries(evidenceScripts)) {
           expect(existsSync(path.join(harness, name))).toBe(workflowOwnsEvidence);
           if (workflowOwnsEvidence) {
+            expect(readFileSync(path.join(harness, name), "utf8")).toBe(contents);
+          }
+        }
+        for (const [name, contents] of Object.entries(platformScripts)) {
+          expect(existsSync(path.join(harness, name)), name).toBe(kind === "platform");
+          if (kind === "platform") {
             expect(readFileSync(path.join(harness, name), "utf8")).toBe(contents);
           }
         }
@@ -584,6 +615,7 @@ it.concurrent.each([
             "/.github/actions/",
             "/scripts/ios-screenshot-evidence.mjs",
             "/scripts/lib/direct-run.mjs",
+            ...(kind === "platform" ? ["/scripts/lib/swift-toolchain.sh"] : []),
             ...(kind === "linux-node"
               ? ["/scripts/lib/release-upgrade-baseline.mjs", "/scripts/lib/release-version.mjs"]
               : []),

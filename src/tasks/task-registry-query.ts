@@ -18,7 +18,6 @@ import {
   normalizeTaskTimestamps,
   compareTasksNewestFirst,
   pickPreferredRunIdTask,
-  snapshotTaskRecords,
   selectTaskRecordsForOwnerTree,
 } from "./task-registry-records.js";
 import {
@@ -58,9 +57,20 @@ import {
 import type { TaskRecord, TaskStatus } from "./task-registry.types.js";
 import { resolveTaskSessionAgentId, taskMatchesRelatedSession } from "./task-session-identity.js";
 
-export function listTaskRecordsUnsorted(): TaskRecord[] {
+type TaskSessionActivity = Pick<
+  TaskRecord,
+  "taskKind" | "status" | "requesterSessionKey" | "ownerKey"
+>;
+
+/** Cleanup reads session activity without copying retained task payloads. */
+export function listTaskSessionActivity(): TaskSessionActivity[] {
   ensureTaskRegistryReady();
-  return snapshotTaskRecords(tasks);
+  return Array.from(tasks.values(), (task) => ({
+    taskKind: task.taskKind,
+    status: task.status,
+    requesterSessionKey: task.requesterSessionKey,
+    ownerKey: task.ownerKey,
+  }));
 }
 
 /** Coarse tree candidates; callers still enforce agent identity and current control authority. */

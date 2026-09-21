@@ -595,6 +595,7 @@ function runCiManifestFixture(options: {
   bundledPlanner: boolean;
   nodeTestShards?: Record<string, unknown>[];
   nodeTestGroupsCodec?: boolean;
+  bunTestRuntime?: boolean;
   startupCorpusCoverage?: boolean;
   changedPlannerSource?: string | null;
   changedPlannerDependencies?: string[];
@@ -632,6 +633,13 @@ function runCiManifestFixture(options: {
   try {
     const scriptsDir = path.join(root, "scripts", "lib");
     mkdirSync(scriptsDir, { recursive: true });
+    if (options.bunTestRuntime) {
+      writeFileSync(
+        path.join(scriptsDir, "ci-test-runtime.mts"),
+        `export const ciTestShardRequiresBun = (shard, policy) =>
+          policy !== "node" && shard.configs?.includes("fixture-bun.config.ts");`,
+      );
+    }
     for (const dependency of options.changedPlannerDependencies ?? []) {
       const destination = path.join(root, dependency);
       mkdirSync(path.dirname(destination), { recursive: true });
@@ -665,6 +673,7 @@ function runCiManifestFixture(options: {
             includePatterns: options.changedPaths,
             env: {
               OPENCLAW_CI_TEST_COMPACT_MODE: options.compactMode ?? "full",
+              OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: String(options.compactNodeJobCap ?? ""),
               OPENCLAW_CI_TEST_RUNNER_BACKEND: options.runnerBackend ?? "",
             },
             requiresDist: false,
@@ -8934,6 +8943,7 @@ server.listen(0, "127.0.0.1", () => {
                 "test/vitest/**",
                 "src/state/*.sql",
                 "!**/node_modules/**",
+                "!.ci-harness/**",
               ]);
               const prefix = `openclaw/openclaw-vitest-fs-v3-protected-${os}-X64-node-24.x-${generation}-`;
               expect(cacheInputs).toEqual({
@@ -8949,6 +8959,62 @@ server.listen(0, "127.0.0.1", () => {
           }
         }
       }
+    }
+  });
+
+  it("shares transform generations with the warmer after CI exports its harness", () => {
+    const action = parse(readFileSync(".github/actions/setup-node-env/action.yml", "utf8"));
+    const generationStep = (action.runs.steps as WorkflowStep[]).find(
+      (step) => step.name === "Resolve Vitest transform cache generation",
+    );
+    const expression = expectDefined(
+      generationStep?.run?.match(/\$\{\{(.*?)\}\}/u)?.[1],
+      "transform generation expression",
+    );
+    const sourceFiles = {
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'",
+      "pnpm-workspace.yaml": "packages: ['packages/*']",
+      "package.json": '{"name":"fixture"}',
+      "packages/worker/package.json": '{"name":"worker"}',
+      "packages/worker/tsconfig.json": "{}",
+      "vitest.config.ts": "export default {}",
+      "test/vitest/shared.ts": "export const shared = {}",
+      "src/state/schema.sql": "CREATE TABLE fixture (id TEXT);",
+      ".github/actions/setup-security-review/package.json": '{"name":"review"}',
+      ".ci-harness-source/package.json": '{"name":"real-source"}',
+    };
+    const files: Record<string, string> = { ...sourceFiles };
+    const fingerprint = () =>
+      runInNewContext(expression, {
+        hashFiles: (...patterns: string[]) => {
+          const includes = patterns.filter((pattern) => !pattern.startsWith("!"));
+          const excludes = patterns
+            .filter((pattern) => pattern.startsWith("!"))
+            .map((pattern) => pattern.slice(1));
+          const hash = createHash("sha256");
+          for (const [file, contents] of Object.entries(files).toSorted(([left], [right]) =>
+            left.localeCompare(right),
+          )) {
+            if (
+              includes.some((pattern) => minimatch(file, pattern, { dot: true })) &&
+              !excludes.some((pattern) => minimatch(file, pattern, { dot: true }))
+            ) {
+              hash.update(createHash("sha256").update(contents).digest());
+            }
+          }
+          return hash.digest("hex");
+        },
+      });
+    const warmer = fingerprint();
+    files[".ci-harness/.github/actions/setup-security-review/package.json"] =
+      sourceFiles[".github/actions/setup-security-review/package.json"];
+    files[".ci-harness/tsconfig.json"] = "{}";
+    files["node_modules/dependency/package.json"] = '{"name":"dependency"}';
+    expect(fingerprint()).toBe(warmer);
+    for (const [file, contents] of Object.entries(sourceFiles)) {
+      files[file] = `${contents}\n`;
+      expect(fingerprint(), file).not.toBe(warmer);
+      files[file] = contents;
     }
   });
 
@@ -13160,6 +13226,56 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     55_000,
   );
 
+  it.each([
+    { eventName: "pull_request", capability: true, policy: "bun-compatible", bun: true },
+    { eventName: "workflow_dispatch", capability: true, policy: "dual", bun: true },
+    { eventName: "push", capability: true, policy: "node", bun: false },
+    { eventName: "workflow_dispatch", capability: false, policy: "node", bun: false },
+  ] as const)(
+    "routes test runtimes without adding jobs ($eventName, capability=$capability)",
+    ({ eventName, capability, policy, bun }) => {
+      const manifest = runCiManifestFixture({
+        bundledPlanner: true,
+        bunTestRuntime: capability,
+        eventName,
+        nodeTestShards: [
+          {
+            checkName: "runtime-proof",
+            shardName: "runtime-proof",
+            configs: ["fixture-bun.config.ts"],
+            requiresDist: false,
+            runner: "ubuntu-24.04",
+          },
+        ],
+        changedPaths: ["scripts/lib/ci-node-test-plan.mts"],
+      });
+      expect(manifest.status, manifest.output).toBe(0);
+      const rows = JSON.parse(
+        expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "Node test matrix"),
+      ).include;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ test_runtime_policy: policy, requires_bun: bun });
+      const job = readCiWorkflow().jobs["checks-node-core-test-nondist-shard"];
+      const context = {
+        eventName,
+        repository: "openclaw/openclaw",
+        matrix: rows[0],
+        runAttempt: 1,
+      };
+      const setup = job.steps.find((step: WorkflowStep) => step.name === "Setup Node environment");
+      const run = job.steps.find((step: WorkflowStep) => step.name === "Run Node test shard");
+      expect(setup.with["install-bun"]).toBe("false");
+      const bunSetup = job.steps.find(
+        (step: WorkflowStep) => step.name === "Setup pinned Bun test runtime",
+      );
+      expect(bunSetup.uses).toBe("./.ci-harness/.github/actions/setup-test-bun");
+      expect(evaluateWorkflowExpression(`\${{ ${bunSetup.if} }}`, context)).toBe(bun);
+      expect(evaluateWorkflowExpression(run.env.OPENCLAW_CI_TEST_RUNTIME_POLICY, context)).toBe(
+        policy,
+      );
+    },
+  );
+
   it("runs the startup corpus once when a canonical PR admits every complete Node file", () => {
     const revision = "a".repeat(40);
     const shards = createNodeTestShardBundles({
@@ -14318,6 +14434,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         check_name: "bundled-node-plan",
         env: {
           OPENCLAW_CI_TEST_COMPACT_MODE: "full",
+          OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: "70",
           OPENCLAW_CI_TEST_RUNNER_BACKEND: "blacksmith",
         },
         shard_name: "bundled-node-plan",
@@ -14343,6 +14460,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           check_name: "bundled-node-plan",
           env: {
             OPENCLAW_CI_TEST_COMPACT_MODE: "push",
+            OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: "70",
             OPENCLAW_CI_TEST_RUNNER_BACKEND: runnerBackend ?? "blacksmith",
           },
         }),
@@ -14407,6 +14525,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
           check_name: "bundled-node-plan",
           env: {
             OPENCLAW_CI_TEST_COMPACT_MODE: "pull-request",
+            OPENCLAW_CI_TEST_COMPACT_NODE_JOB_CAP: "129",
             OPENCLAW_CI_TEST_RUNNER_BACKEND: "blacksmith",
           },
         }),

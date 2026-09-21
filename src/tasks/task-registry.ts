@@ -33,7 +33,7 @@ export {
   listTaskRecordPage,
   listTaskRecords,
   listTaskRecordsForOwnerTree,
-  listTaskRecordsUnsorted,
+  listTaskSessionActivity,
   listTasksForFlowId,
   listTasksForOwnerKey,
   listTasksForRelatedSessionKey,

@@ -256,6 +256,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/tasks/task-registry-agent-events.lineage.test.ts",
   "src/tasks/task-registry-owner-read.test.ts",
   "src/tasks/task-registry-read.test.ts",
+  "src/tasks/task-registry-read-metadata-churn.test.ts",
   "src/tasks/task-registry-projection-read.test.ts",
   "src/tasks/task-registry.maintenance-projection.test.ts",
   "src/tasks/task-registry.maintenance-acp-authority.test.ts",
@@ -439,6 +440,25 @@ export const databaseWorkerCoreTestFiles = [
   "test/helpers/stage-live-auth-profiles.test.ts",
   "src/agents/embedded-agent-runner/run/failover-retry-controller.inline-auth.worker.test.ts",
   "src/agents/auth-profiles.markauthprofilefailure.test.ts",
+
+  "src/node-host/node-worker-launch-store.test.ts",
+  "src/node-host/node-worker-turn-store.test.ts",
+  "src/node-host/node-worker-supervisor.test.ts",
+  "src/node-host/node-worker-supervisor.admission.test.ts",
+  "src/node-host/node-worker-supervisor.container.test.ts",
+  "src/node-host/node-worker-supervisor.lifetime.test.ts",
+  "src/node-host/node-worker-supervisor.recovery.test.ts",
+  "src/node-host/node-worker-supervisor.uncertain.test.ts",
+  "src/process/supervisor/service-child-relay-host.owned-worker.test.ts",
+  "src/worker/worker.runtime.test.ts",
+  "src/node-host/node-worker-supervisor.cleanup-result.test.ts",
+  "src/node-host/node-worker-supervisor.initialization.test.ts",
+  "src/node-host/node-worker-supervisor.startup.test.ts",
+  "src/node-host/node-worker-supervisor.stop-initialization.test.ts",
+  "src/node-host/runtime.worker-supervisor.test.ts",
+  "src/node-host/runner.inventory.test.ts",
+  "src/node-host/node-worker-workspace-retention.test.ts",
+  "src/node-host/node-worker-prepared-workspace.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);

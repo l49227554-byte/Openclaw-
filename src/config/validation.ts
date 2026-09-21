@@ -1,6 +1,7 @@
 // Owns core preparation and sync/async orchestration for config validation.
 import { listChannelIdsForOwnershipMigration } from "../plugins/channel-presence-policy.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
+import { attachAgentListProjection } from "./agent-list-projection.js";
 import { omitDeferredPluginMigrationConfig } from "./deferred-plugin-migration-config.js";
 import { migrateLegacyContextBudgetConfig } from "./legacy.context-budget.js";
 import {
@@ -147,22 +148,22 @@ function prepareConfigObjectWithPlugins(
     env: params?.env,
     homedir: params?.homedir,
   }).config as OpenClawConfig;
-  // Zod preserves nested z.unknown() references in plugin config. Isolate the
-  // input before validation creates non-serialized projections and runtime paths.
-  const base = validateConfigObjectRaw(
-    inheritLegacyDefaultAgentId(migrated, cloneConfigWithResolutionFacts(migrated)),
-    {
-      sourceRaw: params?.sourceRaw,
-      preservedLegacyRootKeys: params?.preservedLegacyRootKeys,
-      env: params?.env,
-      homedir: params?.homedir,
-    },
-  );
+  const base = validateConfigObjectRaw(migrated, {
+    sourceRaw: params?.sourceRaw,
+    preservedLegacyRootKeys: params?.preservedLegacyRootKeys,
+    env: params?.env,
+    homedir: params?.homedir,
+  });
   if (!base.ok) {
     return { ok: false, result: { ok: false, issues: base.issues, warnings: [] } };
   }
-  // Preserve the migration sidecar across Zod's fresh object before metadata discovery.
-  const parsedConfig = inheritLegacyDefaultAgentId(migrated, base.config);
+  // Validate before cloning so malformed deep values return schema errors. Zod
+  // retains nested z.unknown() references; isolate them before runtime path expansion
+  // and restore the non-enumerable roster projection that structuredClone omits.
+  const parsedConfig = inheritLegacyDefaultAgentId(
+    migrated,
+    attachAgentListProjection(cloneConfigWithResolutionFacts(base.config)),
+  );
   return { ok: true, migrated, parsedConfig };
 }
 

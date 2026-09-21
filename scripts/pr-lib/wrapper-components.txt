@@ -561,6 +561,7 @@ src/infra/disk-space.ts
 src/infra/dispatch-wrapper-resolution.ts
 src/infra/dotenv-global-core.ts
 src/infra/dotenv-global.ts
+src/infra/dotenv-paths.ts
 src/infra/dotenv.ts
 src/infra/ed25519-signature.ts
 src/infra/env.ts

@@ -1,7 +1,9 @@
 // Exercises legacy values through the actual snapshot, Doctor, atomic write, and reread.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { getCliProcessTestTimeout } from "../cli/cli-process-child.test-helpers.js";
 import { readConfigFileSnapshot } from "../config/config.js";
 import { writeOpenClawConfig } from "../config/test-helpers.js";
 import { runInitialConfigWriteHealth } from "../flows/doctor-health-contribution-runners.config.js";
@@ -14,7 +16,12 @@ import {
   createBuiltRuntime,
   runBuiltRuntime,
 } from "./doctor-config-preflight.process.test-support.js";
-import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
+import { useDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
+
+const CLI_CHILD_TIMEOUT_MS = 60_000;
+const runtimeDirs = useAutoCleanupTempDirTracker(afterAll);
+const withDoctorConfigPreflightHome = useDoctorConfigPreflightHome();
+let runtimeRoot: string | undefined;
 
 async function repairConfig(configPath: string) {
   const ctx = await prepareDoctorContext(configPath);
@@ -63,7 +70,9 @@ describe("Doctor legacy config composition", () => {
         }
         raw.gateway.port = await getFreePort();
         const configPath = await writeOpenClawConfig(home, raw);
-        const runtimeRoot = createBuiltRuntime(path.join(home, "cli"));
+        const cliRuntime = (runtimeRoot ??= createBuiltRuntime(
+          runtimeDirs.make("openclaw-doctor-legacy-runtime-"),
+        ));
         const env: NodeJS.ProcessEnv = {
           PATH: process.env.PATH,
           SystemRoot: process.env.SystemRoot,
@@ -76,18 +85,17 @@ describe("Doctor legacy config composition", () => {
           OPENCLAW_CONFIG_PATH: configPath,
           NO_COLOR: "1",
         };
-        const run = (args: string[], expected = 0) => {
-          const result = runBuiltRuntime(runtimeRoot, env, args, 60_000);
+        const run = async (args: string[], expected = 0) => {
+          const result = await runBuiltRuntime(cliRuntime, env, args, CLI_CHILD_TIMEOUT_MS);
           const output = `${result.stdout}\n${result.stderr}`;
-          expect(result.error, output).toBeUndefined();
-          expect(result.status, output).toBe(expected);
+          expect(result.code, output).toBe(expected);
         };
         const doctorArgs = ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"];
-        run(["config", "validate"], 1);
-        run(doctorArgs);
+        await run(["config", "validate"], 1);
+        await run(doctorArgs);
         const first = await fs.readFile(configPath, "utf8");
         const saved = JSON.parse(first);
-        run(["config", "validate"]);
+        await run(["config", "validate"]);
         expect(saved.agents).not.toHaveProperty("list");
         expect(saved.agents.ownership).toBe("explicit");
         expect(Object.keys(saved.agents.entries)).toEqual(["main", "research"]);
@@ -107,10 +115,16 @@ describe("Doctor legacy config composition", () => {
         expect(saved.plugins.entries.browser.enabled).toBe(true);
         expect(saved.meta).not.toHaveProperty("lastTouchedAt");
         expect(saved.gateway.tailscale).not.toHaveProperty("resetOnExit");
-        run(doctorArgs);
+        await run(doctorArgs);
         expect(await fs.readFile(configPath, "utf8")).toBe(first);
       });
     },
+    getCliProcessTestTimeout(
+      CLI_CHILD_TIMEOUT_MS,
+      CLI_CHILD_TIMEOUT_MS,
+      CLI_CHILD_TIMEOUT_MS,
+      CLI_CHILD_TIMEOUT_MS,
+    ),
   );
 
   it.each([

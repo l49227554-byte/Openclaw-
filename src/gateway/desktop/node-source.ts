@@ -78,12 +78,7 @@ export function createNodeDesktopService(params: {
       allowlist: resolveNodeCommandAllowlist(params.getConfig(), node),
     }).ok;
 
-  const stopNode = async (nodeId: string): Promise<void> => {
-    const session = sessions.get(nodeId);
-    if (session) {
-      await params.desktopRegistry.stop(`node:${nodeId}`, session.ownerEpoch);
-    }
-  };
+  const stopNode = (nodeId: string): Promise<void> => params.desktopRegistry.stop(`node:${nodeId}`);
 
   const ensureSession = async (request: {
     nodeId: string;
@@ -173,7 +168,7 @@ export function createNodeDesktopService(params: {
         }
         if (!isAuthorized()) {
           throw new Error(
-            "node desktop is not enabled; explicitly allow and approve desktop.stream for this node",
+            "node desktop is unavailable; enable Desktop Sharing on the node, approve its capability request, and check gateway.nodes.commands.deny",
           );
         }
       };

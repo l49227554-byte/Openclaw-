@@ -352,7 +352,12 @@ it.each([
 it("renders an unquoted unavailable label when the source text is unavailable", () => {
   const { row } = draw(null);
   expect(row.querySelector(".chat-reply-attribution__name")?.textContent).toBe("Alice");
-  expect(row.querySelector(".chat-reply-attribution__label")?.textContent).toBe("Replying to");
+  // The decorative strokeIcon shell contributes whitespace, not visible copy.
+  const label = row.querySelector(".chat-reply-attribution__label")!;
+  expect(label.textContent?.trim()).toBe("Replying to");
+  expect(
+    label.querySelector(".chat-reply-attribution__mobile-icon")?.getAttribute("aria-hidden"),
+  ).toBe("true");
   expect(row.querySelector(".chat-reply-attribution__excerpt")).toBeNull();
   expect(row.querySelector(".chat-reply-attribution__unavailable")?.textContent).toBe(
     "Original message unavailable",

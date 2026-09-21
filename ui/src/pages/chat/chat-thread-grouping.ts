@@ -57,6 +57,11 @@ function stampReplyAttribution(
   let latestUserSender: MessageGroup["sender"];
   let latestUserMessage: MessageGroup["replyToMessage"];
   for (const item of items) {
+    if (item.kind === "stream") {
+      item.replyToSender = latestUserSender;
+      item.replyToMessage = latestUserMessage;
+      continue;
+    }
     if (item.kind !== "group") {
       continue;
     }
@@ -183,6 +188,8 @@ export type StreamRunRenderItem = {
   key: string;
   runId?: string;
   boundaryId?: string;
+  replyToSender?: MessageGroup["replyToSender"];
+  replyToMessage?: MessageGroup["replyToMessage"];
   parts: Array<Extract<ChatItem, { kind: "stream" | "reading-indicator" }>>;
 };
 export function coalesceStreamRuns(
@@ -198,6 +205,8 @@ export function coalesceStreamRuns(
         kind: "stream-run",
         key: `stream-run:${first.key}`,
         parts: run,
+        replyToSender: run.find((part) => part.kind === "stream")?.replyToSender,
+        replyToMessage: run.find((part) => part.kind === "stream")?.replyToMessage,
         ...(runId ? { runId } : {}),
         ...(boundaryId ? { boundaryId } : {}),
       });

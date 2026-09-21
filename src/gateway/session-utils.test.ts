@@ -34,7 +34,6 @@ import {
   closeOpenClawAgentDatabasesForTest,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
-import { withStateDirEnv as withRawStateDirEnv } from "../test-helpers/state-dir-env.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import { registerSessionAutomationSource } from "./session-automation-index.js";
@@ -63,7 +62,11 @@ import {
   resolveCanonicalGatewaySessionStoreKey,
   resolveDeletedAgentIdFromSessionKey,
 } from "./session-utils-store.js";
-import { closeSessionSqliteDatabasesForTest } from "./session-utils.test-support.js";
+import { withAgentPermissionState } from "./session-utils.permissions.test-support.js";
+import {
+  closeSessionSqliteDatabasesForTest,
+  withStateDirEnv,
+} from "./session-utils.test-support.js";
 import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
 
 const providerArtifactMocks = vi.hoisted(() => ({
@@ -172,19 +175,6 @@ test("projects a channel avatar route without exposing its media-store reference
   expect(replacedRow.channelAvatarUrl).toBeDefined();
   expect(replacedRow.channelAvatarUrl).not.toBe(row.channelAvatarUrl);
 });
-
-async function withStateDirEnv<T>(
-  prefix: string,
-  fn: (ctx: { tempRoot: string; stateDir: string }) => Promise<T>,
-): Promise<T> {
-  return withRawStateDirEnv(prefix, async (ctx) => {
-    try {
-      return await fn(ctx);
-    } finally {
-      await closeSessionSqliteDatabasesForTest();
-    }
-  });
-}
 
 async function seedSessionEntries(
   storePath: string,
@@ -2905,16 +2895,26 @@ describe("gateway session utils", () => {
     expect(titledRow.displayName).toBe("Release Planning");
   });
 
-  test("buildGatewaySessionRow prefers generated titles over Android node stamps", () => {
+  test.each<[string, Partial<SessionEntry>, string]>([
+    ["generated title", {}, "Release Planning"],
+    [
+      "explicit rename",
+      { label: "  OpenClaw App · Release planning · 1234567890ab  " },
+      "OpenClaw App · Release planning · 1234567890ab",
+    ],
+    ["blank explicit label", { label: "  " }, "Release Planning"],
+    ["empty stored name", { displayName: "" }, ""],
+    ["empty automatic name", { displayName: undefined, autoLabel: "" }, ""],
+  ])("buildGatewaySessionRow preserves title precedence for %s", (_name, overrides, expected) => {
     const cfg = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
     const key = "agent:main:node-1234567890ab";
-    const stamp = "OpenClaw App · Pixel · 1234567890ab";
-    const entry = {
+    const entry: SessionEntry = {
       sessionId: "node-1",
       updatedAt: 1,
-      autoLabel: stamp,
+      autoLabel: "OpenClaw App · Pixel · 1234567890ab",
       displayName: "Release Planning",
-    } as SessionEntry;
+      ...overrides,
+    };
     const row = buildGatewaySessionRow({
       cfg,
       storePath: "",
@@ -2922,22 +2922,9 @@ describe("gateway session utils", () => {
       key,
       entry,
     });
-    expect(row.autoLabel).toBe(stamp);
-    expect(row.label).toBeUndefined();
-    expect(row.displayName).toBe("Release Planning");
-
-    const manualPrefix = {
-      ...entry,
-      label: "OpenClaw App · Release planning · 1234567890ab",
-    } as SessionEntry;
-    const manualRow = buildGatewaySessionRow({
-      cfg,
-      storePath: "",
-      store: { [key]: manualPrefix },
-      key,
-      entry: manualPrefix,
-    });
-    expect(manualRow.displayName).toBe("OpenClaw App · Release planning · 1234567890ab");
+    expect(row.autoLabel).toBe(entry.autoLabel);
+    expect(row.label).toBe(entry.label);
+    expect(row.displayName).toBe(expected);
   });
 
   test("buildGatewaySessionRow displayName prefers the human chat title for group sessions", () => {
@@ -4639,7 +4626,7 @@ describe("gateway session utils", () => {
   ] as const)(
     "listAgentsForGateway labels global %j plus agent %j as %s",
     async (globalExec, agentExec, expected) => {
-      await withStateDirEnv("openclaw-agent-permission-label-", async () => {
+      await withAgentPermissionState(async () => {
         const cfg: OpenClawConfig = {
           tools: { exec: globalExec },
           agents: { entries: { main: { tools: { exec: agentExec } } } },
@@ -4715,7 +4702,7 @@ describe("gateway session utils", () => {
       expected: "guarded",
     },
   ])("listAgentsForGateway never overstates $name", async ({ cfg, approvals, expected }) => {
-    await withStateDirEnv("openclaw-agent-permission-floor-", async () => {
+    await withAgentPermissionState(async () => {
       execApprovalsStore.saveExecApprovals(approvals);
       const agent = (await listAgentsForGateway(cfg)).agents.find((entry) => entry.id === "main");
       expect(agent).toBeDefined();
@@ -4734,7 +4721,7 @@ describe("gateway session utils", () => {
   });
 
   test("listAgentsForGateway shares one approvals read across agent permission labels", async () => {
-    await withStateDirEnv("openclaw-agent-permission-roster-", async () => {
+    await withAgentPermissionState(async () => {
       const cfg: OpenClawConfig = {
         tools: { exec: { mode: "ask" } },
         agents: {

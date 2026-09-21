@@ -1,10 +1,11 @@
 import { html, nothing } from "lit";
+import { repeat } from "lit/directives/repeat.js";
 import type { QuestionPrompt } from "../../../app/question-prompt.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import type { ChatItem, MessageGroup } from "../../../lib/chat/chat-types.ts";
-import { summarizeToolGroup } from "../../../lib/chat/tool-call-grouping.ts";
-import { extractToolCardsCached, isToolCardError } from "../../../lib/chat/tool-cards.ts";
+import { readPreparedActivity, summarizeToolGroup } from "../../../lib/chat/tool-call-grouping.ts";
+import { extractToolCardsCached } from "../../../lib/chat/tool-cards.ts";
 import { formatDurationCompact } from "../../../lib/format-duration.ts";
 import { renderChatAvatar } from "../chat-avatar.ts";
 import { renderGroupedMessage } from "./chat-message-bubble.ts";
@@ -15,6 +16,8 @@ import {
 } from "./chat-message-markdown.ts";
 import { renderChatTimestamp } from "./chat-message-timestamp.ts";
 import { renderChatQuestionSummary } from "./chat-question-card.ts";
+import { renderReplyAttribution, resolveReplyAttribution } from "./chat-reply-attribution.ts";
+import { renderReplyConnector } from "./chat-reply-connector.ts";
 import type { SidebarContent } from "./chat-sidebar.ts";
 import { shouldToggleSelectableDisclosure, syncToolDisclosureOverflow } from "./chat-tool-cards.ts";
 import { renderToolOutcomeSummary } from "./chat-tool-outcome-summary.ts";
@@ -28,6 +31,10 @@ export type StreamGroupPart = Extract<
 
 type StreamMessageOptions = Pick<
   Parameters<typeof renderGroupedMessage>[2],
+  | "resolveReplyPreview"
+  | "onResolveReply"
+  | "onOpenReply"
+  | "replyNavigationId"
   | "sessionKey"
   | "presented"
   | "boardProvider"
@@ -49,10 +56,12 @@ type StreamMessageOptions = Pick<
   | "fetchLinkFavicon"
   | "pluginToolIcons"
   | "githubRepo"
+  | "githubRepositories"
   | "onOpenWorkspaceFile"
 >;
 
 export type StreamGroupOptions = StreamMessageOptions & {
+  entryRefFor?: (key: string) => ((element?: Element) => void) | undefined;
   onReply?: (target: MessageReplyTarget) => void;
   onOpenSidebar?: (content: SidebarContent) => void;
   assistant?: Parameters<typeof renderChatAvatar>[1];
@@ -68,41 +77,52 @@ export function renderStreamGroupParts(
   opts: StreamGroupOptions,
   presentation: "standalone" | "continuation",
 ) {
-  return parts.map((part) => {
-    if (part.kind === "reading-indicator") {
-      return renderChatWorkingIndicator(part, {
-        waitingApproval: opts.waitingApproval === true,
-        startupLabel: opts.startupLabel,
-        outputTokens: opts.runOutputTokens,
-        presentation,
-      });
-    }
-    if (part.kind === "question") {
-      const prompt = opts.questionPrompts?.get(part.questionId);
-      return prompt ? renderChatQuestionSummary(prompt) : nothing;
-    }
-    const source = prepareChatMessageRender({
-      role: "assistant",
-      content: [{ type: "text", text: part.text }],
-      timestamp: part.startedAt,
+  return repeat(
+    parts,
+    (part) => `${part.kind}:${part.key}`,
+    (part) => renderStreamGroupPart(part, opts, presentation),
+  );
+}
+
+export function renderStreamGroupPart(
+  part: StreamGroupPart,
+  opts: StreamGroupOptions,
+  presentation: "standalone" | "continuation",
+) {
+  if (part.kind === "reading-indicator") {
+    return renderChatWorkingIndicator(part, {
+      waitingApproval: opts.waitingApproval === true,
+      startupLabel: opts.startupLabel,
+      outputTokens: opts.runOutputTokens,
+      presentation,
     });
-    return renderGroupedMessage(
-      source,
-      part.key,
-      {
-        ...opts,
-        isStreaming: part.isStreaming,
-        showReasoning: false,
-        // Settled segments can be replied to without transcript IDs or footer actions.
-        messageActions: resolveMessageActionDetails(source, {
-          messageId: part.key,
-          onReply: opts.onReply,
-          senderLabel: opts.assistant?.name ?? "Assistant",
-        }),
-      },
-      opts.onOpenSidebar,
-    );
+  }
+  if (part.kind === "question") {
+    const prompt = opts.questionPrompts?.get(part.questionId);
+    return prompt ? renderChatQuestionSummary(prompt) : nothing;
+  }
+  const source = prepareChatMessageRender({
+    role: "assistant",
+    content: [{ type: "text", text: part.text }],
+    timestamp: part.startedAt,
   });
+  return renderGroupedMessage(
+    source,
+    part.key,
+    {
+      ...opts,
+      isStreaming: part.isStreaming,
+      entryRef: opts.entryRefFor?.(part.key),
+      showReasoning: false,
+      // Settled segments can be replied to without transcript IDs or footer actions.
+      messageActions: resolveMessageActionDetails(source, {
+        messageId: part.key,
+        onReply: opts.onReply,
+        senderLabel: opts.assistant?.name ?? "Assistant",
+      }),
+    },
+    opts.onOpenSidebar,
+  );
 }
 
 // One assistant group per contiguous run of streaming items: a reply that
@@ -126,12 +146,32 @@ export function renderStreamGroup(parts: StreamGroupPart[], opts: StreamGroupOpt
     workingOnly || opts.showAssistantAvatar === false
       ? nothing
       : renderChatAvatar("assistant", assistant);
-  const groupClass = `chat-group assistant${workingOnly ? " chat-group--working" : ""}${footerStartedAt !== null ? " chat-group--with-footer" : ""}`;
+  const sourcePart = parts.find((part) => part.kind === "stream");
+  const replyAttribution = resolveReplyAttribution(
+    {
+      kind: "group",
+      key: sourcePart?.key ?? "stream",
+      role: "assistant",
+      messages: [],
+      visibleContent: "text",
+      timestamp: sourcePart?.startedAt ?? 0,
+      isStreaming: active,
+      replyToSender: sourcePart?.replyToSender,
+      replyToMessage: sourcePart?.replyToMessage,
+    },
+    opts.resolveReplyPreview,
+  );
+  const hasReplyConnector = Boolean(replyAttribution && avatar !== nothing);
+  const groupClass = `chat-group assistant${hasReplyConnector ? " chat-group--reply" : ""}${workingOnly ? " chat-group--working" : ""}${footerStartedAt !== null ? " chat-group--with-footer" : ""}`;
 
   return html`
     <div class=${groupClass} data-chat-row-key=${parts[0]?.key ?? nothing}>
       ${avatar}
-      <div class="chat-group-messages">${renderStreamGroupParts(parts, opts, "standalone")}</div>
+      <div class="chat-group-messages">
+        ${renderReplyAttribution(replyAttribution, opts.onOpenReply, opts.onResolveReply, { navigationLoading: replyAttribution?.target?.kind === "id" && opts.replyNavigationId === replyAttribution.target.id })}
+        ${renderStreamGroupParts(parts, opts, "standalone")}
+      </div>
+      ${hasReplyConnector ? renderReplyConnector() : nothing}
       ${
         footerStartedAt !== null && !active
           ? html`
@@ -162,11 +202,15 @@ export function renderWorkGroupSummary(
   const cards = item.groups.flatMap((group) =>
     group.messages.flatMap(({ message }) => extractToolCardsCached(message)),
   );
-  const label = cards.length
-    ? summarizeToolGroup(cards.map((card) => ({ ...card, isError: isToolCardError(card) })))
-    : duration
-      ? t("chat.workRun.workedFor", { duration })
-      : t("chat.workRun.worked");
+  const activity = item.groups.flatMap((group) =>
+    group.messages.flatMap(({ message }) => readPreparedActivity(message)),
+  );
+  const label =
+    activity.length || cards.length
+      ? summarizeToolGroup(activity, { includeFailureCount: opts.expanded })
+      : duration
+        ? t("chat.workRun.workedFor", { duration })
+        : t("chat.workRun.worked");
   const content = html`
     <div class="chat-activity-group chat-work-group ${opts.expanded ? "is-open" : ""}">
       <button
@@ -182,10 +226,10 @@ export function renderWorkGroupSummary(
         }}
       >
         <span class="chat-tool-disclosure__content">
-          <span class="chat-activity-group__label" title=${label}>${label}</span>
+          <span class="chat-activity-group__label">${label}</span>
         </span>
         ${
-          cards.length && duration
+          (activity.length || cards.length) && duration
             ? html`<span
                 class="chat-activity-group__duration"
                 aria-label=${t("chat.workRun.workedFor", { duration })}
@@ -193,7 +237,7 @@ export function renderWorkGroupSummary(
               >`
             : nothing
         }
-        ${opts.expanded ? nothing : renderToolOutcomeSummary(cards)}
+        ${opts.expanded ? nothing : renderToolOutcomeSummary(cards, true, activity.length ? activity : undefined)}
         <span class="chat-tool-row__chevron" aria-hidden="true">${icons.chevronRight}</span>
       </button>
       <div class="chat-work-group__separator" aria-hidden="true"></div>

@@ -3,10 +3,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { readAcpSessionMetaForEntry } from "../acp/runtime/session-meta-readonly.js";
-import {
-  readAcpSessionMeta,
-  repairAcpSessionMetaKeyForMigration,
-} from "../acp/runtime/session-meta.js";
+import { readAcpSessionMeta } from "../acp/runtime/session-meta.js";
 import { resolveModelAgentRuntimeMetadata } from "../agents/agent-runtime-metadata.js";
 import {
   listAgentEntries,
@@ -133,25 +130,13 @@ function readAcpMetaForDeletedAgentCheck(params: {
     }
   }
 
-  repairAcpSessionMetaKeyForMigration({
-    sessionKey: params.sessionKey,
-    candidateSessionKeys: directKeys,
-    entry: params.entry ?? undefined,
-  });
-  const finalAgentId =
-    parseAgentSessionKey(params.sessionKey)?.agentId ??
-    tryResolveSessionCompatibilityOwnerAgentId(params.cfg, params.sessionKey);
-  return readAcpSessionMetaForEntry({
-    sessionKey: params.sessionKey,
-    ...(finalAgentId ? { agentId: finalAgentId } : {}),
-    entry: params.entry ?? undefined,
-  });
+  return undefined;
 }
 
 function loadSessionEntryWithMode(
   sessionKey: string,
   opts:
-    | (Pick<SessionEntryListScope, "agentId" | "clone" | "projection"> & {
+    | (Pick<SessionEntryListScope, "agentId" | "clone" | "projection" | "env"> & {
         includeStoreChildEntries?: boolean;
         targetDiscoveryCache?: GatewaySessionStoreDiscoveryCache;
       })
@@ -166,6 +151,7 @@ function loadSessionEntryWithMode(
     exactRead: true,
     readOnly,
     projection: opts?.projection,
+    env: opts?.env,
     targetDiscoveryCache: opts?.targetDiscoveryCache,
     ...(opts?.clone === false ? { clone: false } : {}),
     ...(opts?.agentId ? { agentId: opts.agentId } : {}),
@@ -201,7 +187,7 @@ function loadSessionEntryWithMode(
 
 export function loadGatewaySessionEntry(
   sessionKey: string,
-  opts?: Pick<SessionEntryListScope, "agentId" | "clone" | "projection">,
+  opts?: Pick<SessionEntryListScope, "agentId" | "clone" | "projection" | "env">,
 ) {
   return loadSessionEntryWithMode(sessionKey, opts, false);
 }
@@ -211,7 +197,7 @@ export function loadGatewaySessionEntryReadOnly(
   opts?: {
     includeStoreChildEntries?: boolean;
     targetDiscoveryCache?: GatewaySessionStoreDiscoveryCache;
-  } & Pick<SessionEntryListScope, "agentId" | "clone" | "projection">,
+  } & Pick<SessionEntryListScope, "agentId" | "clone" | "projection" | "env">,
 ) {
   return loadSessionEntryWithMode(sessionKey, opts, true);
 }

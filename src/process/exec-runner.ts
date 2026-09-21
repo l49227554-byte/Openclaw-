@@ -3,6 +3,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { hasErrnoCode } from "../infra/errno.js";
 import {
   decodeWindowsOutputBuffer,
   resolveWindowsConsoleEncoding,
@@ -39,6 +40,7 @@ import {
 import {
   COMMAND_PROCESS_TREE_KILL_GRACE_MS,
   resolveCommandProcessSignal,
+  retainCommandProcessCleanup,
   spawnCommandWithInvocation,
   waitForCommandSpawn,
 } from "./exec-spawn.js";
@@ -53,6 +55,8 @@ export type CommandOptions = {
   timeoutMs?: number;
   cwd?: string;
   input?: string | Uint8Array;
+  /** Borrow a caller-owned descriptor as stdin without buffering or piping its bytes. */
+  stdinFileDescriptor?: number;
   /** Synchronous admission with the spawned PID and argv, before input is released. */
   beforeInput?: (pid: number, argv?: readonly string[]) => void;
   baseEnv?: NodeJS.ProcessEnv;
@@ -147,6 +151,9 @@ async function runCommandWithOutputEncoding(
     throw new Error("Process-tree extinction requires process-tree ownership");
   }
   const hasInput = input !== undefined;
+  if (hasInput && options.stdinFileDescriptor !== undefined) {
+    throw new Error("Command accepts either input or stdinFileDescriptor, not both");
+  }
   if (options.beforeInput && !hasInput) {
     throw new Error("Child input admission requires explicit input");
   }
@@ -222,7 +229,12 @@ async function runCommandWithOutputEncoding(
     killSignal,
     ...(hasInput && !options.beforeInput ? { input } : {}),
     reject: false,
-    stdio: [hasInput ? "pipe" : "inherit", "pipe", "pipe"],
+    stdio: [
+      // SAFETY: Execa forwards arbitrary numeric descriptors to Node; its stdin type narrows them to fd 0.
+      (options.stdinFileDescriptor as 0 | undefined) ?? (hasInput ? "pipe" : "inherit"),
+      "pipe",
+      "pipe",
+    ],
     stripFinalNewline: false,
     windowsVerbatimArguments: options.windowsVerbatimArguments,
   });
@@ -254,6 +266,17 @@ async function runCommandWithOutputEncoding(
     killGraceMs: resolvedKillGraceMs,
     killSignal,
   });
+  const processCleanup = (async () => {
+    await child.then(
+      () => undefined,
+      () => undefined,
+    );
+    commandSettled = true;
+    await startupReady?.catch(() => {});
+    return await terminationController.settle();
+  })();
+  retainCommandProcessCleanup(processCleanup);
+  void processCleanup.catch(() => {});
   nodeChild.once("exit", (code, signalValue) => {
     childExitState = { code, signal: signalValue };
     // Successful tree output belongs to its command deadline, not the diagnostic
@@ -268,12 +291,6 @@ async function runCommandWithOutputEncoding(
     }
   });
 
-  const clearNoOutputTimer = () => {
-    if (noOutputTimer) {
-      clearTimeout(noOutputTimer);
-      noOutputTimer = undefined;
-    }
-  };
   const cancel = (reason: Exclude<CommandTerminationReason, "exit">) => {
     // Failed roots already own a drain; later deadlines must preserve their exit result.
     // Successful POSIX roots retain deadline ownership of inherited descendants.
@@ -309,8 +326,9 @@ async function runCommandWithOutputEncoding(
     ) {
       return;
     }
-    clearNoOutputTimer();
-    noOutputTimer = setTimeout(() => cancel("no-output-timeout"), resolvedNoOutputTimeoutMs);
+    noOutputTimer =
+      noOutputTimer?.refresh() ??
+      setTimeout(() => cancel("no-output-timeout"), resolvedNoOutputTimeoutMs);
   };
 
   const timeoutTimer =
@@ -324,7 +342,8 @@ async function runCommandWithOutputEncoding(
     if (timeoutTimer) {
       clearTimeout(timeoutTimer);
     }
-    clearNoOutputTimer();
+    clearTimeout(noOutputTimer);
+    noOutputTimer = undefined;
     signal?.removeEventListener("abort", onAbort);
   };
   if (startupReady) {
@@ -342,19 +361,7 @@ async function runCommandWithOutputEncoding(
       clearTimers();
       // The result cannot claim extinction before PID delivery. Keep the same
       // termination owner through late readiness and final output drainage.
-      void (async () => {
-        try {
-          await child;
-        } finally {
-          commandSettled = true;
-          await startupReady.catch(() => {});
-          try {
-            await terminationController.settle();
-          } finally {
-            releaseOutput?.();
-          }
-        }
-      })().catch(() => {});
+      void processCleanup.finally(() => releaseOutput?.()).catch(() => {});
       const stopped = {
         pid: nodeChild.pid,
         code:
@@ -504,6 +511,10 @@ async function runCommandWithOutputEncoding(
   let inputAdmissionError: Error | undefined;
   if (options.beforeInput) {
     nodeChild.stdin?.once("error", (cause) => {
+      // Execa preserves the child's result when it closes input early; other faults still cancel.
+      if (hasErrnoCode(cause, "EPIPE")) {
+        return;
+      }
       inputAdmissionError ??= toErrorObject(cause, "Command input failed");
       cancel("signal");
     });
@@ -531,9 +542,9 @@ async function runCommandWithOutputEncoding(
     clearTimers();
     releaseOutput?.();
   });
-  let cleanup = await terminationController.settle();
+  let cleanup = await processCleanup;
   const resolvedSignal = result.signal ?? childExitState?.signal ?? nodeChild.signalCode ?? null;
-  if (cleanup !== "forced" && resolvedSignal) {
+  if (cleanup === "normal" && resolvedSignal) {
     cleanup = "uncertain";
   }
   if (inputAdmissionError) {
@@ -607,6 +618,7 @@ async function runCommandWithOutputEncoding(
     throw error;
   }
 
+  const killIssuedByAbort = termination === "signal" || termination === "output-limit";
   const resolvedCode = resolveProcessExitCode({
     explicitCode: result.exitCode ?? childExitState?.code,
     childExitCode: nodeChild.exitCode,
@@ -615,7 +627,7 @@ async function runCommandWithOutputEncoding(
     timedOut: termination === "timeout",
     noOutputTimedOut: termination === "no-output-timeout",
     killIssuedByTimeout: termination === "timeout" || termination === "no-output-timeout",
-    killIssuedByAbort: termination === "signal" || termination === "output-limit",
+    killIssuedByAbort,
   });
   termination ??= resolvedSignal != null || result.isTerminated ? "signal" : "exit";
   const normalizedCode =
@@ -661,6 +673,7 @@ async function runCommandWithOutputEncoding(
     code: normalizedCode,
     signal: resolvedSignal,
     killed: nodeChild.killed,
+    killIssuedByAbort: killIssuedByAbort || undefined,
     cleanup,
     termination: termination === "output-limit" ? ("signal" as const) : termination,
     noOutputTimedOut: termination === "no-output-timeout",

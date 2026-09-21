@@ -19,11 +19,7 @@ import { buildChatItems, type BuildChatItemsProps } from "./chat-thread-build.ts
 import { readChatThreadMessageIdentity, sanitizeStreamText } from "./chat-thread-items.ts";
 import { getOrCreateSessionCacheValue, setSessionCacheValue } from "./session-cache.ts";
 
-export {
-  isPendingSendMessage,
-  persistedMessageEntryId,
-  readPendingSendStatus,
-} from "./chat-thread-items.ts";
+export { persistedMessageEntryId, readPendingSendStatus } from "./chat-thread-items.ts";
 export {
   assistantGroupCanOwnActiveRunStatus,
   coalesceActivityRuns,
@@ -147,6 +143,9 @@ function sameChatItem(previous: RenderChatItem, next: RenderChatItem): boolean {
         previous.text === next.text &&
         previous.startedAt === next.startedAt &&
         previous.isStreaming === next.isStreaming &&
+        JSON.stringify(previous.replyToSender) === JSON.stringify(next.replyToSender) &&
+        previous.replyToMessage?.key === next.replyToMessage?.key &&
+        previous.replyToMessage?.message === next.replyToMessage?.message &&
         previous.runId === next.runId &&
         previous.boundaryId === next.boundaryId
       );

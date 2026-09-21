@@ -66,8 +66,40 @@ fn configure_installer_environment(command: &mut Command) {
     command.env_remove("LD_LIBRARY_PATH");
 }
 
+pub(crate) fn configure_bundled_runtime(app: &AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let executable = app
+            .path()
+            .resolve("runtime/openclaw-runtime", BaseDirectory::Resource)
+            .map_err(|error| error.to_string())?;
+        if executable.is_file() {
+            let base = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|error| error.to_string())?;
+            crate::cli::configure_bundled_runtime(
+                executable,
+                base.join("runtime"),
+                app.package_info().version.to_string(),
+            );
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = app;
+    Ok(())
+}
+
 #[cfg(not(target_os = "windows"))]
 pub fn install(app: &AppHandle, channel: InstallChannel) -> Result<(), String> {
+    if crate::cli::OpenClawCli::bundled_available() {
+        let selected = crate::cli::OpenClawCli::locate().map_err(|error| error.to_string())?;
+        if selected.bundled_service_launcher().is_some() {
+            return selected.verify().map_err(|error| error.to_string());
+        }
+        // An explicit reinstall repairs the selected managed/external CLI even
+        // when this app also carries an unused fallback runtime.
+    }
     let script = app
         .path()
         .resolve("install-cli.sh", BaseDirectory::Resource)

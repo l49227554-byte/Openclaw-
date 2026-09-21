@@ -130,6 +130,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "browser.attachOnly": "Browser Attach-only Mode",
   "browser.defaultProfile": "Browser Default Profile",
   "browser.profiles": "Browser Profiles",
+  "browser.profiles.*.engine": "Browser Profile Engine",
   "browser.profiles.*.cdpPort": "Browser Profile CDP Port",
   "browser.profiles.*.cdpUrl": "Browser Profile CDP URL",
   "browser.profiles.*.userDataDir": "Browser Profile User Data Dir",

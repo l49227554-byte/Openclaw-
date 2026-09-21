@@ -114,6 +114,29 @@ export function throwIfInteractionAborted(signal?: AbortSignal): void {
   }
 }
 
+function createPolicyAbortSignal(signal?: AbortSignal): {
+  signal?: AbortSignal;
+  cleanup: () => void;
+} {
+  if (!signal) {
+    return { cleanup: () => {} };
+  }
+  const controller = new AbortController();
+  const onAbort = () => {
+    if (!isBrowserObservedDialogBlockedError(signal.reason)) {
+      controller.abort(signal.reason);
+    }
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) {
+    onAbort();
+  }
+  return {
+    signal: controller.signal,
+    cleanup: () => signal.removeEventListener("abort", onAbort),
+  };
+}
+
 export async function runCancellablePageInteraction<T>(
   page: Page,
   opts: GuardedInteractionOptions,
@@ -224,6 +247,7 @@ function isMainFrameNavigation(page: NavigationObservablePage, frame: Frame): bo
 async function assertSubframeNavigationAllowed(
   frameUrl: string,
   navigationPolicy: BrowserNavigationPolicyOptions,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (
     (!navigationPolicy.ssrfPolicy && !navigationPolicy.browserProxyMode) ||
@@ -237,6 +261,7 @@ async function assertSubframeNavigationAllowed(
   await assertBrowserNavigationResultAllowed({
     url: frameUrl,
     ...navigationPolicy,
+    ...(signal ? { signal } : {}),
   });
 }
 
@@ -260,13 +285,14 @@ async function assertObservedDelayedNavigations(
     page: Page;
     targetId?: string;
     observed: ObservedDelayedNavigations;
+    signal?: AbortSignal;
   } & BrowserNavigationPolicyOptions,
 ): Promise<void> {
   const navigationPolicy = interactionNavigationPolicy(opts);
   let subframeError: unknown;
   try {
     for (const frameUrl of opts.observed.subframes) {
-      await assertSubframeNavigationAllowed(frameUrl, navigationPolicy);
+      await assertSubframeNavigationAllowed(frameUrl, navigationPolicy, opts.signal);
     }
   } catch (err) {
     subframeError = err;
@@ -278,6 +304,7 @@ async function assertObservedDelayedNavigations(
       response: null,
       ...navigationPolicy,
       targetId: opts.targetId,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
   }
   if (subframeError) {
@@ -341,6 +368,7 @@ function scheduleDelayedInteractionNavigationGuard(
     page: Page;
     previousUrl: string;
     targetId?: string;
+    signal?: AbortSignal;
   } & BrowserNavigationPolicyOptions,
 ): Promise<void> {
   const navigationPolicy = interactionNavigationPolicy(opts);
@@ -355,6 +383,7 @@ function scheduleDelayedInteractionNavigationGuard(
       response: null,
       ...navigationPolicy,
       targetId: opts.targetId,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
   }
   if (typeof page.on !== "function" || typeof page.off !== "function") {
@@ -394,6 +423,7 @@ function scheduleDelayedInteractionNavigationGuard(
         ...navigationPolicy,
         targetId: opts.targetId,
         observed: { mainFrameNavigated: true, subframes },
+        signal: opts.signal,
       }).then(() => settle(), settle);
     };
     const timeout = setTimeout(() => {
@@ -407,6 +437,7 @@ function scheduleDelayedInteractionNavigationGuard(
           mainFrameNavigated: didCrossDocumentUrlChange(page, opts.previousUrl),
           subframes,
         },
+        signal: opts.signal,
       }).then(() => settle(), settle);
     }, BROWSER_ACTION_NAVIGATION_GRACE_MS);
     const cleanup = () => {
@@ -429,6 +460,7 @@ async function assertInteractionNavigationCompletedSafely<T>(
     page: Page;
     previousUrl: string;
     targetId?: string;
+    signal?: AbortSignal;
   } & BrowserNavigationPolicyOptions,
 ): Promise<T> {
   const navigationPolicy = interactionNavigationPolicy(opts);
@@ -479,7 +511,7 @@ async function assertInteractionNavigationCompletedSafely<T>(
   let subframeError: unknown;
   try {
     for (const frameUrl of subframeNavigationsDuringAction) {
-      await assertSubframeNavigationAllowed(frameUrl, navigationPolicy);
+      await assertSubframeNavigationAllowed(frameUrl, navigationPolicy, opts.signal);
     }
   } catch (err) {
     subframeError = err;
@@ -492,6 +524,7 @@ async function assertInteractionNavigationCompletedSafely<T>(
       response: null,
       ...navigationPolicy,
       targetId: opts.targetId,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
   } else if (actionError) {
     // Preserve the action-error path semantics: if a rejected click/evaluate still
@@ -505,6 +538,7 @@ async function assertInteractionNavigationCompletedSafely<T>(
         ...navigationPolicy,
         targetId: opts.targetId,
         observed,
+        signal: opts.signal,
       });
     }
   } else {
@@ -517,6 +551,7 @@ async function assertInteractionNavigationCompletedSafely<T>(
       previousUrl: opts.previousUrl,
       ...navigationPolicy,
       targetId: opts.targetId,
+      signal: opts.signal,
     });
   }
 
@@ -565,6 +600,7 @@ export async function awaitNavigationGuardedInteraction<T>(
   type PolicyCheckOutcome = { state: "allowed" } | { state: "failed"; error: unknown };
   const navigationPolicy = interactionNavigationPolicy(opts);
   const hasNavigationPolicy = hasInteractionNavigationPolicy(navigationPolicy);
+  const { signal: policySignal, cleanup: cleanupPolicySignal } = createPolicyAbortSignal(signal);
   let observedPolicyError: unknown;
   const activePolicyChecks = new Set<Promise<PolicyCheckOutcome>>();
   let unsafeSourceQuarantine: Promise<void> | undefined;
@@ -577,6 +613,7 @@ export async function awaitNavigationGuardedInteraction<T>(
   const guardedAction = withPageNavigationRequestGuard({
     page: opts.page,
     ...navigationPolicy,
+    ...(policySignal ? { signal: policySignal } : {}),
     onPolicyCheckStarted: (check) => {
       const tracked = check.then<PolicyCheckOutcome, PolicyCheckOutcome>(
         () => ({ state: "allowed" }),
@@ -602,6 +639,7 @@ export async function awaitNavigationGuardedInteraction<T>(
       try {
         return await assertInteractionNavigationCompletedSafely({
           ...opts,
+          signal: policySignal,
           action: async () => {
             try {
               // Preserve native dispatch ordering for callers without an authority check.
@@ -635,6 +673,7 @@ export async function awaitNavigationGuardedInteraction<T>(
             response: null,
             ...navigationPolicy,
             targetId: opts.targetId,
+            ...(policySignal ? { signal: policySignal } : {}),
           });
         }
       }
@@ -666,6 +705,8 @@ export async function awaitNavigationGuardedInteraction<T>(
       throw toErrorObject(observedPolicyError, "Non-Error thrown");
     }
     throw err;
+  } finally {
+    cleanupPolicySignal();
   }
 }
 

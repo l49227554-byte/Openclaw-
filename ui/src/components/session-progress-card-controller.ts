@@ -17,6 +17,8 @@ export class SessionProgressCardController implements ReactiveController {
   private store: SessionProgressCardStore | null = null;
   private stopUpdates: (() => void) | null = null;
   private target: ProgressCardGetParams | undefined;
+  private client: ApplicationGateway["snapshot"]["client"] = null;
+  private hello: ApplicationGateway["snapshot"]["hello"] = null;
 
   constructor(
     private readonly host: ReactiveControllerHost,
@@ -43,6 +45,21 @@ export class SessionProgressCardController implements ReactiveController {
     return this.target ? this.store?.getError(this.target) : undefined;
   }
 
+  get refreshState() {
+    return this.target ? this.store?.getRefreshState(this.target) : undefined;
+  }
+
+  refresh = (card: ProgressCard): void => {
+    if (!this.connected) {
+      return;
+    }
+    // A click retained across a route/connection change must not use the old watch.
+    this.synchronize();
+    if (this.target) {
+      this.store?.refresh(this.target, card);
+    }
+  };
+
   dismiss = (card: ProgressCard): Promise<boolean> =>
     this.target
       ? (this.store?.dismiss(this.target, card) ?? Promise.resolve(false))
@@ -68,6 +85,8 @@ export class SessionProgressCardController implements ReactiveController {
   private synchronize(): void {
     const gateway = this.options.gateway() ?? null;
     const target = this.options.target() ?? undefined;
+    const client = gateway?.snapshot.client ?? null;
+    const hello = gateway?.snapshot.hello ?? null;
     const nextStore = gateway ? sessionProgressCardsForGateway(gateway) : null;
     if (nextStore !== this.store) {
       this.release();
@@ -76,12 +95,27 @@ export class SessionProgressCardController implements ReactiveController {
     }
     if (
       target?.sessionKey === this.target?.sessionKey &&
-      target?.agentId === this.target?.agentId
+      target?.agentId === this.target?.agentId &&
+      (!target || (client === this.client && hello === this.hello))
     ) {
       return;
     }
     this.target = target;
-    this.store?.watch(this, target ? [target] : []);
+    this.client = client;
+    this.hello = hello;
+    this.store?.watch(this, target ? [target] : [], {
+      admitAutomaticRead: () => {
+        const currentTarget = this.options.target();
+        return (
+          this.connected &&
+          this.options.gateway() === gateway &&
+          gateway?.snapshot.client === client &&
+          gateway?.snapshot.hello === hello &&
+          currentTarget?.sessionKey === target?.sessionKey &&
+          currentTarget?.agentId === target?.agentId
+        );
+      },
+    });
   }
 
   private release(): void {
@@ -90,5 +124,7 @@ export class SessionProgressCardController implements ReactiveController {
     this.stopUpdates = null;
     this.store = null;
     this.target = undefined;
+    this.client = null;
+    this.hello = null;
   }
 }

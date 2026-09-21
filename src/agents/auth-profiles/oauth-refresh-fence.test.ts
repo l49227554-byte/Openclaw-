@@ -3,8 +3,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { inlineAuthProfileCredentialSchema } from "./credential-schema.js";
 import { testing as externalAuthTesting } from "./external-auth.test-support.js";
 import { createOAuthManager, OAuthManagerRefreshError } from "./oauth-manager.js";
@@ -46,14 +46,18 @@ async function withOAuthTempRoot(
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   externalAuthTesting.resetResolveExternalAuthProfilesForTest();
   clearRuntimeAuthProfileStoreSnapshots();
-  closeOpenClawStateDatabaseForTest();
+  for (const stateDir of tempDirs.dirs) {
+    await cleanupSessionStateForTest({ stateDir });
+  }
 });
 
 describe("OAuth refresh generation fence", () => {
   it("keeps serialized provider I/O outside locks and settles after observer timeout", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const profileId = "openai:default";
     const expired = createCredential({
       access: "serialized-access",
@@ -112,39 +116,34 @@ describe("OAuth refresh generation fence", () => {
         commit: () => {},
       });
 
-    vi.useFakeTimers();
-    try {
-      const first = run(refresh);
-      await started;
-      expect(JSON.parse(persisted)[profileId].access).toMatch(
-        /^openclaw-oauth-refresh-fence:v1:[a-f0-9]{32}:access:[a-f0-9]{64}$/,
-      );
-      const timedOut = expect(first).rejects.toThrow("exceeded hard timeout (10ms)");
-      await vi.advanceTimersByTimeAsync(10);
-      await timedOut;
-      const peerRefresh = vi.fn(async () => null);
-      const peer = run(peerRefresh);
-      expect(peerRefresh).not.toHaveBeenCalled();
+    const first = run(refresh);
+    await started;
+    expect(JSON.parse(persisted)[profileId].access).toMatch(
+      /^openclaw-oauth-refresh-fence:v1:[a-f0-9]{32}:access:[a-f0-9]{64}$/,
+    );
+    const firstTimedOut = expect(first).rejects.toThrow("exceeded hard timeout (10ms)");
+    await vi.advanceTimersByTimeAsync(10);
+    await firstTimedOut;
+    const peerRefresh = vi.fn(async () => null);
+    const peer = run(peerRefresh);
+    expect(peerRefresh).not.toHaveBeenCalled();
 
-      finish?.({
-        apiKey: "serialized-rotated-access",
-        credential: createCredential({
-          access: "serialized-rotated-access",
-          refresh: "serialized-rotated-refresh",
-          expires: Date.now() + 600_000,
-          accountId: "acct-123",
-        }),
-      });
-      await expect(peer).resolves.toMatchObject({ apiKey: "serialized-rotated-access" });
-      await vi.waitFor(() => {
-        expect(JSON.parse(persisted)[profileId]).toMatchObject({
-          access: "serialized-rotated-access",
-          refresh: "serialized-rotated-refresh",
-        });
-      });
-    } finally {
-      vi.useRealTimers();
-    }
+    finish?.({
+      apiKey: "serialized-rotated-access",
+      credential: createCredential({
+        access: "serialized-rotated-access",
+        refresh: "serialized-rotated-refresh",
+        expires: Date.now() + 600_000,
+        accountId: "acct-123",
+      }),
+    });
+    await expect(peer).resolves.toMatchObject({ apiKey: "serialized-rotated-access" });
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(peerRefresh).not.toHaveBeenCalled();
+    expect(JSON.parse(persisted)[profileId]).toMatchObject({
+      access: "serialized-rotated-access",
+      refresh: "serialized-rotated-refresh",
+    });
   });
 
   it("rejects a different-account replacement for serialized owner and observer settlement", async () => {
@@ -761,6 +760,7 @@ describe("OAuth refresh generation fence", () => {
   });
 
   it("rejects a late settlement after an identity-less generation is restored and reclaimed", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const profileId = "openai:default";
     const firstCredential = createCredential({
       access: "first-access",
@@ -806,7 +806,9 @@ describe("OAuth refresh generation fence", () => {
           settleFirst = resolve;
         }),
     );
-    await expect(first).rejects.toThrow("exceeded hard timeout");
+    const firstTimedOut = expect(first).rejects.toThrow("exceeded hard timeout (10ms)");
+    await vi.advanceTimersByTimeAsync(10);
+    await firstTimedOut;
 
     persisted = JSON.stringify({ [profileId]: firstCredential });
     await expect(

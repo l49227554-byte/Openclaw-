@@ -8,7 +8,7 @@ import type {
   OpenClawPluginService,
   OpenClawPluginServiceContext,
 } from "openclaw/plugin-sdk/plugin-entry";
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
@@ -99,6 +99,9 @@ describe("visitor-access plugin lifecycle", () => {
       on,
       registerService: (service) => services.push(service),
       registerTool: (registration) => {
+        if (typeof registration !== "function" && "contextVersion" in registration) {
+          throw new Error("expected legacy visitor-access registration");
+        }
         const resolved =
           typeof registration === "function"
             ? registration({ sessionKey: "agent:main:maintainer" })
@@ -110,7 +113,7 @@ describe("visitor-access plugin lifecycle", () => {
     });
     api.runtime.state = {
       ...api.runtime.state,
-      openKeyedStore: <T>(options: OpenKeyedStoreOptions) =>
+      openKeyedStore: <T>(options: OpenAsyncKeyedStoreOptions) =>
         createPluginStateKeyedStoreForTests<T>("visitor-access", { ...options, env }),
     };
     plugin.register(api);
@@ -194,6 +197,7 @@ describe("visitor-access plugin lifecycle", () => {
 
     vi.setSystemTime(START_MS + 2 * DAY_MS);
     await vi.advanceTimersByTimeAsync(HOUR_MS);
+    await restarted.execute("visitor_list");
     expect(policy.emails()).toEqual([]);
     expect(await restarted.store.entries()).toEqual([]);
     await restarted.stop();
@@ -261,6 +265,9 @@ describe("visitor-access plugin lifecycle", () => {
     const discovery = createTestPluginApi({
       registrationMode: "tool-discovery",
       registerTool(registration) {
+        if (typeof registration !== "function" && "contextVersion" in registration) {
+          throw new Error("expected legacy visitor-access registration");
+        }
         const tools = typeof registration === "function" ? registration({}) : registration;
         invite =
           (Array.isArray(tools) ? tools : tools ? [tools] : []).find(

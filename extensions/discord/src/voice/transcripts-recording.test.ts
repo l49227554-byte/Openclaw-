@@ -198,9 +198,10 @@ defineDiscordVoiceTests((harness) => {
       }
       const writeWav = voiceAudio.writeVoiceWavFile;
       const wavSpy = vi.spyOn(voiceAudio, "writeVoiceWavFile").mockImplementation(async (pcm) => {
+        const wav = await writeWav(pcm);
         // Admission has completed; change the observed member roles before the chunk's queue check.
-        allowed = pcm[0] !== excluded;
-        return writeWav(pcm);
+        allowed = (await fs.readFile(wav.path))[44] !== excluded;
+        return wav;
       });
       transcribeAudioFileMock.mockImplementation(async ({ filePath }) => {
         const wav = await fs.readFile(filePath);
@@ -409,11 +410,12 @@ defineDiscordVoiceTests((harness) => {
         middle === "cleanup failure"
           ? vi.spyOn(voiceAudio, "writeVoiceWavFile").mockImplementation(async (pcm) => {
               const wav = await writeWav(pcm);
+              const failsCleanup = (await fs.readFile(wav.path))[44] === 2;
               return {
                 ...wav,
                 cleanup: async () => {
                   await wav.cleanup();
-                  if (pcm[0] === 2) {
+                  if (failsCleanup) {
                     throw new Error("synthetic cleanup failure after disposal");
                   }
                 },
@@ -476,7 +478,7 @@ defineDiscordVoiceTests((harness) => {
     },
   );
 
-  it.each([
+  it.for([
     { transition: "enable", speech: "short conversation" },
     { transition: "disable", speech: "short conversation" },
     { transition: "enable", speech: "short control" },
@@ -485,11 +487,13 @@ defineDiscordVoiceTests((harness) => {
     { transition: "disable", speech: "complete" },
   ])(
     "preserves capture and dispatches only complete speech across $transition with $speech",
-    async ({ transition, speech }) => {
+    async ({ transition, speech }, { signal }) => {
       const f = await fixture("stt-tts", false, {
         tools: { media: { audio: { maxBytes: 192_044 } } },
       });
       const complete = speech === "complete";
+      const reverseTranscription = transition === "enable" && complete;
+      const releaseOpeningTranscription = createDeferred<void>();
       const uncapturedFrames = complete ? 50 : 12;
       const openingFrames = transition === "enable" ? uncapturedFrames : 50;
       const closingFrames = transition === "enable" ? 50 : uncapturedFrames;
@@ -504,7 +508,14 @@ defineDiscordVoiceTests((harness) => {
       transcribeAudioFileMock.mockImplementation(async ({ filePath }) => {
         const wav = await fs.readFile(filePath);
         const marker = wav.readUInt8(44);
+        // Conversation-only STT must not block recording; finish it after the captured chunk.
+        if (reverseTranscription && marker === 1) {
+          await releaseOpeningTranscription.promise;
+        }
         transcribedMarkers.push(marker);
+        if (marker === 2) {
+          releaseOpeningTranscription.resolve();
+        }
         return { text: texts[marker - 1] };
       });
       const openingDecoded = createDeferred<void>();
@@ -520,6 +531,9 @@ defineDiscordVoiceTests((harness) => {
       if (transition === "disable") {
         expect(await startTranscripts(f.manager, f.sink)).toMatchObject({ ok: true });
       }
+      const releaseOnAbort = () => releaseOpeningTranscription.resolve();
+      signal.throwIfAborted();
+      signal.addEventListener("abort", releaseOnAbort, { once: true });
       const receiving = f.begin("100000000000000001");
       const stream = f.streams.get("100000000000000001")!;
       try {
@@ -540,15 +554,25 @@ defineDiscordVoiceTests((harness) => {
         for (let frame = 0; frame < closingFrames; frame++) {
           stream.write(Buffer.alloc(3_840, 2));
         }
+      } catch (error) {
+        releaseOpeningTranscription.resolve();
+        throw error;
       } finally {
         stream.end();
-        await receiving;
-        await f.entry.processingQueue;
+        try {
+          await receiving;
+          await f.entry.processingQueue;
+        } finally {
+          releaseOpeningTranscription.resolve();
+          signal.removeEventListener("abort", releaseOnAbort);
+        }
       }
       expect(getSessionConnection(f.entry).receiver.subscribe).toHaveBeenCalledOnce();
       expect(decodeOpusStreamChunksMock).toHaveBeenCalledOnce();
       await Promise.all(f.conversations.mock.results.map((result) => result.value));
-      expect(transcribedMarkers).toEqual(complete ? [1, 2] : [capturedMarker]);
+      expect(transcribedMarkers).toEqual(
+        complete ? (reverseTranscription ? [2, 1] : [1, 2]) : [capturedMarker],
+      );
       expect(f.sink).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ text: texts[capturedMarker - 1], sessionId: "notes-1" }),
       );

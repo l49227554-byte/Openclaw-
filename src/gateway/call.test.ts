@@ -1967,7 +1967,7 @@ describe("callGateway error details", () => {
       closeCode = 1006;
       closeReason = "";
       setLocalLoopbackGatewayConfig();
-      const dispatched = createDeferred<void>();
+      const dispatched = createDeferred();
       gatewayClientRequest = () => {
         dispatched.resolve();
         return createDeferred<unknown>().promise;

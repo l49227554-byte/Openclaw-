@@ -3,6 +3,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { readMissingScopeErrorDetails } from "../../../packages/gateway-protocol/src/gateway-error-details.js";
+import type { ThinkingCatalogEntry } from "../../auto-reply/thinking.js";
 import {
   SessionMoveProfileTargetSchema,
   type SessionsDispatchResult,
@@ -19,6 +20,7 @@ import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ADMIN_SCOPE } from "../../gateway/method-scopes.js";
 import { resolveWorkspacePathContainment } from "../../gateway/server-methods/workspace-path-containment.js";
+import { loadGatewayModelCatalog } from "../../gateway/server-model-catalog.js";
 import { resolveGatewaySessionStoreTarget } from "../../gateway/session-utils-store-lookup.js";
 import { resolveWorkerPlacementDestination } from "../../gateway/worker-environments/placement-destination.js";
 import { isPathInside } from "../../infra/path-guards.js";
@@ -50,10 +52,15 @@ import { resolveSubagentSpawnOwnership } from "../subagents/spawn/subagent-spawn
 import {
   resolveConfiguredSubagentRunTimeoutSeconds,
   resolveSubagentModelAndThinkingPlan,
+  splitModelRef,
 } from "../subagents/spawn/subagent-spawn-plan.js";
-import { readRequesterModel } from "../subagents/spawn/subagent-spawn-requester-prefs.js";
+import {
+  readRequesterModel,
+  readRequesterThinkingLevel,
+} from "../subagents/spawn/subagent-spawn-requester-prefs.js";
 import { buildSubagentTaskMessage } from "../subagents/spawn/subagent-system-prompt.js";
 import { resolveSubagentTargetPolicy } from "../subagents/spawn/subagent-target-policy.js";
+import { resolveCandidateThinkingLevel } from "../thinking-runtime.js";
 import { resolveAgentTimeoutMs } from "../timeout.js";
 import { normalizeToolModelOverride, readToolStringParam, ToolInputError } from "./common.js";
 import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
@@ -105,6 +112,7 @@ export type VisibleSessionsSpawnDeps = {
   callGateway?: InProcessGatewayCaller;
   registerRun?: typeof registerSubagentRun;
   countActiveRuns?: typeof countActiveRunsForSession;
+  loadModelCatalog?: typeof loadGatewayModelCatalog;
 };
 
 type VisibleSessionsSpawnOptions = VisibleSessionsSpawnDeps &
@@ -129,6 +137,28 @@ type VisibleSessionsSpawnOptions = VisibleSessionsSpawnDeps &
 
 function summarizeSessionsSpawnError(error: unknown): string {
   return error instanceof Error ? error.message : typeof error === "string" ? error : "error";
+}
+
+/**
+ * Reads the same prepared catalog generation `sessions.create` validates against,
+ * so an inherited level is clamped with the child's real capabilities. An
+ * unreadable catalog yields `undefined`: the caller then forwards no explicit
+ * level instead of one it could not authorize.
+ */
+async function loadVisibleChildThinkingCatalog(params: {
+  loadModelCatalog?: typeof loadGatewayModelCatalog;
+  agentId: string;
+  cfg: OpenClawConfig;
+}): Promise<ThinkingCatalogEntry[] | undefined> {
+  try {
+    const catalog = await (params.loadModelCatalog ?? loadGatewayModelCatalog)({
+      agentId: params.agentId,
+      getConfig: () => params.cfg,
+    });
+    return Array.isArray(catalog) ? catalog : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function maybeSpawnVisibleSession(params: {
@@ -368,8 +398,17 @@ export async function maybeSpawnVisibleSession(params: {
   const modelPlan = await resolveSubagentModelAndThinkingPlan({
     cfg,
     targetAgentId,
+    requesterAgentConfig: resolveAgentConfig(cfg, requesterAgentId),
+    targetAgentConfig: resolveAgentConfig(cfg, targetAgentId),
     modelOverride,
     workspaceDir: spawnedWorkspaceDir,
+    callerThinkingRaw:
+      params.options?.requesterThinkingLevel ??
+      readRequesterThinkingLevel({
+        cfg,
+        requesterInternalKey: requesterKey,
+        requesterAgentId,
+      }),
     inheritedModel:
       targetAgentId === requesterAgentId
         ? (params.options?.requesterModel ??
@@ -416,6 +455,39 @@ export async function maybeSpawnVisibleSession(params: {
   // Successful admission reserves a child before Gateway work can start.
   params.options?.onSpawnEffectsStart?.();
   try {
+    const inheritedThinkingLevel =
+      modelPlan.thinkingOverride === undefined ? initialSessionPatch.thinkingLevel : undefined;
+    // `sessions.create` rejects an explicit thinkingLevel its prepared catalog does
+    // not support, and only clamps silently when the field is absent. Catalog-only
+    // restrictions (`reasoning: false`) are invisible without the catalog, so an
+    // unclamped inherited level would fail a spawn that previously succeeded.
+    const inheritedThinkingCatalog = inheritedThinkingLevel
+      ? await loadVisibleChildThinkingCatalog({
+          loadModelCatalog: params.options?.loadModelCatalog,
+          agentId: targetAgentId,
+          cfg,
+        })
+      : undefined;
+    const clampedInheritedThinkingLevel =
+      inheritedThinkingLevel && inheritedThinkingCatalog
+        ? (() => {
+            const { provider, model } = splitModelRef(resolvedModel);
+            return provider && model
+              ? resolveCandidateThinkingLevel({
+                  cfg,
+                  provider,
+                  modelId: model,
+                  level: inheritedThinkingLevel,
+                  catalog: inheritedThinkingCatalog,
+                  agentId: targetAgentId,
+                  sessionKey: `agent:${targetAgentId}:dashboard:pending`,
+                })
+              : undefined;
+          })()
+        : undefined;
+    const resolvedThinkingLevel = inheritedThinkingLevel
+      ? clampedInheritedThinkingLevel
+      : initialSessionPatch.thinkingLevel;
     const gatewayCall = params.options?.callGateway ?? callInProcessGatewayTool;
     const createGatewayCall: InProcessGatewayCaller =
       params.options?.callGateway ??
@@ -461,6 +533,7 @@ export async function maybeSpawnVisibleSession(params: {
         // sessions.create persists the group under the legacy wire field `category`.
         ...(group ? { category: group } : {}),
         model: resolvedModelRef,
+        ...(resolvedThinkingLevel ? { thinkingLevel: resolvedThinkingLevel } : {}),
         ...(placement ? { titleSource: params.task } : { task: taskMessage }),
         timeoutMs:
           runTimeoutSeconds === 0

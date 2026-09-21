@@ -22,6 +22,10 @@ import {
   buildQaRuntimeEnv,
   stageQaCodexMockModelCatalog,
 } from "./gateway-child-env.js";
+import {
+  createQaPackagedCredentialCaptureScript,
+  createQaPackagedSourceRootCaptureScript,
+} from "./gateway-child-env.test-support.js";
 import { QaGatewayChildLifecycle } from "./gateway-child-lifecycle.js";
 import {
   closeQaGatewayLogStream,
@@ -1054,21 +1058,7 @@ describe("buildQaRuntimeEnv", () => {
     const tempParent = await tempDirs.makeTempDir("qa-gateway-env-scrub-");
     qaTempPathState.preferredTmpDir = tempParent;
     const observedEnvPath = path.join(tempParent, "observed-env.json");
-    const captureScript = [
-      'const fs = require("node:fs");',
-      "const env = {",
-      "SAFE_VALUE: process.env.SAFE_VALUE,",
-      "OPENCLAW_LIVE_SETUP_TOKEN_VALUE: process.env.OPENCLAW_LIVE_SETUP_TOKEN_VALUE,",
-      "OPENCLAW_QA_LIVE_ANTHROPIC_SETUP_TOKEN: process.env.OPENCLAW_QA_LIVE_ANTHROPIC_SETUP_TOKEN,",
-      "OPENCLAW_QA_CONVEX_SECRET_CI: process.env.OPENCLAW_QA_CONVEX_SECRET_CI,",
-      "OPENCLAW_QA_SUT_FORBIDDEN_SENTINEL: process.env.OPENCLAW_QA_SUT_FORBIDDEN_SENTINEL,",
-      "OPENCLAW_QA_TELEGRAM_GROUP_ID: process.env.OPENCLAW_QA_TELEGRAM_GROUP_ID,",
-      "OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN: process.env.OPENCLAW_QA_TELEGRAM_DRIVER_BOT_TOKEN,",
-      "OPENCLAW_QA_TELEGRAM_SUT_BOT_TOKEN: process.env.OPENCLAW_QA_TELEGRAM_SUT_BOT_TOKEN,",
-      "OPENCLAW_DEV_SOURCE_ROOT: process.env.OPENCLAW_DEV_SOURCE_ROOT,",
-      "};",
-      `fs.writeFileSync(${JSON.stringify(observedEnvPath)}, JSON.stringify(env));`,
-    ].join("\n");
+    const captureScript = createQaPackagedCredentialCaptureScript(observedEnvPath);
 
     const owner = ownGateway();
     await expect(
@@ -1111,14 +1101,7 @@ describe("buildQaRuntimeEnv", () => {
     const observedEnvPath = path.join(tempParent, "observed-source-root");
     const runnerPath = path.join(repoRoot, "scripts", "run-node.mjs");
     await mkdir(path.dirname(runnerPath), { recursive: true });
-    await writeFile(
-      runnerPath,
-      [
-        'import fs from "node:fs";',
-        `fs.writeFileSync(${JSON.stringify(observedEnvPath)}, process.env.OPENCLAW_DEV_SOURCE_ROOT ?? "");`,
-      ].join("\n"),
-      "utf8",
-    );
+    await writeFile(runnerPath, createQaPackagedSourceRootCaptureScript(observedEnvPath), "utf8");
     vi.stubEnv("OPENCLAW_DEV_SOURCE_ROOT", "/repo/current-harness");
 
     const owner = ownGateway();

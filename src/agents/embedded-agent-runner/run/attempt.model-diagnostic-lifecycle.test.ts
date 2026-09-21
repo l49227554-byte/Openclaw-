@@ -86,12 +86,16 @@ function requireMockRecordArg(
   return requireRecord(mock.mock.calls[callIndex]?.[argIndex], label);
 }
 
-async function collectProviderTimelineEvents(run: () => Promise<void>, includeMarks = false) {
+async function collectProviderTimelineEvents(
+  run: () => Promise<void>,
+  includeMarks = false,
+  flag: string | null = "1",
+) {
   const root = tempDirs.make("openclaw-provider-timeline-");
   const timelinePath = join(root, "timeline.jsonl");
   await withEnvAsync(
     {
-      OPENCLAW_DIAGNOSTICS: "1",
+      OPENCLAW_DIAGNOSTICS: flag ?? undefined,
       OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: timelinePath,
     },
     run,
@@ -236,75 +240,83 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents lifecycle", () => {
     },
   );
 
-  it("separates last observed provider activity from delayed terminal settlement without content", async () => {
-    const startedAt = Date.parse("2026-07-09T18:30:00.000Z");
-    let now = startedAt;
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    const assistant = {
-      role: "assistant",
-      stopReason: "stop",
-      content: [{ type: "text", text: "private-answer" }],
-    };
-    async function* stream() {
-      now += 10;
-      yield { type: "start", partial: { private: "private-payload" } };
-      now += 20;
-      yield { type: "done", message: assistant };
-    }
-    const original = Object.assign(stream(), {
-      result: async () => {
-        now += 100;
-        return assistant;
-      },
-    });
-    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
-      (() => original) as unknown as StreamFn,
-      {
-        runId: "run-timing",
-        provider: "synthetic",
-        model: "synthetic-model",
-        trace: createDiagnosticTraceContext(),
-        nextCallId: () => "call-timing",
-      },
-    );
-    const events = await collectProviderTimelineEvents(async () => {
-      const response = await wrapped(
-        {} as never,
-        { messages: [{ role: "user", content: "private-prompt" }] } as never,
+  it.each(["environment", "config"] as const)(
+    "separates last observed provider activity from delayed terminal settlement without content (%s)",
+    async (activation) => {
+      const startedAt = Date.parse("2026-07-09T18:30:00.000Z");
+      let now = startedAt;
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const assistant = {
+        role: "assistant",
+        stopReason: "stop",
+        content: [{ type: "text", text: "private-answer" }],
+      };
+      async function* stream() {
+        now += 10;
+        yield { type: "start", partial: { private: "private-payload" } };
+        now += 20;
+        yield { type: "done", message: assistant };
+      }
+      const original = Object.assign(stream(), {
+        result: async () => {
+          now += 100;
+          return assistant;
+        },
+      });
+      const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
+        (() => original) as unknown as StreamFn,
+        {
+          config: activation === "config" ? { diagnostics: { flags: ["timeline"] } } : undefined,
+          runId: "run-timing",
+          provider: "synthetic",
+          model: "synthetic-model",
+          trace: createDiagnosticTraceContext(),
+          nextCallId: () => "call-timing",
+        },
       );
-      await drain(response);
-      await response.result();
-      await response.result();
-    }, true);
-    expect(events).toHaveLength(3);
-    expect(events[0]).toMatchObject({
-      type: "mark",
-      name: "provider.request.started",
-      runId: "run-timing",
-      spanId: "call-timing",
-      timestamp: new Date(startedAt).toISOString(),
-    });
-    expect(events[1]).toMatchObject({
-      type: "mark",
-      name: "provider.request.activity",
-      runId: "run-timing",
-      spanId: "call-timing",
-      timestamp: new Date(startedAt + 10).toISOString(),
-    });
-    expect(events[2]).toMatchObject({
-      type: "provider.request",
-      runId: "run-timing",
-      spanId: "call-timing",
-      durationMs: 130,
-      ok: true,
-      attributes: {
-        terminalAtMs: startedAt + 130,
-        lastProviderActivityAtMs: startedAt + 30,
-        terminalReason: "stop",
-      },
-    });
-    expect(JSON.stringify(events)).not.toMatch(/private-(?:answer|payload|prompt)/);
-  });
+      const events = await collectProviderTimelineEvents(
+        async () => {
+          const response = await wrapped(
+            {} as never,
+            { messages: [{ role: "user", content: "private-prompt" }] } as never,
+          );
+          await drain(response);
+          await response.result();
+          await response.result();
+        },
+        true,
+        activation === "config" ? null : "1",
+      );
+      expect(events).toHaveLength(3);
+      expect(events[0]).toMatchObject({
+        type: "mark",
+        name: "provider.request.started",
+        runId: "run-timing",
+        spanId: "call-timing",
+        timestamp: new Date(startedAt).toISOString(),
+      });
+      expect(events[1]).toMatchObject({
+        type: "mark",
+        name: "provider.request.activity",
+        runId: "run-timing",
+        spanId: "call-timing",
+        timestamp: new Date(startedAt + 10).toISOString(),
+      });
+      expect(events[2]).toMatchObject({
+        type: "provider.request",
+        runId: "run-timing",
+        spanId: "call-timing",
+        durationMs: 130,
+        ok: true,
+        attributes: {
+          terminalAtMs: startedAt + 130,
+          lastProviderActivityAtMs: startedAt + 30,
+          terminalReason: "stop",
+        },
+      });
+      expect(JSON.stringify(events)).not.toMatch(/private-(?:answer|payload|prompt)/);
+    },
+  );
 
   it.each([
     { stopReason: "stop", terminalReason: "stop", ok: true },
@@ -395,27 +407,38 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents lifecycle", () => {
     ).toBe(true);
   });
 
-  it("does not create a timeline when diagnostic collection is disabled", async () => {
-    const timelinePath = join(tempDirs.make("openclaw-disabled-model-timeline-"), "timeline.jsonl");
-    await withEnvAsync(
-      { OPENCLAW_DIAGNOSTICS: undefined, OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: timelinePath },
-      async () => {
-        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
-          (() => undefined) as unknown as StreamFn,
-          {
-            runId: "run-disabled",
-            provider: "synthetic",
-            model: "synthetic-model",
-            trace: createDiagnosticTraceContext(),
-            nextCallId: () => "call-disabled",
-          },
-        );
-        await wrapped({} as never, { messages: [] });
-        flushDiagnosticsTimeline();
-        expect(existsSync(timelinePath)).toBe(false);
-      },
-    );
-  });
+  it.each(["unset", "override"] as const)(
+    "does not create a timeline when diagnostic collection is disabled (%s)",
+    async (activation) => {
+      const timelinePath = join(
+        tempDirs.make("openclaw-disabled-model-timeline-"),
+        "timeline.jsonl",
+      );
+      await withEnvAsync(
+        {
+          OPENCLAW_DIAGNOSTICS: activation === "override" ? "0" : undefined,
+          OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: timelinePath,
+        },
+        async () => {
+          const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(
+            (() => undefined) as unknown as StreamFn,
+            {
+              config:
+                activation === "override" ? { diagnostics: { flags: ["timeline"] } } : undefined,
+              runId: "run-disabled",
+              provider: "synthetic",
+              model: "synthetic-model",
+              trace: createDiagnosticTraceContext(),
+              nextCallId: () => "call-disabled",
+            },
+          );
+          await wrapped({} as never, { messages: [] });
+          flushDiagnosticsTimeline();
+          expect(existsSync(timelinePath)).toBe(false);
+        },
+      );
+    },
+  );
 
   it("records legacy response status without inferring provider acceptance", async () => {
     const originalOnResponse = vi.fn(async () => undefined);

@@ -1,3 +1,4 @@
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   areDiagnosticsEnabledForProcess,
   emitTrustedDiagnosticEvent,
@@ -22,16 +23,19 @@ export type ModelCallStreamProgressTarget = {
 
 // Refresh recovery on every chunk, but throttle public events. Owner-bound
 // callbacks also reject late output without refreshing a replacement's clock.
-export function createModelCallStreamProgressReporter(
-  recordProgress?: () => boolean,
-): (target: ModelCallStreamProgressTarget) => void {
+export function createModelCallStreamProgressReporter({
+  recordProgress,
+  config,
+}: { recordProgress?: () => boolean; config?: OpenClawConfig } = {}): (
+  target: ModelCallStreamProgressTarget,
+) => void {
   let lastEmittedAtMs: number | undefined;
   return (target) => {
     if (recordProgress && !recordProgress()) {
       return;
     }
     const diagnosticsEnabled = areDiagnosticsEnabledForProcess();
-    const timelineEnabled = target.callId !== undefined && isDiagnosticsTimelineEnabled();
+    const timelineEnabled = target.callId !== undefined && isDiagnosticsTimelineEnabled({ config });
     if (!diagnosticsEnabled && !timelineEnabled) {
       return;
     }
@@ -56,13 +60,16 @@ export function createModelCallStreamProgressReporter(
       emitTrustedDiagnosticEvent({ type: "run.progress", ...fields });
     }
     if (timelineEnabled) {
-      emitDiagnosticsTimelineEvent({
-        type: "mark",
-        name: "provider.request.activity",
-        timestamp: new Date(now).toISOString(),
-        runId: target.runId,
-        spanId: target.callId,
-      });
+      emitDiagnosticsTimelineEvent(
+        {
+          type: "mark",
+          name: "provider.request.activity",
+          timestamp: new Date(now).toISOString(),
+          runId: target.runId,
+          spanId: target.callId,
+        },
+        { config },
+      );
     }
   };
 }

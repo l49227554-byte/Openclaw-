@@ -87,16 +87,33 @@ export function collectEnvRefPaths(
 }
 
 export function containsConfigIncludeDirective(value: unknown): boolean {
-  if (Array.isArray(value)) {
-    return value.some((item) => containsConfigIncludeDirective(item));
+  // Explicit work stack: document nesting costs heap rather than call frames,
+  // so a schema-valid deep config cannot crash the include-aware guards that
+  // consult this scan (recovery, backup capture, startup repair, plugin
+  // publication) with a RangeError. Include resolution runs earlier in the
+  // read path; this predicate protects only the decisions made after it.
+  // Items are pushed one by one because spread-pushing a very long array is
+  // itself a call-stack overflow.
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        stack.push(item);
+      }
+      continue;
+    }
+    if (!isRecord(current)) {
+      continue;
+    }
+    if (INCLUDE_KEY in current) {
+      return true;
+    }
+    for (const child of Object.values(current)) {
+      stack.push(child);
+    }
   }
-  if (!isRecord(value)) {
-    return false;
-  }
-  if (INCLUDE_KEY in value) {
-    return true;
-  }
-  return Object.values(value).some((item) => containsConfigIncludeDirective(item));
+  return false;
 }
 
 export function resolveConfigPathForDeps(deps: NormalizedConfigIoDeps): string {

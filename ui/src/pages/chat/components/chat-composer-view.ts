@@ -277,7 +277,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     : renderChatRunStatusIndicator(composerRunStatus);
   const fallbackStatus = renderFallbackIndicator(props.fallbackStatus);
   const progressCard = props.progressCard
-    ? html`<div class="agent-chat__progress-float">
+    ? html`<div class="agent-chat__progress-float" ?hidden=${!showComposer}>
         ${renderSessionProgressCard(
           props.progressCard,
           "composer",
@@ -288,6 +288,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
           props.runActive,
           props.collapseTaskProgress,
           {
+            presented: showComposer,
             gatewayScope: props.gatewayScope,
             sessionIdentity: props.progressCardIdentity,
             activeRunId: props.runId,
@@ -301,6 +302,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     : props.progressCardInitialLoading
       ? html`<div
           class="agent-chat__progress-float agent-chat__progress-float--loading"
+          ?hidden=${!showComposer}
           aria-hidden="true"
         ></div>`
       : nothing;

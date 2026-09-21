@@ -96,6 +96,7 @@ export function createLineBot(opts: LineBotOptions): LineBot {
       const cfg = resolveTurnConfig();
       await handleLineWebhookEvents([...events], {
         cfg,
+        resolveConfig: resolveTurnConfig,
         account,
         runtime,
         buildContext: opts.buildContext,

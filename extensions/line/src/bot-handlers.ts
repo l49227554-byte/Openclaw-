@@ -42,6 +42,10 @@ import {
   normalizeOptionalString,
   normalizeStringEntries,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  hasLineApprovalPostbackData,
+  resolveLineApprovalPostbackTap,
+} from "./approval-postback.js";
 import { firstDefined, normalizeLineAllowEntry } from "./bot-access.js";
 import {
   buildLineMessageContext,
@@ -56,7 +60,11 @@ import { reserveLineGroupHistory } from "./group-history.js";
 import { resolveLineGroupConfigEntry } from "./group-keys.js";
 import { hasAnyLineMention, isLineBotMentioned } from "./mentions.js";
 import { quotesLineBotMessage } from "./outbound-message-log.js";
-import { parseLineQuestionPostbackData, resolveLineQuestionPostback } from "./question-postback.js";
+import {
+  lineQuestionOutcomeNotice,
+  parseLineQuestionPostbackData,
+  resolveLineQuestionPostback,
+} from "./question-postback.js";
 import { getLineGroupName, getUserDisplayName, pushMessageLine, replyMessageLine } from "./send.js";
 import type { ResolvedLineAccount } from "./types.js";
 import type { LineWebhookTurnAdoptionLifecycle } from "./webhook-spool.js";
@@ -86,6 +94,11 @@ function isDownloadableLineMessageType(
 
 interface LineHandlerContext {
   cfg: OpenClawConfig;
+  /**
+   * Reads the config current at the moment of the call. Authority behind a side effect
+   * is rechecked with it after awaited work; `cfg` is the config the event arrived with.
+   */
+  resolveConfig?: () => OpenClawConfig;
   account: ResolvedLineAccount;
   runtime: RuntimeEnv;
   buildContext?: typeof buildChannelInboundEventContext;
@@ -622,16 +635,6 @@ async function handleLeaveEvent(event: LeaveEvent, _context: LineHandlerContext)
   logVerbose(`line: bot left ${groupId ? `group ${groupId}` : `room ${roomId}`}`);
 }
 
-/** What a tap that did not answer the question has to tell the person who tapped. */
-function lineQuestionOutcomeNotice(status: "already-terminal" | "failed"): string {
-  if (status === "already-terminal") {
-    // The Gateway reports one terminal state for answered, cancelled and expired
-    // questions alike, so the notice claims only what it knows.
-    return "That question is no longer waiting for an answer.";
-  }
-  return "Could not record that answer. Reply with the option text instead.";
-}
-
 async function handlePostbackEvent(
   event: PostbackEvent,
   context: LineHandlerContext,
@@ -643,13 +646,14 @@ async function handlePostbackEvent(
   if (!decision) {
     return;
   }
+  const { userId, groupId, roomId } = getLineSourceInfo(event.source);
+  const pushTarget = groupId ?? roomId ?? (userId ? `line:${userId}` : undefined);
+  // Re-read admission without issuing another pairing challenge.
+  const authorize = async () => isLineEventAdmitted(await decision.resolveBoundAccess());
 
   const question = parseLineQuestionPostbackData(data ?? "");
   if (question) {
     // An ask_user tap answers the pending question; it is not a new turn.
-    const { userId, groupId, roomId } = getLineSourceInfo(event.source);
-    // Re-read admission without issuing another pairing challenge.
-    const authorize = async () => isLineEventAdmitted(await decision.resolveBoundAccess());
     const outcome = await resolveLineQuestionPostback({
       cfg: context.cfg,
       callback: question,
@@ -659,7 +663,6 @@ async function handlePostbackEvent(
     });
     // A recorded answer needs no acknowledgement: the agent's next reply is the
     // feedback, and LINE already echoed the label through the action's displayText.
-    const pushTarget = groupId ?? roomId ?? (userId ? `line:${userId}` : undefined);
     if (outcome.status === "answered" || outcome.status === "denied" || !pushTarget) {
       return;
     }
@@ -671,6 +674,27 @@ async function handlePostbackEvent(
       text: lineQuestionOutcomeNotice(outcome.status),
       authorize,
     });
+    return;
+  }
+
+  if (hasLineApprovalPostbackData(data)) {
+    // Ordinary postback data becomes the agent's turn text; approval data must not.
+    const notice = await resolveLineApprovalPostbackTap({
+      resolveConfig: context.resolveConfig ?? (() => context.cfg),
+      account: context.account,
+      data: data ?? "",
+      ...(userId ? { senderId: userId } : {}),
+    });
+    if (notice && pushTarget) {
+      await sendLineHandlerText({
+        context,
+        replyToken: event.replyToken,
+        pushTarget,
+        logLabel: "line: approval decision notice failed",
+        text: notice,
+        authorize,
+      });
+    }
     return;
   }
 

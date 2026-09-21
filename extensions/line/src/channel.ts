@@ -15,6 +15,7 @@ import {
 } from "openclaw/plugin-sdk/directory-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { resolveLineAccount } from "./accounts.js";
+import { lineApprovalCapability } from "./approval-native.js";
 import { lineBindingsAdapter } from "./bindings.js";
 import { lineChannelPluginCommon } from "./channel-shared.js";
 import { lineConfigAdapter } from "./config-adapter.js";
@@ -62,6 +63,7 @@ export const linePlugin: LineChannelPlugin = createChatChannelPlugin({
     id: "line",
     ...lineChannelPluginCommon,
     setupWizard: lineSetupWizard,
+    approvalCapability: lineApprovalCapability,
     groups: {
       resolveRequireMention: resolveLineGroupRequireMention,
     },

@@ -135,6 +135,35 @@ rl.on("line", (line) => process.stdout.write(line + "\n"));
     expect(prompt.params.mcpServers).toBeUndefined();
   });
 
+  it("preserves empty quoted arguments through the target process", async () => {
+    const argvServerPath = await makeTempScript(
+      "argv-server.cjs",
+      String.raw`#!/usr/bin/env node
+process.stdout.write(JSON.stringify(process.argv.slice(2)) + "\n");
+`,
+    );
+    const payload = encodePayload({
+      targetCommand: `"${process.execPath}" "${argvServerPath}" --profile "" --mode active`,
+      mcpServers: [],
+    });
+    const child = spawn(process.execPath, [proxyPath, "--payload", payload], {
+      stdio: ["pipe", "pipe", "inherit"],
+      cwd: process.cwd(),
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stdin.end();
+
+    const exitCode = await new Promise<number | null>((resolve) => {
+      child.once("close", (code) => resolve(code));
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout) as string[]).toEqual(["--profile", "", "--mode", "active"]);
+  });
+
   it("reports target stdin pipe failures without an unhandled stream error", async () => {
     const closedStdinServerPath = await makeTempScript(
       "closed-stdin-server.cjs",

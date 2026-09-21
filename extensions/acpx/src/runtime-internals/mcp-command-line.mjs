@@ -15,6 +15,7 @@ function splitCommandParts(value, platform = process.platform) {
   let current = "";
   let quote = null;
   let escaping = false;
+  let hasPart = false;
 
   for (let index = 0; index < value.length; index += 1) {
     const ch = value[index];
@@ -22,9 +23,11 @@ function splitCommandParts(value, platform = process.platform) {
     if (escaping) {
       current += ch;
       escaping = false;
+      hasPart = true;
       continue;
     }
     if (ch === "\\") {
+      hasPart = true;
       if (quote === "'") {
         current += ch;
         continue;
@@ -56,16 +59,19 @@ function splitCommandParts(value, platform = process.platform) {
     }
     if (ch === "'" || ch === '"') {
       quote = ch;
+      hasPart = true;
       continue;
     }
     if (/\s/.test(ch)) {
-      if (current.length > 0) {
+      if (hasPart) {
         parts.push(current);
         current = "";
+        hasPart = false;
       }
       continue;
     }
     current += ch;
+    hasPart = true;
   }
 
   if (escaping) {
@@ -74,7 +80,7 @@ function splitCommandParts(value, platform = process.platform) {
   if (quote) {
     throw new Error("Invalid agent command: unterminated quote");
   }
-  if (current.length > 0) {
+  if (hasPart) {
     parts.push(current);
   }
   return parts;

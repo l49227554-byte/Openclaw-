@@ -4,8 +4,6 @@ import type { QuestionPrompt } from "../../../app/question-prompt.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import type { ChatItem, MessageGroup } from "../../../lib/chat/chat-types.ts";
-import { readPreparedActivity, summarizeToolGroup } from "../../../lib/chat/tool-call-grouping.ts";
-import { extractToolCardsCached } from "../../../lib/chat/tool-cards.ts";
 import { formatDurationCompact } from "../../../lib/format-duration.ts";
 import { renderChatAvatar } from "../chat-avatar.ts";
 import { renderGroupedMessage } from "./chat-message-bubble.ts";
@@ -19,7 +17,6 @@ import { renderChatQuestionSummary } from "./chat-question-card.ts";
 import { renderChatReplyAttribution } from "./chat-reply-attribution.ts";
 import type { SidebarContent } from "./chat-sidebar.ts";
 import { shouldToggleSelectableDisclosure, syncToolDisclosureOverflow } from "./chat-tool-cards.ts";
-import { renderToolOutcomeSummary } from "./chat-tool-outcome-summary.ts";
 import { renderChatWorkingIndicator } from "./chat-working-indicator.ts";
 
 /** A contiguous run of in-flight streaming items rendered under one assistant group. */
@@ -166,7 +163,7 @@ export function renderStreamGroup(parts: StreamGroupPart[], opts: StreamGroupOpt
   `;
 }
 
-/** Completed work keeps its operation summary and elapsed time above the expanded groups. */
+/** Completed work stays quiet; operation details belong inside the disclosure. */
 export function renderWorkGroupSummary(
   item: { key: string; durationMs: number | null; groups: readonly MessageGroup[] },
   opts: {
@@ -177,18 +174,7 @@ export function renderWorkGroupSummary(
   },
 ) {
   const duration = formatDurationCompact(item.durationMs);
-  const cards = item.groups.flatMap((group) =>
-    group.messages.flatMap(({ message }) => extractToolCardsCached(message)),
-  );
-  const activity = item.groups.flatMap((group) =>
-    group.messages.flatMap(({ message }) => readPreparedActivity(message)),
-  );
-  const label =
-    activity.length || cards.length
-      ? summarizeToolGroup(activity, { includeFailureCount: opts.expanded })
-      : duration
-        ? t("chat.workRun.workedFor", { duration })
-        : t("chat.workRun.worked");
+  const label = duration ? t("chat.workRun.workedFor", { duration }) : t("chat.workRun.worked");
   const content = html`
     <div class="chat-activity-group chat-work-group ${opts.expanded ? "is-open" : ""}">
       <button
@@ -206,16 +192,6 @@ export function renderWorkGroupSummary(
         <span class="chat-tool-disclosure__content">
           <span class="chat-activity-group__label">${label}</span>
         </span>
-        ${
-          (activity.length || cards.length) && duration
-            ? html`<span
-                class="chat-activity-group__duration"
-                aria-label=${t("chat.workRun.workedFor", { duration })}
-                >${duration}</span
-              >`
-            : nothing
-        }
-        ${opts.expanded ? nothing : renderToolOutcomeSummary(cards, true, activity.length ? activity : undefined)}
         <span class="chat-tool-row__chevron" aria-hidden="true">${icons.chevronRight}</span>
       </button>
       <div class="chat-work-group__separator" aria-hidden="true"></div>

@@ -552,8 +552,10 @@ and follow tool-activity visibility. They are hidden while a run is active or
 transcript search is filtering messages.
 
 In completed dashboard turns, commentary, reasoning-only messages, and tool activity
-share one **Worked for…** disclosure above the answers. Expanding it shows the
-activity in its original order; explicit answer segments and visual results stay
+share one **Worked for…** disclosure above the answers. Its heading shows only
+elapsed time (or **Worked** when timing is unavailable), not operation totals or
+intermediate tool-failure counts. Expanding it shows the activity, including tool
+outcomes and inspectable inputs and results, in its original order; explicit answer segments and visual results stay
 visible below it. Failed tool results after the last answer stay visible outside
 the disclosure until a later answer follows them. This is display grouping, not a
 change to stored history. Live turns, search results, and turns without an answer

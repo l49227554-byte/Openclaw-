@@ -51,7 +51,7 @@ it.each(["activity", "work"] as const)(
     );
 
     const activity = container.querySelector<HTMLButtonElement>(".chat-activity-group__summary");
-    expect(activity?.textContent).toContain("2 reads");
+    expect(activity?.textContent?.trim()).toBe(kind === "work" ? "Worked for 1s" : "2 reads");
     expect(activity?.querySelector("[title], [data-tooltip], openclaw-tooltip")).toBeNull();
     expect(activity?.getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelectorAll(".chat-activity-group")).toHaveLength(1);
@@ -68,52 +68,57 @@ it.each([
   ["work", "anonymous"],
   ["work", "missing-card"],
   ["work", "matched"],
-] as const)("retains prepared failures exactly once in %s summaries (%s)", (kind, pairing) => {
-  const message = createAssistantMessage(
-    pairing === "missing-card"
-      ? [{ type: "text", text: "Operation details unavailable" }]
-      : [
-          createToolCall("call-failed", "read", { path: "/repo/private.ts" }),
-          createToolResultBlock("call-failed", "read", "Permission denied", { isError: true }),
+] as const)(
+  "keeps failures inside activity details rather than the work heading (%s, %s)",
+  (kind, pairing) => {
+    const message = createAssistantMessage(
+      pairing === "missing-card"
+        ? [{ type: "text", text: "Operation details unavailable" }]
+        : [
+            createToolCall("call-failed", "read", { path: "/repo/private.ts" }),
+            createToolResultBlock("call-failed", "read", "Permission denied", { isError: true }),
+          ],
+      {
+        activity: [
+          {
+            itemId: "prepared-failure",
+            ...(pairing === "matched" ? { toolCallId: "call-failed" } : {}),
+            kind: "tool",
+            phase: "end",
+            name: "read",
+            title: "Read file",
+            status: "failed",
+          },
         ],
-    {
-      activity: [
-        {
-          itemId: "prepared-failure",
-          ...(pairing === "matched" ? { toolCallId: "call-failed" } : {}),
-          kind: "tool",
-          phase: "end",
-          name: "read",
-          title: "Read file",
-          status: "failed",
-        },
-      ],
-    },
-  );
-  const groups = [createToolGroup("failed-group", [createMessageEntry("failed-entry", message)])];
-  const container = document.createElement("div");
-  for (const expanded of [false, true]) {
-    render(
-      kind === "activity"
-        ? renderActivityGroup(groups, {
-            showToolCalls: true,
-            showReasoning: true,
-            isToolMessageExpanded: () => expanded,
-          })
-        : renderWorkGroupSummary(
-            { key: "failed-work", durationMs: 1000, groups },
-            { expanded, onToggle: () => {} },
-          ),
-      container,
+      },
     );
-    const summary = container.querySelector(".chat-activity-group__summary");
-    expect(summary?.textContent).toContain("1 read");
-    expect(summary?.textContent?.match(/1 failed/gu)).toHaveLength(1);
-    if (kind === "work") {
-      expect(summary?.textContent).toContain("1s");
+    const groups = [createToolGroup("failed-group", [createMessageEntry("failed-entry", message)])];
+    const container = document.createElement("div");
+    for (const expanded of [false, true]) {
+      render(
+        kind === "activity"
+          ? renderActivityGroup(groups, {
+              showToolCalls: true,
+              showReasoning: true,
+              isToolMessageExpanded: () => expanded,
+            })
+          : renderWorkGroupSummary(
+              { key: "failed-work", durationMs: 1000, groups },
+              { expanded, onToggle: () => {} },
+            ),
+        container,
+      );
+      const summary = container.querySelector(".chat-activity-group__summary");
+      if (kind === "work") {
+        expect(summary?.textContent?.trim()).toBe("Worked for 1s");
+        expect(summary?.querySelector(".chat-tool-failure")).toBeNull();
+      } else {
+        expect(summary?.textContent).toContain("1 read");
+        expect(summary?.textContent?.match(/1 failed/gu)).toHaveLength(1);
+      }
     }
-  }
-});
+  },
+);
 
 it.each(["activity", "work"] as const)("uses current prepared outcomes in %s summaries", (kind) => {
   const completed = {
@@ -157,7 +162,7 @@ it.each(["activity", "work"] as const)("uses current prepared outcomes in %s sum
     container,
   );
   const summary = container.querySelector(".chat-activity-group__summary");
-  expect(summary?.textContent).toContain("1 read");
+  expect(summary?.textContent?.trim()).toBe(kind === "work" ? "Worked for 1s" : "1 read");
   expect(summary?.textContent).not.toContain("failed");
   expect(summary?.querySelector(".chat-tool-failure")).toBeNull();
 });

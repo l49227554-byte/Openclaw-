@@ -3241,6 +3241,7 @@ NODE
                 "Swift lint",
                 "Build iOS app",
                 ...(historical ? [] : ["Run focused iOS voice cleanup simulator tests"]),
+                ...(historical ? [] : ["Run focused iOS lifecycle simulator tests"]),
               ],
               release: ["Build iOS app (Release)"],
               tests: [

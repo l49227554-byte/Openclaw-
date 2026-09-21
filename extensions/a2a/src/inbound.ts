@@ -121,6 +121,10 @@ export async function dispatchA2aInbound(params: A2aInboundDispatchParams): Prom
           params.store.fail(params.taskId, error);
         },
       },
+      // A2A owns source delivery through the task-store callback above. Never
+      // inherit a global message-tool-only policy: the generic message tool has
+      // no A2A task correlation and would bypass this completion path.
+      replyOptions: { sourceReplyDeliveryMode: "automatic" },
       replyPipeline: {},
     });
     if (dispatch.admission.kind !== "dispatch") {

@@ -331,14 +331,22 @@ async function scanSystemdDir(params: {
   return results;
 }
 
-export async function findSystemGatewayServices(): Promise<ExtraGatewayService[]> {
+const SYSTEM_SYSTEMD_UNIT_DIRS = [
+  "/etc/systemd/system",
+  "/usr/lib/systemd/system",
+  "/lib/systemd/system",
+] as const;
+
+export async function findSystemGatewayServices(
+  dirs: readonly string[] = SYSTEM_SYSTEMD_UNIT_DIRS,
+): Promise<ExtraGatewayService[]> {
   if (process.platform !== "linux") {
     return [];
   }
 
   const results: ExtraGatewayService[] = [];
   try {
-    for (const dir of ["/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"]) {
+    for (const dir of dirs) {
       results.push(
         ...(await scanSystemdDir({
           dir,
@@ -480,11 +488,7 @@ export async function findExtraGatewayServices(
         }
       }
       if (opts.deep) {
-        for (const dir of [
-          "/etc/systemd/system",
-          "/usr/lib/systemd/system",
-          "/lib/systemd/system",
-        ]) {
+        for (const dir of SYSTEM_SYSTEMD_UNIT_DIRS) {
           for (const svc of await scanSystemdDir({
             dir,
             scope: "system",
@@ -537,6 +541,84 @@ export async function findExtraGatewayServices(
         legacy: marker !== "openclaw",
       });
     }
+    return results;
+  }
+
+  return results;
+}
+
+/**
+ * List installed managed OpenClaw Gateway services (user LaunchAgents / user
+ * and system systemd units / Windows Gateway tasks). Extra-service scans still
+ * skip these.
+ */
+export type ListManagedOpenClawGatewayServicesOptions = {
+  systemUnitDirs?: readonly string[];
+};
+
+export async function listManagedOpenClawGatewayServices(
+  env: Record<string, string | undefined>,
+  opts: ListManagedOpenClawGatewayServicesOptions = {},
+): Promise<ExtraGatewayService[]> {
+  const results: ExtraGatewayService[] = [];
+  try {
+    if (process.platform === "darwin") {
+      const home = resolveDaemonHomeDir(env);
+      const userDir = path.join(home, "Library", "LaunchAgents");
+      for (const svc of await scanLaunchdDir({
+        dir: userDir,
+        scope: "user",
+        includeManagedOpenClaw: true,
+      })) {
+        if (svc.marker === "openclaw") {
+          results.push(svc);
+        }
+      }
+      return results;
+    }
+
+    if (process.platform === "linux") {
+      const home = resolveDaemonHomeDir(env);
+      const userDir = path.join(home, ".config", "systemd", "user");
+      for (const svc of await scanSystemdDir({
+        dir: userDir,
+        scope: "user",
+        includeManagedOpenClaw: true,
+      })) {
+        if (svc.marker === "openclaw") {
+          results.push(svc);
+        }
+      }
+      for (const svc of await findSystemGatewayServices(opts.systemUnitDirs)) {
+        if (svc.marker === "openclaw") {
+          results.push(svc);
+        }
+      }
+      return results;
+    }
+
+    if (process.platform === "win32") {
+      const res = await execSchtasks(["/Query", "/FO", "LIST", "/V"]);
+      if (res.code !== 0) {
+        return results;
+      }
+      for (const task of parseSchtasksList(res.stdout)) {
+        const name = task.name.trim();
+        if (!name || !isOpenClawGatewayTaskName(name)) {
+          continue;
+        }
+        results.push({
+          platform: "win32",
+          label: name,
+          detail: task.taskToRun ? `task: ${name}, run: ${task.taskToRun}` : name,
+          scope: "system",
+          marker: "openclaw",
+          legacy: false,
+        });
+      }
+      return results;
+    }
+  } catch {
     return results;
   }
 

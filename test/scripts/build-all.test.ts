@@ -453,6 +453,38 @@ describe("resolveBuildAllSteps", () => {
     },
   );
 
+  it("returns admissionRefused when the live Gateway fence refuses before any step", async () => {
+    const runStep = vi.fn(() => ({ status: 0 }));
+    const resolveCacheState = vi.fn(() => ({
+      cacheable: false,
+      fresh: false,
+      reason: "no-cache",
+    }));
+    const logger = { error: vi.fn(), warn: vi.fn() };
+    const result = await runBuildAllSteps("full", {
+      env: {},
+      logger,
+      resolveCacheState,
+      restoreCache: vi.fn(() => true),
+      finalizeCache: vi.fn(() => true),
+      runStep,
+      resolveLiveGatewayDistFence: async () => ({
+        refuse: true,
+        message: "[openclaw] Refusing to rebuild dist while a managed Gateway is still running.",
+      }),
+    });
+    expect(result).toEqual({
+      exitCode: 1,
+      timings: [],
+      admissionRefused: true,
+    });
+    expect(runStep).not.toHaveBeenCalled();
+    expect(resolveCacheState).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      "[openclaw] Refusing to rebuild dist while a managed Gateway is still running.",
+    );
+  });
+
   it.each(["full", "package"])(
     "admits %s once and freezes its heap for every child",
     async (profile) => {

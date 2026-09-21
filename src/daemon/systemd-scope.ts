@@ -21,6 +21,14 @@ const SYSTEM_SYSTEMD_UNIT_DIRS = [
   "/lib/systemd/system",
 ] as const;
 
+/**
+ * Native inspection needs a runnable instance. A template unit file (`foo@.service`)
+ * is shared; this account's instance is `foo@<username>.service`.
+ */
+export function resolveSystemdRunnableUnitName(unitName: string): string {
+  return unitName.replace(/@\.service$/, () => `@${os.userInfo().username}.service`);
+}
+
 /** Proves service absence without interpreting failed manager commands as absence. */
 export async function isSystemdServiceAbsent(
   env: GatewayServiceEnv,
@@ -203,11 +211,7 @@ export async function findSystemdGatewayInstallation(
     findSystemSystemdGatewayScope(env),
   ]);
   if (system) {
-    // A template is shared; native inspection needs this account's runnable instance.
-    system.unitName = system.unitName.replace(
-      /@\.service$/,
-      () => `@${os.userInfo().username}.service`,
-    );
+    system.unitName = resolveSystemdRunnableUnitName(system.unitName);
   }
   if (user && system) {
     // Only the SAME canonical gateway installed in both scopes is a dueling

@@ -59,6 +59,7 @@ export async function runUpdateGatewayBuild(
 
     let backup: string | undefined;
     let buildStarted = false;
+    let admissionRefused = false;
     let failed: unknown;
     let exitCode = 1;
     try {
@@ -79,7 +80,9 @@ export async function runUpdateGatewayBuild(
         }
       }
       buildStarted = true;
-      exitCode = (await build()).exitCode;
+      const result = await build();
+      exitCode = result.exitCode;
+      admissionRefused = result.admissionRefused === true;
     } catch (error) {
       failed = error;
     }
@@ -90,7 +93,7 @@ export async function runUpdateGatewayBuild(
           cause: failed,
         });
       }
-      if (buildStarted && backup) {
+      if (buildStarted && backup && !admissionRefused) {
         log("restoring previous build output");
         try {
           // Validate the whole replacement set before restoring any root.

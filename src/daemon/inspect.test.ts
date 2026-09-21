@@ -7,8 +7,11 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   detectMarkerLineWithGateway,
   findExtraGatewayServices,
+  findSystemGatewayServices,
+  listManagedOpenClawGatewayServices,
   renderGatewayServiceCleanupHints,
 } from "./inspect.js";
+import { discoverManagedGatewayBindings } from "./managed-gateway-bindings.js";
 
 const { execSchtasksMock } = vi.hoisted(() => ({
   execSchtasksMock: vi.fn(),
@@ -289,6 +292,185 @@ describe("findExtraGatewayServices (linux / scanSystemdDir) — real filesystem"
       );
       const result = await findExtraGatewayServices({ HOME: tmpHome });
       expect(result).toStrictEqual([]);
+    },
+  );
+
+  it.skipIf(!isLinux)(
+    "discovers managed default and profile units without changing extra-service reports",
+    async () => {
+      const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
+      const systemdDir = path.join(tmpHome, ".config", "systemd", "user");
+      await fs.mkdir(systemdDir, { recursive: true });
+      await fs.writeFile(
+        path.join(systemdDir, "openclaw-gateway.service"),
+        GATEWAY_SERVICE_CONTENTS,
+      );
+      await fs.writeFile(
+        path.join(systemdDir, "openclaw-gateway-fenceproof.service"),
+        `${GATEWAY_SERVICE_CONTENTS}Environment=OPENCLAW_PROFILE=fenceproof\n`,
+      );
+      expect(await findExtraGatewayServices({ HOME: tmpHome })).toStrictEqual([]);
+      const defaultUnit = path.join(systemdDir, "openclaw-gateway.service");
+      const profileUnit = path.join(systemdDir, "openclaw-gateway-fenceproof.service");
+      const bindings = await discoverManagedGatewayBindings(
+        { HOME: tmpHome },
+        { systemUnitDirs: [] },
+      );
+      expect(bindings).toHaveLength(2);
+      expect(bindings).toEqual(
+        expect.arrayContaining([
+          {
+            profile: "default",
+            scope: "user",
+            systemdReadTarget: {
+              scope: "user",
+              unitName: "openclaw-gateway.service",
+              unitPath: defaultUnit,
+            },
+            env: { HOME: tmpHome, OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service" },
+          },
+          {
+            profile: "fenceproof",
+            scope: "user",
+            systemdReadTarget: {
+              scope: "user",
+              unitName: "openclaw-gateway-fenceproof.service",
+              unitPath: profileUnit,
+            },
+            env: {
+              HOME: tmpHome,
+              OPENCLAW_PROFILE: "fenceproof",
+              OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway-fenceproof.service",
+            },
+          },
+        ]),
+      );
+    },
+  );
+
+  it.skipIf(!isLinux)(
+    "discovers a system-scope managed unit alongside a same-name user unit",
+    async () => {
+      const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
+      const systemdDir = path.join(tmpHome, ".config", "systemd", "user");
+      const systemDir = path.join(tmpHome, "etc", "systemd", "system");
+      await fs.mkdir(systemdDir, { recursive: true });
+      await fs.mkdir(systemDir, { recursive: true });
+      const userUnit = path.join(systemdDir, "openclaw-gateway.service");
+      const systemUnit = path.join(systemDir, "openclaw-gateway.service");
+      await fs.writeFile(userUnit, GATEWAY_SERVICE_CONTENTS);
+      await fs.writeFile(systemUnit, GATEWAY_SERVICE_CONTENTS);
+
+      expect(await findExtraGatewayServices({ HOME: tmpHome })).toStrictEqual([]);
+      const managed = await listManagedOpenClawGatewayServices(
+        { HOME: tmpHome },
+        { systemUnitDirs: [systemDir] },
+      );
+      expect(managed).toEqual(
+        expect.arrayContaining([
+          {
+            platform: "linux",
+            label: "openclaw-gateway.service",
+            detail: `unit: ${userUnit}`,
+            scope: "user",
+            marker: "openclaw",
+            legacy: false,
+          },
+          {
+            platform: "linux",
+            label: "openclaw-gateway.service",
+            detail: `unit: ${systemUnit}`,
+            scope: "system",
+            marker: "openclaw",
+            legacy: false,
+          },
+        ]),
+      );
+      expect(await findSystemGatewayServices([systemDir])).toEqual([
+        {
+          platform: "linux",
+          label: "openclaw-gateway.service",
+          detail: `unit: ${systemUnit}`,
+          scope: "system",
+          marker: "openclaw",
+          legacy: false,
+        },
+      ]);
+
+      const bindings = await discoverManagedGatewayBindings(
+        { HOME: tmpHome },
+        { systemUnitDirs: [systemDir] },
+      );
+      expect(bindings).toHaveLength(2);
+      expect(bindings).toEqual(
+        expect.arrayContaining([
+          {
+            profile: "default",
+            scope: "user",
+            systemdReadTarget: {
+              scope: "user",
+              unitName: "openclaw-gateway.service",
+              unitPath: userUnit,
+            },
+            env: { HOME: tmpHome, OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service" },
+          },
+          {
+            profile: "default",
+            scope: "system",
+            systemdReadTarget: {
+              scope: "system",
+              unitName: "openclaw-gateway.service",
+              unitPath: systemUnit,
+            },
+            env: { HOME: tmpHome, OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service" },
+          },
+        ]),
+      );
+    },
+  );
+
+  it.skipIf(!isLinux)(
+    "resolves a system template unit to this account's runnable instance",
+    async () => {
+      const tmpHome = tempDirs.make("openclaw-test-", os.tmpdir());
+      const systemdDir = path.join(tmpHome, ".config", "systemd", "user");
+      const systemDir = path.join(tmpHome, "etc", "systemd", "system");
+      await fs.mkdir(systemdDir, { recursive: true });
+      await fs.mkdir(systemDir, { recursive: true });
+      const userUnit = path.join(systemdDir, "openclaw-gateway.service");
+      const templateUnit = path.join(systemDir, "openclaw@.service");
+      await fs.writeFile(userUnit, GATEWAY_SERVICE_CONTENTS);
+      await fs.writeFile(templateUnit, GATEWAY_SERVICE_CONTENTS);
+      const instanceName = `openclaw@${os.userInfo().username}.service`;
+
+      const bindings = await discoverManagedGatewayBindings(
+        { HOME: tmpHome },
+        { systemUnitDirs: [systemDir] },
+      );
+      expect(bindings).toEqual(
+        expect.arrayContaining([
+          {
+            profile: "default",
+            scope: "user",
+            systemdReadTarget: {
+              scope: "user",
+              unitName: "openclaw-gateway.service",
+              unitPath: userUnit,
+            },
+            env: { HOME: tmpHome, OPENCLAW_SYSTEMD_UNIT: "openclaw-gateway.service" },
+          },
+          {
+            profile: "default",
+            scope: "system",
+            systemdReadTarget: {
+              scope: "system",
+              unitName: instanceName,
+              unitPath: templateUnit,
+            },
+            env: { HOME: tmpHome, OPENCLAW_SYSTEMD_UNIT: instanceName },
+          },
+        ]),
+      );
     },
   );
 
@@ -592,6 +774,48 @@ describe("findExtraGatewayServices (win32)", () => {
         scope: "system",
         marker: "openclaw",
         legacy: false,
+      },
+    ]);
+  });
+
+  it("discovers managed gateway task names that extra-service scans skip", async () => {
+    execSchtasksMock.mockResolvedValue({
+      code: 0,
+      stdout: [
+        "TaskName:\\OpenClaw Gateway",
+        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
+        "",
+        "TaskName:\\OpenClaw Gateway (dev)",
+        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run --profile dev",
+        "",
+        "TaskName:\\OpenClaw Gateway Backup",
+        "Task To Run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+
+    expect(await findExtraGatewayServices({}, { deep: true })).toEqual([
+      {
+        platform: "win32",
+        label: "\\OpenClaw Gateway Backup",
+        detail:
+          "task: \\OpenClaw Gateway Backup, run: C:\\Program Files\\OpenClaw\\openclaw.exe gateway run",
+        scope: "system",
+        marker: "openclaw",
+        legacy: false,
+      },
+    ]);
+    expect(await discoverManagedGatewayBindings({})).toEqual([
+      {
+        profile: "default",
+        scope: "system",
+        env: { OPENCLAW_WINDOWS_TASK_NAME: "OpenClaw Gateway" },
+      },
+      {
+        profile: "dev",
+        scope: "system",
+        env: { OPENCLAW_PROFILE: "dev", OPENCLAW_WINDOWS_TASK_NAME: "OpenClaw Gateway (dev)" },
       },
     ]);
   });

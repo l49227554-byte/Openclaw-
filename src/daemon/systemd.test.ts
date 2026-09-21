@@ -120,6 +120,7 @@ import {
   readSystemdServiceExecStart,
   refreshLegacySystemdServiceMetadata,
   restartSystemdService,
+  resolveSystemdRunnableUnitName,
   resolveSystemdUserServiceAccount,
   startSystemdService,
   stageSystemdService,
@@ -927,6 +928,38 @@ describe("system-scope gateway unit detection (openclaw#87577)", () => {
     mockUnitFileLayout({ system: "/etc/systemd/system/openclaw-gateway.service" });
     const installation = await findSystemdGatewayInstallation({ HOME: TEST_MANAGED_HOME });
     expect(installation.kind).toBe("system");
+  });
+
+  it("findSystemdGatewayInstallation expands a system template to this account's instance", async () => {
+    mockUnitFileLayout({ system: false });
+    vi.spyOn(os, "userInfo").mockReturnValue({
+      username: "gateway",
+      uid: 2001,
+      gid: 2001,
+      shell: "/bin/sh",
+      homedir: TEST_MANAGED_HOME,
+    });
+    findSystemGatewayServicesMock.mockResolvedValueOnce([
+      {
+        platform: "linux",
+        label: "openclaw@.service",
+        detail: "unit: /etc/systemd/system/openclaw@.service",
+        scope: "system",
+        marker: "openclaw",
+      },
+    ]);
+    await expect(findSystemdGatewayInstallation({ HOME: TEST_MANAGED_HOME })).resolves.toEqual({
+      kind: "system",
+      system: {
+        scope: "system",
+        unitName: "openclaw@gateway.service",
+        unitPath: "/etc/systemd/system/openclaw@.service",
+      },
+    });
+    expect(resolveSystemdRunnableUnitName("openclaw@.service")).toBe("openclaw@gateway.service");
+    expect(resolveSystemdRunnableUnitName("openclaw-gateway.service")).toBe(
+      "openclaw-gateway.service",
+    );
   });
 
   it("does not treat a custom marker-owned system gateway as dueling with the user unit", async () => {

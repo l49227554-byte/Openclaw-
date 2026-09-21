@@ -69,12 +69,25 @@ async function transcriptSnapshot(page: Page) {
 
 suite.define(() => {
   it.each([
-    { name: "desktop-expanded", width: 1280, height: 900, collapsed: false },
-    { name: "narrow-collapsed", width: 390, height: 844, collapsed: true },
+    {
+      name: "desktop-expanded",
+      width: 1280,
+      height: 900,
+      collapsed: false,
+      reducedMotion: "no-preference" as const,
+    },
+    {
+      name: "narrow-collapsed",
+      width: 390,
+      height: 844,
+      collapsed: true,
+      reducedMotion: "reduce" as const,
+    },
   ])(
     "refreshes only the work card and preserves disclosure: $name",
-    async ({ name, width, height, collapsed }) => {
+    async ({ name, width, height, collapsed, reducedMotion }) => {
       await suite.withPage({ viewport: { width, height } }, async ({ page }) => {
+        await page.emulateMedia({ reducedMotion });
         const scenario = refreshScenario();
         const gateway = await installMockGateway(page, scenario);
         await page.goto(`${suite.server.baseUrl}chat`);
@@ -90,6 +103,7 @@ suite.define(() => {
         await card.getByRole("button", { name: "Refresh task progress", exact: true }).waitFor();
         const button = card.locator(".session-progress-card__refresh");
         await button.locator("svg path").first().waitFor({ state: "attached" });
+        const idleIcon = await button.locator("svg").innerHTML();
         const iconBounds = await button.locator("svg").boundingBox();
         expect(iconBounds?.width).toBeGreaterThan(0);
         const bounds = await button.boundingBox();
@@ -114,6 +128,21 @@ suite.define(() => {
         });
         await expect.poll(() => button.getAttribute("data-state")).toBe("pending");
         expect(await button.isDisabled()).toBe(true);
+        expect(await button.getAttribute("aria-busy")).toBe("true");
+        const pendingIcon = button.locator("svg");
+        await page.mouse.move(0, 0);
+        await captureUiProof(suite, page, name, "after-pending.png");
+        if (reducedMotion === "reduce") {
+          expect(
+            await pendingIcon.evaluate((element) => getComputedStyle(element).animationName),
+          ).toBe("none");
+          expect(await pendingIcon.innerHTML()).not.toBe(idleIcon);
+          expect(await pendingIcon.isVisible()).toBe(true);
+        } else {
+          expect(
+            await pendingIcon.evaluate((element) => getComputedStyle(element).animationName),
+          ).toBe("session-progress-refresh-spin");
+        }
         expect(
           await card
             .locator("summary")
@@ -131,8 +160,6 @@ suite.define(() => {
           status: "accepted",
           revision: 1,
         });
-        await page.mouse.move(0, 0);
-        await captureUiProof(suite, page, name, "after-pending.png");
         // Acceptance and a same-revision authoritative read are not completion.
         const reads = (await gateway.getRequests("progressCard.get")).length;
         await gateway.emitGatewayEvent("progressCard.changed", {

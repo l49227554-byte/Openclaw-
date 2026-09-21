@@ -30,10 +30,10 @@ const SESSION_KEY = "agent:probe:live-progress-refresh";
 
 type History = {
   messages: Record<string, unknown>[];
+  inFlightRun?: { runId: string };
   sessionInfo: {
     agentRuntime?: { id: string };
     hasActiveRun?: boolean;
-    activeRunIds?: string[];
   };
 };
 
@@ -280,10 +280,8 @@ describeLive("progress refresh through the live embedded runtime", () => {
           };
           await refresh();
           const active = await readHistory();
-          expect(active.sessionInfo).toMatchObject({
-            hasActiveRun: true,
-            activeRunIds: [rootRunId],
-          });
+          expect(active.sessionInfo.hasActiveRun).toBe(true);
+          expect(active.inFlightRun?.runId).toBe(rootRunId);
           const final = await waitDuring(
             (event) =>
               event.event === "chat" &&

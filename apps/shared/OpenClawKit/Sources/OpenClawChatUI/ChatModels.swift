@@ -459,6 +459,7 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
         let truncated: Bool?
         let tokensBefore: Double?
         let tokensAfter: Double?
+        let media: [AnyCodable]?
     }
 
     public var id: UUID = .init()
@@ -659,7 +660,25 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
                     fileName: (mediaPath as NSString).lastPathComponent,
                     content: nil)
             }
-        self.content = decodedContent + audioAttachments
+        // Persisted user attachments belong to canonical media facts, not the text content.
+        // Keep references in the message/cache; bytes are fetched through the authenticated route.
+        let inboundImages = (decodedOpenClaw?.media ?? []).compactMap { fact -> OpenClawChatMessageContent? in
+            guard let fields = fact.dictionaryValue,
+                  let source = fields["url"]?.stringValue ?? fields["path"]?.stringValue,
+                  let source = OpenClawChatMediaURL.inboundSource(source),
+                  let mimeType = fields["contentType"]?.stringValue,
+                  mimeType.lowercased().hasPrefix("image/"),
+                  !decodedContent.contains(where: { $0.url == source })
+            else { return nil }
+            return OpenClawChatMessageContent(
+                type: "image",
+                text: nil,
+                mimeType: mimeType,
+                fileName: fields["fileName"]?.stringValue,
+                url: source,
+                content: nil)
+        }
+        self.content = decodedContent + audioAttachments + inboundImages
         self.isTruncated = decodedOpenClaw?.truncated == true || decodedContent.contains { content in
             content.text?.contains(Self.transcriptTruncationMarker) == true
         }
@@ -720,7 +739,8 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
                     idempotencyKey: nil,
                     truncated: self.isTruncated ? true : nil,
                     tokensBefore: self.historyMarker?.tokensBefore,
-                    tokensAfter: self.historyMarker?.tokensAfter),
+                    tokensAfter: self.historyMarker?.tokensAfter,
+                    media: nil),
                 forKey: .openClaw)
         }
         try container.encodeIfPresent(self.provenance, forKey: .provenance)

@@ -1,6 +1,19 @@
 import Foundation
 
 public enum OpenClawChatMediaURL {
+    /// Only canonical inbound IDs may use the authenticated assistant-media route.
+    public static func inboundSource(_ raw: String) -> String? {
+        guard let url = URLComponents(string: raw), url.scheme == "media", url.host == "inbound",
+              url.user == nil, url.password == nil, url.port == nil, url.query == nil, url.fragment == nil,
+              url.path.hasPrefix("/"), url.path.count > 1
+        else { return nil }
+        let id = String(url.path.dropFirst())
+        guard id != ".", id != "..", !id.contains("/"), !id.contains("\\"),
+              !id.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        else { return nil }
+        return raw
+    }
+
     public static func resolve(
         gatewayURL: URL,
         ticketedPath: String,

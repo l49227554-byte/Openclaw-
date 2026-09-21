@@ -957,6 +957,7 @@ public protocol OpenClawChatTransport: Sendable {
         kind: OpenClawChatMediaKind,
         playback: OpenClawChatPlaybackMode?) async throws -> OpenClawChatLoadedMedia?
 
+    func loadInboundImage(sessionKey: String, source: String) async -> OpenClawChatLoadedMedia?
     func loadSourceContext() async -> OpenClawChatSourceContext?
     func loadSourceFavicon(host: String) async -> Data?
 
@@ -966,6 +967,10 @@ public protocol OpenClawChatTransport: Sendable {
 }
 
 extension OpenClawChatTransport {
+    public func loadInboundImage(sessionKey _: String, source _: String) async -> OpenClawChatLoadedMedia? {
+        nil
+    }
+
     public func loadSourceContext() async -> OpenClawChatSourceContext? {
         nil
     }

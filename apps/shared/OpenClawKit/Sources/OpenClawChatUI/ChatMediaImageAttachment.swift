@@ -67,7 +67,9 @@ struct ChatMediaImageAttachment: View {
                     OpenClawPlatformImageFactory.image(image)
                         .resizable()
                         .scaledToFit()
-                        .frame(maxHeight: 320)
+                        .frame(
+                            maxWidth: 320 * image.size.width / max(image.size.height, 1),
+                            maxHeight: 320)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -76,6 +78,7 @@ struct ChatMediaImageAttachment: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(self.label)
                 .accessibilityHint(String(localized: "Opens image preview"))
+                .accessibilityIdentifier("chat-message-image")
                 .sheet(isPresented: self.$showsFullImage) {
                     ZStack(alignment: .topTrailing) {
                         Color.black.ignoresSafeArea()

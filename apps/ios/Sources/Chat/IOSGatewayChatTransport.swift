@@ -539,6 +539,13 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
         return await self.sourceResourceLoader?.loadFavicon(host: host, ifCurrentRoute: route)
     }
 
+    func loadInboundImage(sessionKey: String, source: String) async -> OpenClawChatLoadedMedia? {
+        guard let route = await currentSessionMutationRoute() else { return nil }
+        let target = self.sessionTarget(for: sessionKey)
+        return await self.sourceResourceLoader?.loadInboundImage(
+            source: source, sessionKey: target.sessionKey, agentID: target.agentID, ifCurrentRoute: route)
+    }
+
     func loadMediaArtifact(
         sessionKey: String,
         artifactId: String,

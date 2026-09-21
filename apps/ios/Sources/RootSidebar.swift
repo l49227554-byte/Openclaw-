@@ -692,6 +692,8 @@ struct RootSidebar: View {
                     fork: { self.forkSession(session) },
                     toggleArchived: { self.patchSession(session, archived: true) },
                     delete: { self.deleteSession(session) }))
+            .accessibilityIdentifier("RootTabs.Sidebar.Session.\(session.key)")
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
             .accessibilityValue(Self.sessionAccessibilityValue(
                 isPinned: session.pinned == true,
                 isUnread: session.unread == true))

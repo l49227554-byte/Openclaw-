@@ -4,6 +4,22 @@ import Testing
 
 @Suite("Managed chat image attachments")
 struct ChatMessageMediaAttachmentTests {
+    @Test func `sent image survives canonical history and transcript cache`() throws {
+        let message = try JSONDecoder().decode(OpenClawChatMessage.self, from: Data(#"""
+        {"role":"user","content":"abcdefgh","__openclaw":{"media":[
+            {"url":"media://inbound/66dfc5c5-6ecc-4b29-95d7-448c34e1b2da.jpg",
+             "contentType":"image/jpeg","kind":"image","sizeBytes":5775}
+        ],"mediaImageLayout":{"slots":[{"kind":"inline","factIndex":0}]}}}
+        """#.utf8))
+        let image = try #require(message.content.first { $0.mediaKind == .image })
+        #expect(image.url == "media://inbound/66dfc5c5-6ecc-4b29-95d7-448c34e1b2da.jpg")
+        #expect(image.mimeType == "image/jpeg")
+        #expect(image.content == nil)
+        let cached = try #require(OpenClawChatSQLiteTranscriptCache.cacheableMessages([message]).first)
+        let restored = try JSONDecoder().decode(OpenClawChatMessage.self, from: JSONEncoder().encode(cached))
+        #expect(restored.content.contains { $0.url == image.url })
+    }
+
     @Test func `decodes canonical managed image fields`() throws {
         let message = try JSONDecoder().decode(
             OpenClawChatMessage.self,

@@ -4,6 +4,53 @@ import Testing
 
 @Suite("Chat source resources", .timeLimit(.minutes(1)))
 struct ChatSourceResourceTests {
+    @Test func `inbound image uses authenticated bounded route and survives disabled favicons`() async throws {
+        let fixture = SourceResourceFixture(config: Self.disabledConfig)
+        let loader = try self.loader(fixture)
+        let source = "media://inbound/synthetic.jpg"
+        let loaded = await loader.loadInboundImage(source: source, sessionKey: "agent:main:main", agentID: "main")
+        guard case let .data(media) = loaded else {
+            Issue.record("Expected fetched image bytes")
+            return
+        }
+        #expect(media.data == Data([1]))
+        let request = try #require(await fixture.requests.last)
+        #expect(request.url.path == "/control/__openclaw__/assistant-media")
+        let query = try #require(URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(query.contains(URLQueryItem(name: "source", value: source)))
+        #expect(query.contains(URLQueryItem(name: "sessionKey", value: "agent:main:main")))
+        #expect(query.contains(URLQueryItem(name: "agentId", value: "main")))
+        #expect(request.maximumBytes == 12 * 1024 * 1024)
+    }
+
+    @Test(arguments: [
+        "https://other.example/image.jpg",
+        "file:///private/image.jpg",
+        "media://inbound/../image.jpg",
+        "media://inbound/a%2Fb.jpg",
+        "media://user@inbound/image.jpg",
+        "media://inbound/image.jpg?token=secret",
+    ])
+    func `inbound image rejects noncanonical sources without requests`(source: String) async throws {
+        let fixture = SourceResourceFixture(config: Self.disabledConfig)
+        let loader = try self.loader(fixture)
+        #expect(await loader.loadInboundImage(source: source, sessionKey: "main", agentID: nil) == nil)
+        #expect(await fixture.requests.isEmpty)
+    }
+
+    @Test func `inbound image does not publish bytes after route retirement`() async throws {
+        let fixture = SourceResourceFixture(config: Self.disabledConfig, blocksRequest: true)
+        let loader = try self.loader(fixture)
+        let pending = Task { await loader.loadInboundImage(
+            source: "media://inbound/image.jpg",
+            sessionKey: "main",
+            agentID: nil) }
+        await fixture.waitUntilBlocked()
+        await fixture.retireRoute()
+        await fixture.finishRequest()
+        #expect(await pending.value == nil)
+    }
+
     @Test func `accepted runtime config owns mount origin and preference without HTTP bootstrap`() async throws {
         let fixture = SourceResourceFixture(config: #"""
         {"runtimeConfig":{"gateway":{

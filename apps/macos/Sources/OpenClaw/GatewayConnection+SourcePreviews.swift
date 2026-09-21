@@ -11,6 +11,10 @@ extension GatewayConnection {
         await self.sourceResourceLoader()?.loadFavicon(host: host)
     }
 
+    func loadInboundImage(source: String, sessionKey: String, agentID: String?) async -> OpenClawChatLoadedMedia? {
+        await self.sourceResourceLoader()?.loadInboundImage(source: source, sessionKey: sessionKey, agentID: agentID)
+    }
+
     private func sourceResourceLoader() async -> OpenClawChatSourceResources? {
         guard let lease = await captureServerLease() else { return nil }
         let revision = sourceResourceRevision

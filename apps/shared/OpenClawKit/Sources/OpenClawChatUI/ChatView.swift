@@ -668,6 +668,10 @@ public struct OpenClawChatView: View {
             mediaPlaybackAllowed: self.mediaPlaybackAllowed,
             loadMediaArtifact: { [weak viewModel] artifactId, kind, playback in
                 guard let viewModel else { return nil }
+                if kind == .image, OpenClawChatMediaURL.inboundSource(artifactId) != nil {
+                    return await viewModel.transport.loadInboundImage(
+                        sessionKey: viewModel.sessionKey, source: artifactId)
+                }
                 return try await viewModel.transport.loadMediaArtifact(
                     sessionKey: viewModel.sessionKey,
                     artifactId: artifactId,
@@ -802,11 +806,6 @@ public struct OpenClawChatView: View {
             }
             .help(speech.isActive(message.id) ? "Stop listening" : "Listen")
         }
-    }
-
-    private func isListenable(_ msg: OpenClawChatMessage) -> Bool {
-        msg.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "assistant"
-            && ChatMessageVisibleText.hasVisibleText(in: msg)
     }
 
     private func speechChipIsPreparing(
@@ -1068,6 +1067,11 @@ public struct OpenClawChatView: View {
 }
 
 extension OpenClawChatView {
+    private func isListenable(_ msg: OpenClawChatMessage) -> Bool {
+        msg.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "assistant"
+            && ChatMessageVisibleText.hasVisibleText(in: msg)
+    }
+
     private func errorPresentation(
         for error: String) -> (title: String, message: String, systemImage: String, tint: Color)
     {

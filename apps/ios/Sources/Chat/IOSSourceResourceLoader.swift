@@ -31,6 +31,14 @@ actor IOSSourceResourceLoader {
         await self.loader(ifCurrentRoute: route)?.loadFavicon(host: host)
     }
 
+    func loadInboundImage(
+        source: String, sessionKey: String, agentID: String?, ifCurrentRoute route: GatewayNodeSessionRoute)
+        async -> OpenClawChatLoadedMedia?
+    {
+        await self.loader(ifCurrentRoute: route)?.loadInboundImage(
+            source: source, sessionKey: sessionKey, agentID: agentID)
+    }
+
     private func loader(ifCurrentRoute route: GatewayNodeSessionRoute) async -> OpenClawChatSourceResources? {
         guard let connection = await connectionProvider(),
               await gateway.currentGatewayID(ifCurrentRoute: route) == connection.gatewayID,

@@ -280,6 +280,39 @@ it("preserves eligible preflight release until a healthy auxiliary descendant dr
   });
 });
 
+it("never starts Node provisioning without released authorization input", async () => {
+  const runId = randomUUID();
+  const effect = path.join(root, "installer-effect");
+  const runCommand = processRunner.runCommandWithTimeout;
+  vi.spyOn(processRunner, "runCommandWithTimeout").mockImplementation((argv, options) => {
+    assert(typeof options !== "number");
+    // EOF after admission must not grant permission to an installer that writes immediately.
+    return runCommand(argv, { ...options, input: "" });
+  });
+  const outcome = await withUpdateCommandExecutor(runId, async (executor) => {
+    const fence = await executor.enter(root, { serviceRoot, preflight: true });
+    const recovery = createPackageRuntimeRecovery({
+      root,
+      opts: { run: { runId, env: process.env, executorFence: fence } },
+      timeoutMs: 10000,
+    });
+    assert(recovery.installCommand);
+    await recovery.installCommand(
+      process.execPath,
+      ["-e", `require('node:fs').writeFileSync(${JSON.stringify(effect)},'unauthorized')`],
+      process.env,
+    );
+  }).then(
+    () => "installed",
+    () => "refused",
+  );
+  expect(fs.existsSync(effect)).toBe(false);
+  expect(outcome).toBe("refused");
+  for (const key of [root, serviceRoot]) {
+    expect(createManagedHandoffLeaseStore().read(key)).toEqual({ kind: "absent" });
+  }
+});
+
 it.each(
   (["before-launch", "at-input"] as const).flatMap((boundary) =>
     (
@@ -351,10 +384,7 @@ it.each(
     }
     await recovery.installCommand(
       process.execPath,
-      [
-        "-e",
-        `const fs=require('node:fs');fs.readFileSync(0,'utf8');fs.writeFileSync(${JSON.stringify(effect)},'unauthorized')`,
-      ],
+      ["-e", `require('node:fs').writeFileSync(${JSON.stringify(effect)},'unauthorized')`],
       process.env,
     );
   });

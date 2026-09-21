@@ -28,6 +28,7 @@ type DeliveryRequest = DeliveryIntentCallbackParams & {
   abortSignal?: AbortSignal;
   payloads?: unknown;
   queuePolicy?: string;
+  skipQueue?: boolean;
   replyToId?: string;
   threadId?: string | number;
 };
@@ -102,7 +103,14 @@ describe("withDurableMessageSendContext", () => {
             presentationCount: 0,
             interactiveCount: 0,
             channelDataCount: 0,
-            items: [{ index: 0, kinds: ["text"] as const, text: "hello", mediaUrls: [] }],
+            items: [
+              {
+                index: 0,
+                kinds: ["text"] as const,
+                text: "hello",
+                mediaUrls: [],
+              },
+            ],
           },
         });
         const send = await ctx.send(rendered);
@@ -150,7 +158,9 @@ describe("withDurableMessageSendContext", () => {
             mediaUrls: ["file:///tmp/a.png", "file:///tmp/b.png"],
             audioAsVoice: true,
             presentation: { blocks: [{ type: "text", text: "card" }] },
-            interactive: { blocks: [{ type: "buttons", buttons: [{ label: "OK" }] }] },
+            interactive: {
+              blocks: [{ type: "buttons", buttons: [{ label: "OK" }] }],
+            },
             channelData: { native: true },
           },
         ],
@@ -221,7 +231,9 @@ describe("withDurableMessageSendContext", () => {
   it.each([
     {
       name: "title-only presentations",
-      payload: { presentation: { title: "Delivery failed: action required", blocks: [] } },
+      payload: {
+        presentation: { title: "Delivery failed: action required", blocks: [] },
+      },
       expected: { presentationCount: 1, items: [{ kinds: ["presentation"] }] },
     },
     {
@@ -262,6 +274,47 @@ describe("withDurableMessageSendContext", () => {
     const request = latestDeliveryRequest();
     expect(request.abortSignal).toBe(abortController.signal);
     expect(request.queuePolicy).toBe("required");
+  });
+
+  it("keeps a live-only voice supplement out of the durable queue", async () => {
+    deliverOutboundPayloads.mockResolvedValueOnce([{ channel: "telegram", messageId: "msg-1" }]);
+
+    // Its writer fence is an in-memory authority; recovery cannot rebuild one, so a
+    // persisted row could replay this audio after the writer was replaced.
+    const result = await sendDurableMessageBatch({
+      cfg,
+      channel: "telegram",
+      to: "chat-1",
+      payloads: [
+        {
+          mediaUrl: "/tmp/voice.opus",
+          audioAsVoice: true,
+          spokenText: "Here is the chart you asked for.",
+          ttsSupplement: {
+            spokenText: "Here is the chart you asked for.",
+            visibleTextAlreadyDelivered: true,
+            liveOnly: true,
+          },
+        },
+      ],
+    });
+
+    expectBatchStatus(result, "sent");
+    expect(latestDeliveryRequest().skipQueue).toBe(true);
+  });
+
+  it("keeps an ordinary answer durable", async () => {
+    deliverOutboundPayloads.mockResolvedValueOnce([{ channel: "telegram", messageId: "msg-1" }]);
+
+    const result = await sendDurableMessageBatch({
+      cfg,
+      channel: "telegram",
+      to: "chat-1",
+      payloads: [{ text: "hello", mediaUrl: "/tmp/chart.png" }],
+    });
+
+    expectBatchStatus(result, "sent");
+    expect(latestDeliveryRequest().skipQueue).toBeUndefined();
   });
 
   it("maps best-effort durability to best-effort queue policy", async () => {
@@ -323,7 +376,10 @@ describe("withDurableMessageSendContext", () => {
       "canonical-thread",
     ]);
     expect(
-      result.receipt?.parts.map(({ platformMessageId, kind }) => ({ platformMessageId, kind })),
+      result.receipt?.parts.map(({ platformMessageId, kind }) => ({
+        platformMessageId,
+        kind,
+      })),
     ).toEqual([
       { platformMessageId: "platform-1", kind: "text" },
       { platformMessageId: "platform-2", kind: "media" },

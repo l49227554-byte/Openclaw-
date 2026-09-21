@@ -43,6 +43,10 @@ Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capaci
 
 Source-only Linux Node shards can reuse content-validated compiled workers from the protected warmer; [fixed preparation costs](/ci/capacity#fixed-job-preparation) remain separate from test execution and runner capacity.
 
+Commands tests share the existing worker budget across independent files. The
+Doctor session SQLite cases are split by operation while preserving the complete
+repair and recovery coverage; see [shard weights](/ci/capacity#measured-shard-weights).
+
 The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.
 
 | Page                                                           | Read it when                                                                                                        |

@@ -285,7 +285,8 @@ export async function handleChatHistoryRequest({
             agentId: sessionAgentId,
             sessionKey: canonicalKey,
             sessionEntry: entry,
-            requesterProfileId: resolveAuthenticatedProfileId(client),
+            requesterProfileId:
+              method === "chat.startup" ? resolveAuthenticatedProfileId(client) : undefined,
             readPolicy: method === "chat.history" ? "ready" : "current",
           });
         } catch (error) {

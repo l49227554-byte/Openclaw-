@@ -65,10 +65,28 @@ it.each(["draft", "focus"])(
       expect(document.activeElement).toBe(textarea);
     }
 
+    // Durability becoming ready or a reconnect changes the callback scope, not
+    // the operator's disclosure choice for this still-pending question.
+    props.asyncQuestions.scope = `${props.asyncQuestions.scope}:owner-ready`;
+    panel = resolveComposerQuestionPanel(props, state, requestUpdate)!;
+    expect(panel.model.collapsed).toBe(true);
+    if (editing === "focus") {
+      expect(document.activeElement).toBe(textarea);
+    }
+
+    const submit = props.asyncQuestions.submit;
+    props.asyncQuestions.submit = undefined;
+    expect(resolveComposerQuestionPanel(props, state, requestUpdate)).toBeNull();
+    props.asyncQuestions.scope = `${props.asyncQuestions.scope}:reconnected`;
+    props.asyncQuestions.submit = submit;
+    panel = resolveComposerQuestionPanel(props, state, requestUpdate)!;
+    expect(panel.model.collapsed).toBe(true);
+
     panel.onCollapsedChange?.(false);
     panel = resolveComposerQuestionPanel(props, state, requestUpdate)!;
     expect(panel.model.collapsed).toBe(false);
     textarea.focus();
+    props.asyncQuestions.scope = `${props.asyncQuestions.scope}:reconnected`;
     expect(resolveComposerQuestionPanel(props, state, requestUpdate)!.model.collapsed).toBe(false);
 
     const other = document.createElement("button");

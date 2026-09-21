@@ -81,12 +81,20 @@ export function resolveComposerQuestionPanel(
   if (index < 0) {
     index = 0;
     state.activeQuestionKey = requests[0]?.key ?? null;
+    const nextRequest = requests[index];
     // A new optional prompt must not interrupt an in-progress composer draft.
-    // Explicit expansion stays open, including when the user resumes typing.
-    state.questionCollapsed =
-      requests[index]?.compactOnArrival === true &&
-      (Boolean(props.draft.trim()) ||
-        (state.composerTextarea !== null && document.activeElement === state.composerTextarea));
+    // Reconnect/storage scope changes do not change a seen optional disclosure.
+    // A required question still opens when it replaces the active request.
+    // A temporary capability gap has no replacement and keeps the disclosure.
+    if (nextRequest) {
+      state.questionCollapsed =
+        nextRequest.asyncIdentity === null
+          ? false
+          : nextRequest.compactOnArrival
+            ? Boolean(props.draft.trim()) ||
+              (state.composerTextarea !== null && document.activeElement === state.composerTextarea)
+            : state.questionCollapsed;
+    }
   }
   const request = requests[index];
   if (!request) {

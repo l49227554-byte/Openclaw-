@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import { afterEach } from "vitest";
 import type { PersistedWorkboardCard, WorkboardCardStore } from "../persistence-types.js";
+import { workboardSqliteBackendEntrypoint } from "../sqlite-backend-entrypoint.test-support.js";
 import { createWorkboardSqliteStores } from "../sqlite-store.js";
 import { WorkboardStore } from "../store.js";
 
-const workerModuleUrl = new URL("../sqlite-store.worker.ts", import.meta.url);
+const workerModuleUrl = resolveRuntimeWorkerUrl(workboardSqliteBackendEntrypoint);
 
 type WorkboardSqliteTestOptions = {
   createStores?: (dbPath: string) => ReturnType<typeof createWorkboardSqliteStores>;
@@ -52,7 +54,7 @@ function withCardHooks(
     },
     delete: (key) => cards.delete(key),
     deleteIfUpdatedAt: (key, expectedUpdatedAt) => cards.deleteIfUpdatedAt(key, expectedUpdatedAt),
-    entries: (boardId) => cards.entries(boardId),
+    entries: (scope) => cards.entries(scope),
     listCardStatuses: (ids) => cards.listCardStatuses(ids),
     listBoardAggregates: () => cards.listBoardAggregates(),
     listStatsAggregates: (boardId) => cards.listStatsAggregates(boardId),

@@ -73,11 +73,11 @@ function createDebugApplicationContext(
     subscribe: () => () => undefined,
     subscribeEventLog: () => () => undefined,
   } as unknown as ApplicationContext["gateway"];
-  const agentSelection = {
+  const settingsAgentSelection = {
     state: { selectedId: "main" },
     subscribe: () => () => undefined,
-  } as unknown as ApplicationContext["agentSelection"];
-  return { agentSelection, basePath: "", gateway } as ApplicationContext;
+  } as unknown as ApplicationContext["settingsAgentSelection"];
+  return { settingsAgentSelection, basePath: "", gateway } as ApplicationContext;
 }
 
 async function mountDebugPage(
@@ -162,6 +162,17 @@ function normalizedText(element: Element | null | undefined): string | undefined
 
 beforeEach(async () => {
   vi.stubGlobal("localStorage", createStorageMock());
+  // JSDOM has no layout observation; browser tests exercise real panel geometry.
+  if (typeof ResizeObserver === "undefined") {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  }
   await i18n.setLocale("en");
 });
 
@@ -245,7 +256,7 @@ describe("renderDebug", () => {
       "Offline Connect to the Gateway to refresh diagnostics.",
     );
   });
-  it("shows in-card refresh progress without hiding last-good snapshots", () => {
+  it("keeps refresh progress in the button without hiding last-good snapshots", () => {
     const container = document.createElement("div");
     render(
       renderDebug(
@@ -256,9 +267,10 @@ describe("renderDebug", () => {
       ),
       container,
     );
-    expect(normalizedText(container.querySelector(".settings-section"))).toContain(
-      "Refreshing… Refreshing Gateway diagnostics.",
-    );
+    const refresh = container.querySelector<HTMLButtonElement>("button");
+    expect(refresh?.disabled).toBe(true);
+    expect(normalizedText(refresh)).toBe("Refreshing…");
+    expect(container.querySelector(".settings-section .settings-status")).toBeNull();
     expect(container.textContent).toContain("last-good");
   });
 
@@ -381,11 +393,13 @@ describe("DebugPage", () => {
       const context = createDebugApplicationContext(request);
       const source = createApplicationGateway(context.gateway.snapshot);
       Object.assign(source.gateway, { eventLog: [], subscribeEventLog: () => () => undefined });
-      type SelectionListener = Parameters<ApplicationContext["agentSelection"]["subscribe"]>[0];
+      type SelectionListener = Parameters<
+        ApplicationContext["settingsAgentSelection"]["subscribe"]
+      >[0];
       const listeners = new Set<SelectionListener>();
       const selection = {
-        ...context.agentSelection,
-        state: { ...context.agentSelection.state },
+        ...context.settingsAgentSelection,
+        state: { ...context.settingsAgentSelection.state },
         subscribe: (listener: SelectionListener) => {
           listeners.add(listener);
           return () => {
@@ -394,7 +408,7 @@ describe("DebugPage", () => {
         },
       };
       const page = document.createElement("openclaw-debug-page") as TestDebugPage;
-      page.context = { ...context, gateway: source.gateway, agentSelection: selection };
+      page.context = { ...context, gateway: source.gateway, settingsAgentSelection: selection };
       document.body.append(page);
       try {
         await vi.advanceTimersByTimeAsync(0);
@@ -665,7 +679,10 @@ describe("DebugOverlay", () => {
 
       // One sample: tiles show current values, charts wait for a second point.
       expect(overlay.querySelectorAll(".gateway-vital")).toHaveLength(5);
-      expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("loop 42%");
+      expect(normalizedText(overlay.querySelector(".gateway-vital--cpu"))).toContain("Host —");
+      expect(normalizedText(overlay.querySelector(".gateway-cpu-detail"))).toContain(
+        "Event loop busy 42%",
+      );
       expect(overlay.querySelector(".sparkline-tile__chart")).toBeNull();
       expect(normalizedText(overlay.querySelector(".debug-overlay__vitals-footer"))).toBe(
         "Uptime 1m",

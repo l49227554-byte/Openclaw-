@@ -153,7 +153,7 @@ module.exports = {
     config.plugins!.allow = [pluginId];
     config.desktop = { host: { enabled: true, managed: true } };
     await state.writeConfig(config);
-    const sdkHost = createCompiledSdkHost(computerUseSdkEntrypoint, (prefix) =>
+    const sdkHost = createCompiledSdkHost([computerUseSdkEntrypoint], (prefix) =>
       tempDirs.make(prefix),
     );
     const env = {
@@ -214,6 +214,7 @@ module.exports = {
       getConfig: () => config,
       getPluginRegistry: () => registry,
       hostDesktopService: {
+        reconcileRuntimePolicy: async () => {},
         observe: async () => {
           throw new Error("Unexpected desktop observer");
         },
@@ -243,6 +244,7 @@ module.exports = {
     ]);
     const aux = createGatewayAuxHandlers({
       log: {},
+      getNativeApprovalRouteCoordinator: () => undefined,
       activateRuntimeSecrets: async () => {
         throw new Error("Unexpected secrets reload");
       },

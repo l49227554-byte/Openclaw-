@@ -1,5 +1,6 @@
 import { asNullableRecord as asRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { messageClientSourcesKey } from "../../../../src/chat/message-client-source.js";
 import {
   extractAssistantTextForPhase,
   resolveAssistantMessagePhase,
@@ -55,6 +56,10 @@ function stampReplyAttribution(
 
   let latestUserSender: MessageGroup["sender"];
   for (const item of items) {
+    if (item.kind === "stream") {
+      item.replyToSender = latestUserSender;
+      continue;
+    }
     if (item.kind !== "group") {
       continue;
     }
@@ -126,9 +131,12 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
       currentGroup.runId !== runId ||
       currentUserTurnIdentity !== userTurnIdentity ||
       splitsAssistantKind ||
+      messageClientSourcesKey(currentGroup.sourceClients ?? []) !==
+        messageClientSourcesKey(normalized.sourceClients ?? []) ||
       (shouldSplitBySender &&
         ((!sender?.identity && currentGroup.senderLabel !== senderLabel) ||
           currentGroup.senderSession?.sessionKey !== normalized.senderSession?.sessionKey ||
+          currentGroup.senderSession?.label !== normalized.senderSession?.label ||
           senderIdentityKey(currentGroup.sender) !== senderIdentityKey(sender)))
     ) {
       if (currentGroup) {
@@ -142,6 +150,7 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
         senderLabel,
         ...(normalized.senderSession ? { senderSession: normalized.senderSession } : {}),
         ...(sender ? { sender } : {}),
+        ...(normalized.sourceClients ? { sourceClients: normalized.sourceClients } : {}),
         messages: [source],
         visibleContent,
         timestamp,
@@ -168,6 +177,7 @@ export type StreamRunRenderItem = {
   key: string;
   runId?: string;
   boundaryId?: string;
+  replyToSender?: MessageGroup["replyToSender"];
   parts: Array<Extract<ChatItem, { kind: "stream" | "reading-indicator" }>>;
 };
 export function coalesceStreamRuns(
@@ -183,6 +193,7 @@ export function coalesceStreamRuns(
         kind: "stream-run",
         key: `stream-run:${first.key}`,
         parts: run,
+        replyToSender: run.find((part) => part.kind === "stream")?.replyToSender,
         ...(runId ? { runId } : {}),
         ...(boundaryId ? { boundaryId } : {}),
       });

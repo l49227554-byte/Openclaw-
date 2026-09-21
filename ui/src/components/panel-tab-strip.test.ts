@@ -247,7 +247,10 @@ describe("renderPanelTabStrip", () => {
     clock.flush();
     expect(operations).toEqual([]);
 
-    renderStrip({ tabs: tabs.map((tab) => ({ ...tab, label: "Long label" })), container });
+    renderStrip({
+      tabs: tabs.map((tab) => Object.assign({}, tab, { label: "Long label" })),
+      container,
+    });
     expect(operations).toEqual([]);
     await Promise.resolve();
     clock.flush();
@@ -258,7 +261,9 @@ describe("renderPanelTabStrip", () => {
     ).toBe(true);
 
     renderStrip({
-      tabs: tabs.map((tab) => ({ ...tab, label: "Long label", className: "is-exited" })),
+      tabs: tabs.map((tab) =>
+        Object.assign({}, tab, { label: "Long label", className: "is-exited" }),
+      ),
       container,
     });
     clock.flush();

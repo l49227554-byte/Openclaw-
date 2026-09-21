@@ -100,13 +100,13 @@ export function visitorFixture(
         throw new Error("Unexpected visitor fixture store operation");
       };
       return Object.freeze({
-        register: bind(store.register),
-        registerIfAbsent: bind(store.registerIfAbsent),
-        lookup: bind(store.lookup),
-        consume: bind(store.consume),
-        delete: bind(store.delete),
-        entries: bind(store.entries),
-        clear: bind(store.clear),
+        register: bind(store.register.bind(store)),
+        registerIfAbsent: bind(store.registerIfAbsent.bind(store)),
+        lookup: bind(store.lookup.bind(store)),
+        consume: bind(store.consume.bind(store)),
+        delete: bind(store.delete.bind(store)),
+        entries: bind(store.entries.bind(store)),
+        clear: bind(store.clear.bind(store)),
         observe: unused,
         compareAndApply: unused,
         deleteIfEqual: unused,

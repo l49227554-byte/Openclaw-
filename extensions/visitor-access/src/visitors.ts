@@ -203,7 +203,7 @@ export class VisitorAccessService {
       for (const { key, value } of entries) {
         if (targets.has(key) && (value.expiresAt === null || value.expiresAt > now)) {
           // An explicit end must survive a failed or ambiguous provider response.
-          await this.store.register(key, { ...value, expiresAt: now });
+          await store.register(key, { ...value, expiresAt: now });
         }
       }
       let removed = false;

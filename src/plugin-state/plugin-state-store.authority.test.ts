@@ -53,21 +53,20 @@ describe("action-bound plugin state", () => {
             }),
         );
         if (revocation === "dispatch") {
-          const postMessage = Worker.prototype.postMessage;
-          vi.spyOn(Worker.prototype, "postMessage").mockImplementation(
-            function (this: Worker, message, transferList) {
-              const request = asOptionalRecord(message);
-              if (
-                request?.type === "execute" &&
-                request.input instanceof Uint8Array &&
-                asOptionalRecord(deserialize(request.input))?.type === "pluginState.register"
-              ) {
-                // The caller passed its pre-dispatch check; the write is now queued for SQLite.
-                managerCurrent = false;
-              }
-              return postMessage.call(this, message, transferList);
-            },
-          );
+          const postMessageSpy = vi.spyOn(Worker.prototype, "postMessage");
+          postMessageSpy.mockImplementationOnce(function (this: Worker, message, transferList) {
+            const request = asOptionalRecord(message);
+            if (
+              request?.type === "execute" &&
+              request.input instanceof Uint8Array &&
+              asOptionalRecord(deserialize(request.input))?.type === "pluginState.register"
+            ) {
+              // The caller passed its pre-dispatch check; the write is now queued for SQLite.
+              managerCurrent = false;
+            }
+            postMessageSpy.mockRestore();
+            return this.postMessage(message, transferList);
+          });
         }
 
         const writing = action.register(email, renewed);

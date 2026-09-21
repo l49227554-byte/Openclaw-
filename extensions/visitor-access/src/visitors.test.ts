@@ -239,7 +239,7 @@ describe("VisitorAccessService", () => {
         throw new Error("Invitation authority is no longer current");
       }
     });
-    const register = fixture.store.register;
+    const register = fixture.store.register.bind(fixture.store);
     vi.spyOn(fixture.store, "register").mockImplementationOnce(async (key, grant) => {
       await register(key, grant);
       recorded.resolve();
@@ -276,13 +276,13 @@ describe("VisitorAccessService", () => {
           current = false;
         };
       } else if (operation === "renew") {
-        const register = fixture.store.register;
+        const register = fixture.store.register.bind(fixture.store);
         vi.spyOn(fixture.store, "register").mockImplementationOnce(async (key, grant) => {
           await register(key, grant);
           current = false;
         });
       } else {
-        const remove = fixture.store.delete;
+        const remove = fixture.store.delete.bind(fixture.store);
         vi.spyOn(fixture.store, "delete").mockImplementationOnce(async (key) => {
           const removed = await remove(key);
           current = false;

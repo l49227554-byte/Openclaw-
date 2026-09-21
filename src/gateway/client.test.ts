@@ -2497,11 +2497,14 @@ describe("GatewayClient connect auth payload", () => {
     });
 
     const { ws, connect } = await startClientAndConnect({ client });
+    const failureUrl = new URL("wss://gateway.example/ws?token=secret-token");
+    failureUrl.username = "user";
+    failureUrl.password = "pass";
     emitConnectFailure(
       ws,
       connect.id,
       { code: "AUTH_UNAUTHORIZED" },
-      "Authorization: Bearer sk-testsecret1234567890abcd wss://user:pass@gateway.example/ws?token=secret-token", // pragma: allowlist secret
+      `Authorization: Bearer sk-testsecret1234567890abcd ${failureUrl.href}`, // pragma: allowlist secret
     );
 
     await waitForFast(() => {

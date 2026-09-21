@@ -4,7 +4,12 @@ import { property, query, queryAll, state } from "lit/decorators.js";
 import { t } from "../i18n/index.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
 import { icons } from "./icons.ts";
-import { ImageLightboxGalleryController } from "./image-lightbox-gallery.ts";
+import {
+  canSwipeLightboxVideo,
+  ImageLightboxGalleryController,
+  exitLightboxVideoFullscreen,
+  trapLightboxTabFocus,
+} from "./image-lightbox-gallery.ts";
 import { imageLightboxStyles } from "./image-lightbox.styles.ts";
 import type { ImageLightboxGallery, ImageLightboxItem } from "./image-lightbox.types.ts";
 import "./modal-dialog.ts";
@@ -33,6 +38,7 @@ function dataUrlMimeType(source: string): string | undefined {
 }
 
 class OpenClawImageLightbox extends OpenClawLitElement {
+  @property({ attribute: false }) connectVideo?: ImageLightboxItem["connectVideo"];
   @property({ attribute: false }) gallery?: ImageLightboxGallery;
   @property({ attribute: false }) loadFullResolution?: ImageLightboxItem["loadFullResolution"];
   @property() mediaKind: "image" | "video" = "image";
@@ -43,15 +49,16 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   @property({ attribute: false }) imageHeight?: number;
   @query(".slide") private slide?: HTMLDivElement;
   @query(".stage") private stage?: HTMLDivElement;
+  @query(".video") private video?: HTMLVideoElement;
   @query(".image") private image?: HTMLImageElement;
   @queryAll(".action, video[controls]") private focusables!: NodeListOf<HTMLElement>;
   @state() private openOriginalUrl = "";
   @state() private resolvingOriginal = false;
+  private originalBlobUrl = "";
+  private originalUrlRequest = 0;
   @state() private scale = 1;
   @state() private imageReady = false;
 
-  private originalBlobUrl = "";
-  private originalUrlRequest = 0;
   private panzoom?: PanzoomObject;
   private panzoomImage?: HTMLImageElement;
   private panzoomStage?: HTMLDivElement;
@@ -76,11 +83,11 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   private suppressDoubleClick = false;
 
   private get currentImage() {
-    return this.mediaKind === "image" ? this.galleryController.current : undefined;
+    return this.galleryController.current;
   }
 
   private get hasGallery() {
-    return this.mediaKind === "image" && this.galleryController.count > 1;
+    return this.galleryController.count > 1;
   }
 
   private get direction() {
@@ -114,16 +121,18 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     this.cancelSwipe();
     this.touchPointers.clear();
     this.slideAnimation?.cancel();
-    this.originalUrlRequest += 1;
     this.motionQuery?.removeEventListener("change", this.handleMotionPreferenceChange);
     this.motionQuery = undefined;
     this.destroyPanzoom();
+    this.originalUrlRequest += 1;
     this.revokeOriginalBlobUrl();
     super.disconnectedCallback();
   }
 
   private resetGallery() {
-    this.galleryController.reset(this.mediaKind === "image" ? this.gallery : undefined, {
+    this.galleryController.reset(this.gallery, {
+      kind: this.mediaKind,
+      connectVideo: this.connectVideo,
       src: this.src,
       originalSrc: this.originalSrc,
       title: this.imageTitle,
@@ -133,19 +142,24 @@ class OpenClawImageLightbox extends OpenClawLitElement {
     });
   }
 
+  private galleryChanged(changed: PropertyValues) {
+    return [
+      "src",
+      "originalSrc",
+      "gallery",
+      "loadFullResolution",
+      "imageWidth",
+      "imageHeight",
+      "connectVideo",
+      "mediaKind",
+    ].some((key) => changed.has(key));
+  }
+
   protected override willUpdate(changed: PropertyValues) {
     if (!this.isConnected) {
       return;
     }
-    if (
-      changed.has("src") ||
-      changed.has("originalSrc") ||
-      changed.has("gallery") ||
-      changed.has("loadFullResolution") ||
-      changed.has("imageWidth") ||
-      changed.has("imageHeight") ||
-      changed.has("mediaKind")
-    ) {
+    if (this.galleryChanged(changed)) {
       this.cancelSwipe();
       this.resetGallery();
     }
@@ -156,20 +170,14 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       return;
     }
     const selectionChanged =
-      changed.has("src") ||
-      changed.has("originalSrc") ||
-      changed.has("gallery") ||
-      changed.has("loadFullResolution") ||
-      changed.has("imageWidth") ||
-      changed.has("imageHeight") ||
-      changed.has("mediaKind") ||
-      this.displayedIndex !== this.galleryController.index;
+      this.galleryChanged(changed) || this.displayedIndex !== this.galleryController.index;
     if (selectionChanged) {
       this.displayedIndex = this.galleryController.index;
       this.destroyPanzoom();
       this.scale = 1;
     }
-    const source = this.currentImage?.src ?? this.src;
+    this.galleryController.connectPlayer(this.video);
+    const source = this.video?.getAttribute("src") ?? this.currentImage?.src ?? this.src;
     if (selectionChanged || this.displayedSource !== source) {
       this.displayedSource = source;
       void this.resolveOriginalUrl();
@@ -203,7 +211,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
         class="mobile-edge-to-edge viewport-edge-to-edge"
         label=${dialogLabel}
         @modal-cancel=${this.emitClose}
-        @keydown=${this.handleKeydown}
+        @keydown=${{ handleEvent: this.handleKeydown, capture: true }}
       >
         <section class="lightbox">
           <header class="header">
@@ -243,7 +251,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
             </div>
           </header>
           <div
-            class=${this.hasGallery ? "stage stage--gallery" : "stage"}
+            class=${this.hasGallery ? `stage ${this.mediaKind === "video" ? "stage--video-gallery" : "stage--gallery"}` : "stage"}
             @pointerdown=${{ handleEvent: this.handleStagePointerDown, capture: true }}
             @pointermove=${this.handleStagePointerMove}
             @pointerup=${this.handleStagePointerUp}
@@ -254,7 +262,12 @@ class OpenClawImageLightbox extends OpenClawLitElement {
               this.mediaKind === "video"
                 ? html`<video
                     class="video"
-                    src=${this.src}
+                    @loadeddata=${() => this.galleryController.videoReady()}
+                    @playing=${() => this.galleryController.videoReady()}
+                    @error=${() => {
+                      this.galleryController.videoStatus = "unavailable";
+                      this.requestUpdate();
+                    }}
                     aria-label=${title}
                     controls
                     autoplay
@@ -281,7 +294,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
                   <button
                     class="action navigation previous"
                     type="button"
-                    aria-label=${t("chat.imageLightbox.previous")}
+                    aria-label=${t(this.mediaKind === "video" ? "common.previous" : "chat.imageLightbox.previous")}
                     aria-disabled=${!this.galleryController.canMove(-1) || this.galleryController.busy}
                     @click=${() => this.navigate(-1)}
                   >
@@ -290,7 +303,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
                   <button
                     class="action navigation next"
                     type="button"
-                    aria-label=${t("chat.imageLightbox.next")}
+                    aria-label=${t(this.mediaKind === "video" ? "common.next" : "chat.imageLightbox.next")}
                     aria-disabled=${!this.galleryController.canMove(1) || this.galleryController.busy}
                     @click=${() => this.navigate(1)}
                   >
@@ -307,6 +320,14 @@ class OpenClawImageLightbox extends OpenClawLitElement {
                   </p>
                   ${this.galleryController.failed ? html`<p class="gallery-error" role="alert">${t("chat.imageLightbox.loadFailed")}</p>` : nothing}
                 `
+              : nothing
+          }
+          ${
+            this.mediaKind === "video" && this.galleryController.videoStatus !== "ready"
+              ? html`<p class="gallery-error" role="status">
+                  ${this.galleryController.videoStatus === "preparing" ? t("chat.mediaPlayer.preparing") : t("chat.attachments.previewUnavailable")}
+                  ${this.galleryController.videoStatus === "unavailable" && this.galleryController.videoRetryable ? html`<button class="action" @click=${() => this.galleryController.retryVideo()}>${t("common.retry")}</button>` : nothing}
+                </p>`
               : nothing
           }
           ${
@@ -459,7 +480,8 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       event.pointerType === "touch" &&
       this.hasGallery &&
       !this.galleryController.busy &&
-      this.scale <= 1
+      this.scale <= 1 &&
+      (this.mediaKind !== "video" || canSwipeLightboxVideo(this.video, event))
     ) {
       this.slideAnimation?.cancel();
       this.swipe = {
@@ -469,7 +491,9 @@ class OpenClawImageLightbox extends OpenClawLitElement {
         offset: 0,
         horizontal: false,
       };
-      stage.setPointerCapture(event.pointerId);
+      if (this.mediaKind !== "video") {
+        stage.setPointerCapture(event.pointerId);
+      }
     } else if (background) {
       stage.setPointerCapture?.(event.pointerId);
     }
@@ -497,6 +521,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
         return;
       }
       swipe.horizontal = true;
+      this.stage?.setPointerCapture(event.pointerId);
     }
     const delta = x * this.direction < 0 ? 1 : -1;
     swipe.offset = this.galleryController.canMove(delta) ? x : x * 0.2;
@@ -571,6 +596,7 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       this.animateSlide(offset);
       return;
     }
+    this.video?.pause();
     const changed = await this.galleryController.move(delta);
     if (!this.isConnected) {
       return;
@@ -606,11 +632,11 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       this.openOriginalUrl = "";
       return;
     }
+    const current = this.currentImage;
     const source = (
-      this.currentImage?.originalSrc ||
-      this.currentImage?.src ||
-      this.originalSrc ||
-      this.src
+      current?.connectVideo
+        ? (this.video?.getAttribute("src") ?? "")
+        : current?.originalSrc || current?.src || this.originalSrc || this.src
     ).trim();
     if (!source) {
       this.openOriginalUrl = "";
@@ -657,7 +683,18 @@ class OpenClawImageLightbox extends OpenClawLitElement {
   }
 
   private handleKeydown = (event: KeyboardEvent) => {
-    if (this.hasGallery && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    if (event.key === "Escape" && exitLightboxVideoFullscreen(this.video, event)) {
+      return;
+    }
+    const nativePlayer = event.composedPath().some((target) => target instanceof HTMLVideoElement);
+    if (
+      this.hasGallery &&
+      !nativePlayer &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      (event.key === "ArrowLeft" || event.key === "ArrowRight")
+    ) {
       event.preventDefault();
       event.stopPropagation();
       void this.navigate((event.key === "ArrowRight" ? 1 : -1) * this.direction);
@@ -678,28 +715,14 @@ class OpenClawImageLightbox extends OpenClawLitElement {
       this.resetZoom();
       return;
     }
-    if (event.key !== "Tab") {
-      return;
-    }
-    const actions = [...this.focusables].filter(
-      (action) => !(action instanceof HTMLButtonElement && action.disabled),
-    );
-    const first = actions[0];
-    const last = actions.at(-1);
-    if (!first || !last) {
-      return;
-    }
-    const source = event.composedPath()[0];
-    if (event.shiftKey && source === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && source === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    trapLightboxTabFocus(event, this.focusables);
   };
 
-  private emitClose = () => {
+  private emitClose = (event?: Event) => {
+    if (event?.type === "modal-cancel" && exitLightboxVideoFullscreen(this.video, event)) {
+      return;
+    }
+    this.galleryController.stopPlayer();
     this.dispatchEvent(
       new CustomEvent("image-lightbox-close", {
         bubbles: true,

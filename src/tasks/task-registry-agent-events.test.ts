@@ -24,6 +24,8 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { holdStateDatabaseCoordinator as holdCoordinator } from "../test-utils/state-database-contention.js";
 import { createTaskFlowForTask, getTaskFlowById } from "./task-flow-registry.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
+import { captureTaskDeliveryWork } from "./task-registry-delivery.test-support.js";
+import { captureTaskRegistryReadFence } from "./task-registry-listener-state.js";
 import { updateTask } from "./task-registry-mutation.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
 import { prepareTaskRegistryRead } from "./task-registry-read.js";
@@ -105,6 +107,7 @@ describe("task agent event persistence", () => {
           notifyPolicy: phase === "start" ? "state_changes" : "done_only",
           deliveryStatus: "pending",
         });
+        using deliveries = captureTaskDeliveryWork();
         const failure = new Error("Synthetic enclosing transaction rollback");
         let observerReplaced = false;
         const stop = onTaskRegistryChange(() => {
@@ -148,6 +151,7 @@ describe("task agent event persistence", () => {
           transactionError = error;
         }
         try {
+          await deliveries.settle();
           await joinEvents();
         } finally {
           stop();
@@ -948,6 +952,10 @@ describe("task agent event persistence", () => {
         });
         emitTool(task.runId!, "stale");
         await entered.promise;
+        // Retirement may reject the event; join it before checking for leaked root work.
+        const settlement = Promise.allSettled([
+          captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission),
+        ]);
         try {
           if (replacement === "task replacement") {
             const next = { ...task, runId: "replacement-run" };
@@ -958,6 +966,7 @@ describe("task agent event persistence", () => {
           }
         } finally {
           release.resolve();
+          await settlement;
         }
         await joinEvents();
         expect(

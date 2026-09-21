@@ -286,6 +286,8 @@ describe("saved update failure resolution", () => {
   ])(
     "does not certify pending plugin migrations %s despite updater completion",
     async (when, marker) => {
+      vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", undefined);
+      vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_CONVERGENCE", undefined);
       const pending = [
         {
           pluginId: "codex",

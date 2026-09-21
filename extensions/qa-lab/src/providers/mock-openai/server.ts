@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { format as formatUrl } from "node:url";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   closeQaHttpServer,
@@ -192,7 +193,6 @@ import {
   encodeCodeModeTarget,
   resolveCodeModeExecSurface,
   canCallScenarioTool,
-  hasCodeModeExecSurface,
   readScenarioCompletedToolName,
   unwrapScenarioCatalogOutput,
   resolveCurrentToolDeclarationSurface,
@@ -333,7 +333,7 @@ const QA_REPEATED_REQUEST_STALLED_RESPONSE_PAUSE_MS = 180_000;
 const QA_REPEATED_REQUEST_STALL_ATTEMPT = 5;
 
 function readProgressCommandOutput(input: ResponsesInputItem[], command: string, isPoll = false) {
-  const text = extractToolOutput(input);
+  const text = unwrapScenarioCatalogOutput(input, extractToolOutput(input), "content");
   // Provider wires carry content, not process details; JSON stdout remains data.
   const sessionId = !isPoll
     ? /(?:^|\n\n)Command still running \(session ([^,\s]+), pid (?:\d+|n\/a)\)\. Use process \(list\/poll\/log\/write\/send-keys\/submit\/paste\/kill\/clear\/remove\) for follow-up\.$/u.exec(
@@ -406,7 +406,9 @@ function readProgressCommand(input: ResponsesInputItem[], command: string) {
   // Walk the whole turn so a valid exec or poll cannot hide an earlier foreign call.
   for (const item of input) {
     if (item.type === "function_call" || item.type === "custom_tool_call") {
-      const args = parseToolCallArguments(item);
+      const wireArgs = parseToolCallArguments(item);
+      const name = item.name === "tool_call" ? readScenarioCompletedToolName(item) : item.name;
+      const args = item.name === "tool_call" && isRecord(wireArgs?.args) ? wireArgs.args : wireArgs;
       if (
         pendingCall ||
         typeof item.call_id !== "string" ||
@@ -414,10 +416,10 @@ function readProgressCommand(input: ResponsesInputItem[], command: string) {
         (current
           ? current.state !== "running" ||
             !sessionId ||
-            item.name !== "process" ||
+            name !== "process" ||
             args?.action !== "poll" ||
             args.sessionId !== sessionId
-          : item.type !== "function_call" || item.name !== "exec" || args?.command !== command)
+          : item.type !== "function_call" || name !== "exec" || args?.command !== command)
       ) {
         return { error: "BUG-TOOL-PROGRESS-CALL-MISMATCH" };
       }
@@ -427,7 +429,7 @@ function readProgressCommand(input: ResponsesInputItem[], command: string) {
         return { error: "BUG-TOOL-PROGRESS-CALL-MISMATCH" };
       }
       const isPoll = current !== undefined;
-      current = readProgressCommandOutput([item], command, isPoll);
+      current = readProgressCommandOutput([pendingCall, item], command, isPoll);
       if (!isPoll) {
         sessionId = current.sessionId;
       }
@@ -1099,7 +1101,7 @@ async function buildResponsesPayload(
     return buildAssistantEvents("NO_REPLY");
   }
   if (terminalWorkerCase === "empty") {
-    if (!hasCompletedToolOutput && hasDeclaredTool(body, "write")) {
+    if (!hasCompletedToolOutput && canCallScenarioTool(toolDeclarationBody, "write")) {
       return buildToolCallEventsWithArgs("write", {
         path: "qa-terminal-empty-side-effect.txt",
         content: "empty terminal QA side effect completed\n",
@@ -1987,7 +1989,7 @@ async function buildResponsesPayload(
   if (
     QA_IMAGE_GENERATION_PROMPT_RE.test(allInputText) &&
     !hasCompletedToolOutput &&
-    (hasToolDefinition(body, "image_generate") || hasCodeModeExecSurface(body))
+    canCallScenarioTool(toolDeclarationBody, "image_generate")
   ) {
     return buildToolCallEventsWithArgs("image_generate", {
       prompt: "A QA lighthouse on a dark sea with a tiny protocol droid silhouette.",

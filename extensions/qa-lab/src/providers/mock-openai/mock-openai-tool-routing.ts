@@ -85,7 +85,7 @@ export function resolveCodeModeExecSurface(
     : null;
 }
 
-export function hasCodeModeExecSurface(body: Record<string, unknown>) {
+function hasCodeModeExecSurface(body: Record<string, unknown>) {
   return resolveCodeModeExecSurface(body) !== null;
 }
 
@@ -270,6 +270,7 @@ export function readScenarioCompletedToolName(toolCall: ResponsesInputItem | und
 export function unwrapScenarioCatalogOutput(
   input: ResponsesInputItem[],
   output = extractToolOutput(input),
+  projection: "details" | "content" = "details",
 ) {
   const call = findToolCallByCallId(input, extractToolOutputCallId(input));
   if (call?.name !== "tool_call") {
@@ -287,14 +288,16 @@ export function unwrapScenarioCatalogOutput(
   // Keep target failures and receipt fields at the same level as direct calls.
   // Do not unwrap unrelated JSON stdout or an unmatched catalog result.
   const result = envelope.result;
-  if (extractToolOutputStructuredError(input) === true) {
-    return stringifyScenarioToolOutput({
-      ...(isRecord(result.details) ? result.details : {}),
-      status: "error",
-    });
-  }
-  if (Object.hasOwn(result, "details")) {
-    return stringifyScenarioToolOutput(result.details);
+  if (projection === "details") {
+    if (extractToolOutputStructuredError(input) === true) {
+      return stringifyScenarioToolOutput({
+        ...(isRecord(result.details) ? result.details : {}),
+        status: "error",
+      });
+    }
+    if (Object.hasOwn(result, "details")) {
+      return stringifyScenarioToolOutput(result.details);
+    }
   }
   return Array.isArray(result.content)
     ? result.content

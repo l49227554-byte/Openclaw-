@@ -1472,6 +1472,16 @@ function readManagedGatewayLaunchAgent(checkout) {
   };
 }
 
+function assertManagedGatewayControlPlatform() {
+  if (process.platform === "darwin") {
+    return;
+  }
+  throw new UpdateInvariantError(
+    "unsupported_gateway_control_platform",
+    "live updater managed Gateway control requires macOS LaunchAgent inspection; Linux systemd installs must use the standard update CLI instead of this helper",
+  );
+}
+
 function inspectManagedGatewayDeployment(checkout) {
   if (process.platform !== "darwin") {
     return null;
@@ -3311,6 +3321,9 @@ export async function maintainMain(options, dependencies = {}) {
       sourceBuildBeforeUpdate,
       verifiedBefore.headSha,
     );
+    const assertControlPlatform =
+      dependencies.assertManagedGatewayControlPlatform ?? assertManagedGatewayControlPlatform;
+    assertControlPlatform();
     const update = await updateMain(options, managedCommand, dependencies);
     const statePath = options.statePath ?? defaultStatePath(update.checkout);
     const maintenanceState = readMaintenanceState(statePath);

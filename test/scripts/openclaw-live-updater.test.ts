@@ -61,6 +61,7 @@ const fixtureOrigins = new Map<string, string>();
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 let fixtureTemplate: ReturnType<typeof initializeFixture> | undefined;
 const posixTest = process.platform === "win32" ? test.skip : test;
+const linuxTest = process.platform === "linux" ? test : test.skip;
 
 function git(cwd: string, ...args: string[]) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -114,6 +115,7 @@ function maintainFixture(
       warnings: [],
     }),
     armEnvironmentRestore: () => ({ disarm() {} }),
+    assertManagedGatewayControlPlatform: () => {},
     assertNoSystemLaunchDaemonOwnership: () => {},
     prepareGatewaySuspension: () => ({
       status: "ready",
@@ -1864,6 +1866,7 @@ console.log(JSON.stringify({ ok: true, channels: {} }));
     process.exitCode = undefined;
     try {
       await runLiveUpdaterMain(["--checkout", mirror], {
+        assertManagedGatewayControlPlatform: () => {},
         inspectGatewayDeployment: () => null,
         runManagedCommand: async () => {
           throw managedTimeoutError();
@@ -3458,6 +3461,15 @@ console.log(JSON.stringify({ ok: true, channels: {} }));
       env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
     });
 
+    if (process.platform !== "darwin") {
+      expect(result.status, result.stderr).toBe(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        ok: false,
+        error: { code: "unsupported_gateway_control_platform" },
+      });
+      return;
+    }
+
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim().split("\n")).toHaveLength(1);
     expect(JSON.parse(result.stdout)).toMatchObject({
@@ -3532,6 +3544,7 @@ console.log(JSON.stringify({ ok: true, channels: {} }));
             auditCalls += 1;
             return { entries: 1, errorCount: 0, warningCount: 0, errors: [], warnings: [] };
           },
+          assertManagedGatewayControlPlatform: () => {},
           inspectGatewayDeployment: () => null,
           sleep() {},
           verifyGatewayRuntime: () => null,
@@ -3701,6 +3714,36 @@ console.log(JSON.stringify({ ok: true, channels: {} }));
       }
     },
   );
+
+  linuxTest("refuses Linux systemd hosts before moving HEAD", () => {
+    const { mirror, seed } = makeFixture({ includeSeed: true });
+    writeFileSync(path.join(seed, "linux-preflight.txt"), "advance origin\n");
+    git(seed, "add", "linux-preflight.txt");
+    git(seed, "commit", "-m", "advance origin");
+    git(seed, "push");
+    const before = git(mirror, "rev-parse", "HEAD");
+
+    const result = spawnSync(process.execPath, [script, "--checkout", mirror], {
+      encoding: "utf8",
+    });
+    const payload = JSON.parse(result.stdout.trim());
+
+    expect(result.status).toBe(1);
+    expect(payload).toEqual({
+      schemaVersion: 1,
+      ok: false,
+      error: {
+        code: "unsupported_gateway_control_platform",
+        message:
+          "live updater managed Gateway control requires macOS LaunchAgent inspection; Linux systemd installs must use the standard update CLI instead of this helper",
+        diagnostics: {
+          kind: "invariant",
+          code: "unsupported_gateway_control_platform",
+        },
+      },
+    });
+    expect(git(mirror, "rev-parse", "HEAD")).toBe(before);
+  });
 
   test("refuses dirty work without moving HEAD", () => {
     const { mirror } = makeFixture();

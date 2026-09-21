@@ -189,7 +189,7 @@ it("shares lazy CLI discovery across native execution and both OAuth wrappers", 
       provider: "claude-cli",
       modelId: model.id,
     }),
-  ];
+  ].map((execution) => Promise.resolve(execution));
   await Promise.resolve();
   expect(fixture.runCommandWithTimeout).toHaveBeenCalledOnce();
   expect(resolveClaudeTerminalExecutable).toHaveBeenCalledWith(process.env, {

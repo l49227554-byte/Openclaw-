@@ -237,7 +237,8 @@ describe("external gateway supervision lifecycle", () => {
     });
     expect(waitForGatewayHealthyListener).toHaveBeenCalledWith({
       port: 19_455,
-      attempts: 120,
+      // Allow the five-minute drain budget before the one-minute readiness window.
+      attempts: 720,
       delayMs: 500,
       previousLockIdentity: lockIdentity,
       waitIndefinitelyForPreviousOwner: false,

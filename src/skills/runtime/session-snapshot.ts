@@ -225,6 +225,7 @@ export async function resolveReusableWorkspaceSkillSnapshot(
             rebuilt && {
               ...params.existingSnapshot!,
               resolvedSkills: rebuilt.resolvedSkills,
+              skillCommandUsagePaths: rebuilt.skillCommandUsagePaths,
             },
         );
   if (!snapshot || !projectionIsCurrent()) {

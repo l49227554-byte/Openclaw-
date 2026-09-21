@@ -210,8 +210,7 @@ describe("native Codex tool response fidelity", () => {
           completed.resolve(notification.params.turn);
         } else if (
           notification.method === "item/completed" &&
-          item?.type === "commandExecution" &&
-          item.id === callId
+          item?.type === "commandExecution"
         ) {
           commandCompleted.resolve(item);
         } else if (

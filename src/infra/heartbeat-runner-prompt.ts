@@ -198,6 +198,7 @@ type HeartbeatPromptResolution = {
   hasExecCompletion: boolean;
   hasRelayableExecCompletion: boolean;
   hasCronEvents: boolean;
+  hasExcludedEventCohorts: boolean;
   usesHeartbeatResponseTool: boolean;
   genericEvents: SystemEvent[];
   inspectedSystemEventsToConsume: SystemEvent[];
@@ -220,6 +221,7 @@ export type HeartbeatTurnEventSelection = {
   cronEvents: SystemEvent[];
   cronNoise: SystemEvent[];
   genericEvents: SystemEvent[];
+  hasExcludedEventCohorts: boolean;
   turnSourceDeliveryContext?: DeliveryContext;
 };
 
@@ -307,6 +309,7 @@ export function resolveHeartbeatTurnEventSelection(params: {
       cronEvents: [],
       cronNoise,
       genericEvents: [],
+      hasExcludedEventCohorts: false,
     };
   }
 
@@ -315,29 +318,37 @@ export function resolveHeartbeatTurnEventSelection(params: {
 
   if (execCandidates.length > 0) {
     const selected = selectRouteCompatibleEventCohort(execCandidates);
+    const selectedGenericEvents = selectRouteCompatibleGenericEvents(
+      genericCandidates,
+      selected.turnSourceDeliveryContext,
+    );
     return {
       execEvents: selected.events,
       // Preserve awareness of queued cron work without admitting or consuming it.
       cronEvents: cronCandidates,
       cronNoise,
-      genericEvents: selectRouteCompatibleGenericEvents(
-        genericCandidates,
-        selected.turnSourceDeliveryContext,
-      ),
+      genericEvents: selectedGenericEvents,
+      hasExcludedEventCohorts:
+        selected.events.length < execCandidates.length ||
+        selectedGenericEvents.length < genericCandidates.length,
       turnSourceDeliveryContext: routeAuthority(selected),
     };
   }
 
   if (cronCandidates.length > 0) {
     const selected = selectRouteCompatibleEventCohort(cronCandidates);
+    const selectedGenericEvents = selectRouteCompatibleGenericEvents(
+      genericCandidates,
+      selected.turnSourceDeliveryContext,
+    );
     return {
       execEvents: [],
       cronEvents: selected.events,
       cronNoise,
-      genericEvents: selectRouteCompatibleGenericEvents(
-        genericCandidates,
-        selected.turnSourceDeliveryContext,
-      ),
+      genericEvents: selectedGenericEvents,
+      hasExcludedEventCohorts:
+        selected.events.length < cronCandidates.length ||
+        selectedGenericEvents.length < genericCandidates.length,
       turnSourceDeliveryContext: routeAuthority(selected),
     };
   }
@@ -348,6 +359,7 @@ export function resolveHeartbeatTurnEventSelection(params: {
     cronEvents: [],
     cronNoise,
     genericEvents: selected.events,
+    hasExcludedEventCohorts: selected.events.length < genericCandidates.length,
     turnSourceDeliveryContext: routeAuthority(selected),
   };
 }
@@ -399,6 +411,7 @@ ${completionInstruction}`;
       hasExecCompletion: false,
       hasRelayableExecCompletion: false,
       hasCronEvents: false,
+      hasExcludedEventCohorts: selection.hasExcludedEventCohorts,
       usesHeartbeatResponseTool: params.useHeartbeatResponseTool,
       genericEvents: [],
       inspectedSystemEventsToConsume: cronNoise,
@@ -438,6 +451,7 @@ ${completionInstruction}`;
     hasExecCompletion,
     hasRelayableExecCompletion,
     hasCronEvents,
+    hasExcludedEventCohorts: selection.hasExcludedEventCohorts,
     usesHeartbeatResponseTool: baseUsesHeartbeatResponseTool,
     genericEvents,
     inspectedSystemEventsToConsume: [

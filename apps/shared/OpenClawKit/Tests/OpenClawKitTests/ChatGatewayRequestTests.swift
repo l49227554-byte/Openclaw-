@@ -859,6 +859,9 @@ struct ChatGatewayPayloadCodecTests {
         #expect(try OpenClawChatGatewayPayloadCodec.decodeAgentWaitObservation(
             Data(#"{"status":"timeout","timeoutPhase":"provider"}"#.utf8)) ==
             .terminal(.failed(message: "Run timed out")))
+        #expect(try OpenClawChatGatewayPayloadCodec.decodeAgentWaitObservation(
+            Data(#"{"status":"timeout","livenessState":"unknown_run"}"#.utf8)) ==
+            .terminal(.failed(message: "Run timed out")))
     }
 
     @Test func `routing identity decodes agent and canonical contract`() throws {

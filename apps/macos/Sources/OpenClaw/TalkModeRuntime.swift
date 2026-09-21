@@ -613,28 +613,12 @@ extension TalkModeRuntime {
                 return
             }
 
-            var assistantText: String?
-            if ChatSendStatus.acceptance(of: response.status) == .terminalSuccess {
-                self.logger.info(
-                    "talk chat.send terminal ok runId=\(response.runId, privacy: .public); " +
-                        "using history fallback")
-                assistantText = await self.waitForAssistantTextFromHistory(
-                    sessionKey: sessionKey,
-                    since: nil,
-                    timeoutSeconds: 12)
-            } else {
-                assistantText = await self.waitForAssistantEventText(
-                    sessionKey: sessionKey,
-                    runId: response.runId,
-                    timeoutSeconds: 45)
-                if assistantText == nil {
-                    self.logger.warning("talk assistant event text missing; using history fallback")
-                    assistantText = await self.waitForAssistantTextFromHistory(
-                        sessionKey: sessionKey,
-                        since: startedAt,
-                        timeoutSeconds: 12)
-                }
-            }
+            let assistantText = await self.waitForRunAssistantText(
+                sessionKey: sessionKey,
+                runId: response.runId,
+                since: startedAt,
+                generation: gen,
+                terminalAck: ChatSendStatus.acceptance(of: response.status) == .terminalSuccess)
             guard let assistantText
             else {
                 self.logger.warning("talk assistant text missing after timeout")
@@ -655,6 +639,79 @@ extension TalkModeRuntime {
             await self.resumeListeningIfNeeded()
             return
         }
+    }
+
+    private func waitForRunAssistantText(
+        sessionKey: String,
+        runId: String,
+        since: Double,
+        generation: Int,
+        terminalAck: Bool) async -> String?
+    {
+        if terminalAck {
+            self.logger.info(
+                "talk chat.send terminal ok runId=\(runId, privacy: .public); using history fallback")
+            return await self.waitForAssistantTextFromHistory(
+                sessionKey: sessionKey,
+                runId: runId,
+                since: nil,
+                timeoutSeconds: 12)
+        }
+
+        // agent.wait owns the Gateway run deadline. Keep observing until that
+        // contract reaches a terminal state or Talk Mode is stopped.
+        while self.isCurrent(generation) {
+            let request = OpenClawChatGatewayRequests.agentWait(runID: runId, timeoutMs: 5000)
+            do {
+                let data = try await GatewayConnection.shared.request(
+                    method: request.method,
+                    params: request.params,
+                    timeoutMs: request.timeoutMs,
+                    retryTransportFailures: false)
+                let observation = try OpenClawChatGatewayPayloadCodec.decodeAgentWaitObservation(data)
+                switch observation {
+                case .checkAgain:
+                    do {
+                        try await Task.sleep(nanoseconds: 250_000_000)
+                    } catch {
+                        return nil
+                    }
+                case .terminal(.completed):
+                    return await self.waitForAssistantTextFromHistory(
+                        sessionKey: sessionKey,
+                        runId: runId,
+                        since: since,
+                        timeoutSeconds: 12)
+                case .terminal, .unavailable:
+                    return nil
+                }
+            } catch let error as GatewayResponseError {
+                self.logger.warning(
+                    "talk agent.wait returned a terminal error runId=\(runId, privacy: .public): "
+                        + "\(error.localizedDescription, privacy: .public)")
+                return nil
+            } catch let error as GatewayDecodingError {
+                self.logger.warning(
+                    "talk agent.wait returned an invalid response runId=\(runId, privacy: .public): "
+                        + "\(error.localizedDescription, privacy: .public)")
+                return nil
+            } catch let error as DecodingError {
+                self.logger.warning(
+                    "talk agent.wait payload could not be decoded runId=\(runId, privacy: .public): "
+                        + "\(error.localizedDescription, privacy: .public)")
+                return nil
+            } catch {
+                self.logger.warning(
+                    "talk agent.wait failed; retrying runId=\(runId, privacy: .public): " +
+                        "\(error.localizedDescription, privacy: .public)")
+                do {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                } catch {
+                    return nil
+                }
+            }
+        }
+        return nil
     }
 
     private func resumeListeningIfNeeded() async {
@@ -679,78 +736,15 @@ extension TalkModeRuntime {
         return TalkPromptBuilder.build(transcript: transcript, interruptedAtSeconds: interrupted)
     }
 
-    private func waitForAssistantEventText(
-        sessionKey: String,
-        runId: String,
-        timeoutSeconds: Int) async -> String?
-    {
-        let stream = await GatewayConnection.shared.subscribe(bufferingNewest: 200)
-        return await withTaskGroup(of: String?.self) { group in
-            group.addTask { [runId, sessionKey] in
-                var latestText: String?
-                for await delivery in stream {
-                    if Task.isCancelled {
-                        return latestText
-                    }
-                    guard delivery.isCurrent, case let .event(evt) = delivery.push else { continue }
-                    guard evt.event == "chat", let payload = evt.payload else { continue }
-                    guard let chatEvent = try? GatewayPayloadDecoding.decode(
-                        payload,
-                        as: OpenClawChatEventPayload.self)
-                    else {
-                        continue
-                    }
-                    guard chatEvent.runId == runId else { continue }
-                    if let eventSessionKey = chatEvent.sessionKey,
-                       !Self.matchesSessionKey(eventSessionKey, sessionKey)
-                    {
-                        continue
-                    }
-                    if let text = OpenClawChatEventText.assistantText(from: chatEvent) {
-                        latestText = text
-                    }
-                    switch chatEvent.state {
-                    case "final":
-                        return latestText
-                    case "aborted", "error":
-                        return nil
-                    default:
-                        break
-                    }
-                }
-                return latestText
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
-                return nil
-            }
-            guard let result = await group.next() else {
-                group.cancelAll()
-                return nil
-            }
-            group.cancelAll()
-            return result
-        }
-    }
-
-    private static func matchesSessionKey(_ incoming: String, _ current: String) -> Bool {
-        let incoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let current = current.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if incoming == current {
-            return true
-        }
-        return (incoming == "agent:main:main" && current == "main") ||
-            (incoming == "main" && current == "agent:main:main")
-    }
-
     private func waitForAssistantTextFromHistory(
         sessionKey: String,
+        runId: String?,
         since: Double?,
         timeoutSeconds: Int) async -> String?
     {
         let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
         while Date() < deadline {
-            if let text = await latestAssistantText(sessionKey: sessionKey, since: since) {
+            if let text = await latestAssistantText(sessionKey: sessionKey, runId: runId, since: since) {
                 return text
             }
             try? await Task.sleep(nanoseconds: 300_000_000)
@@ -758,7 +752,11 @@ extension TalkModeRuntime {
         return nil
     }
 
-    private func latestAssistantText(sessionKey: String, since: Double? = nil) async -> String? {
+    private func latestAssistantText(
+        sessionKey: String,
+        runId: String? = nil,
+        since: Double? = nil) async -> String?
+    {
         do {
             let history = try await GatewayConnection.shared.chatHistory(sessionKey: sessionKey)
             let messages = history.messages ?? []
@@ -766,19 +764,80 @@ extension TalkModeRuntime {
                 guard let data = try? JSONEncoder().encode(item) else { return nil }
                 return try? JSONDecoder().decode(OpenClawChatMessage.self, from: data)
             }
-            let assistant = decoded.last { message in
-                guard message.role == "assistant" else { return false }
-                guard let since else { return true }
-                guard let timestamp = message.timestamp else { return false }
-                return TalkHistoryTimestamp.isAfter(timestamp, sinceSeconds: since)
+            guard let assistant = Self.assistantMessage(
+                from: decoded,
+                runId: runId,
+                since: since)
+            else {
+                return nil
             }
-            guard let assistant else { return nil }
-            let text = assistant.content.compactMap(\.text).joined(separator: "\n")
-            let trimmed = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
+            if assistant.isTruncated {
+                guard let messageID = assistant.transcriptMessageID?.trimmingCharacters(
+                    in: .whitespacesAndNewlines),
+                    !messageID.isEmpty
+                else {
+                    return nil
+                }
+                do {
+                    let transport = MacGatewayChatTransport(connection: GatewayConnection.shared)
+                    guard let full = try await transport.requestFullMessage(
+                        sessionKey: sessionKey,
+                        messageID: messageID), !full.isTruncated
+                    else { return nil }
+                    return Self.assistantText(from: [full])
+                } catch {
+                    self.logger.warning(
+                        "talk full assistant message fetch failed: " +
+                            "\(error.localizedDescription, privacy: .public)")
+                    return nil
+                }
+            }
+            return Self.assistantText(from: [assistant])
         } catch {
             self.logger.error("talk history fetch failed: \(error.localizedDescription, privacy: .public)")
             return nil
+        }
+    }
+
+    nonisolated static func assistantText(
+        from messages: [OpenClawChatMessage],
+        runId: String? = nil,
+        since: Double? = nil) -> String?
+    {
+        guard let assistant = assistantMessage(
+            from: messages,
+            runId: runId,
+            since: since)
+        else {
+            return nil
+        }
+        let text = assistant.content.compactMap(\.text).joined(separator: "\n")
+        let trimmed = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    nonisolated static func assistantMessage(
+        from messages: [OpenClawChatMessage],
+        runId: String? = nil,
+        since: Double? = nil) -> OpenClawChatMessage?
+    {
+        let normalizedRunId = runId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return messages.last { message in
+            guard message.role == "assistant" else { return false }
+            if let normalizedRunId, !normalizedRunId.isEmpty {
+                let candidates = [
+                    message.transcriptRunID,
+                    message.idempotencyKey,
+                    message.streamFallback?.runId,
+                ]
+                // Exact run identity is authoritative across different client and Gateway clocks.
+                return candidates.contains(where: {
+                    $0?.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedRunId
+                })
+            }
+            guard let since else { return true }
+            guard let timestamp = message.timestamp else { return false }
+            return TalkHistoryTimestamp.isAfter(timestamp, sinceSeconds: since)
         }
     }
 

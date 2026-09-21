@@ -678,8 +678,16 @@ export function createAgentTurnService(
         return queuedAfterWait;
       }
       if (!snapshot) {
+        const runIsTracked =
+          initialSession !== undefined ||
+          runContext?.lifecycleGeneration === lifecycleGeneration ||
+          context.chatAbortControllers.has(runId);
         return {
-          result: { runId, status: "timeout" as const },
+          result: {
+            runId,
+            status: "timeout" as const,
+            ...(runIsTracked ? {} : { livenessState: "unknown_run" }),
+          },
           session: captureAgentJobSession(runContext) ?? initialSession,
         };
       }

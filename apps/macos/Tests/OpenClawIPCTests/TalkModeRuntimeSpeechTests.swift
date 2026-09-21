@@ -1,4 +1,5 @@
 import Foundation
+import OpenClawChatUI
 import OpenClawProtocol
 import Speech
 import Testing
@@ -1313,5 +1314,15 @@ struct TalkModeRuntimeSpeechTests {
         #expect(params["normalize"]?.value as? String == "auto")
         #expect(params["language"]?.value as? String == "en")
         #expect(params["latencyTier"]?.value as? Int == 3)
+    }
+
+    @Test func `run observation keeps pending work attached and stops on terminal states`() {
+        #expect(OpenClawChatRunObservation.fromWaitResponse(status: "pending") == .checkAgain)
+        #expect(OpenClawChatRunObservation.fromWaitResponse(status: "completed") == .terminal(.completed))
+        #expect(OpenClawChatRunObservation.fromWaitResponse(status: "timeout", timeoutPhase: "provider") ==
+            .terminal(.failed(message: "Run timed out")))
+        #expect(OpenClawChatRunObservation.fromWaitResponse(
+            status: "timeout",
+            livenessState: "unknown_run") == .terminal(.failed(message: "Run timed out")))
     }
 }

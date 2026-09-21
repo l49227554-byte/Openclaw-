@@ -70,6 +70,7 @@ describe("createGatewayInstanceRuntime", () => {
     await expect(runtime.recovery.waitForAgent({ runId: "run-1", timeoutMs: 0 })).resolves.toEqual({
       runId: "run-1",
       status: "timeout",
+      livenessState: "unknown_run",
     });
     context.dedupe.set("agent:run-cached-recovery", {
       ts: Date.now(),

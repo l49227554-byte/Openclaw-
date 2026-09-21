@@ -486,6 +486,7 @@ describe("agent.wait gateway dedupe observations", () => {
       expect(timedOut.respond).toHaveBeenCalledWith(true, {
         runId,
         status: "timeout",
+        ...(activeKind ? {} : { livenessState: "unknown_run" }),
       });
 
       completeRun(dedupe, runId, activeKind);
@@ -514,7 +515,11 @@ describe("agent.wait gateway dedupe observations", () => {
 
     const fresh = waitThroughGateway({ runId, timeoutMs: 0 });
     await fresh.promise;
-    expect(fresh.respond).toHaveBeenCalledWith(true, { runId, status: "timeout" });
+    expect(fresh.respond).toHaveBeenCalledWith(true, {
+      runId,
+      status: "timeout",
+      livenessState: "unknown_run",
+    });
 
     completeRun(dedupe, runId);
     const completed = waitThroughGateway({ runId, timeoutMs: 0 });

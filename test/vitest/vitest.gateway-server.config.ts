@@ -40,7 +40,7 @@ export function createGatewayServerVitestConfig(
       test: {
         ...config.test,
         // A file-backed container preserves --project gateway-server for direct invocations.
-        projects: [{ config: "test/vitest/vitest.gateway-server-projects.ts" }],
+        projects: ["test/vitest/vitest.gateway-server-projects.config.ts"],
       },
     });
   }

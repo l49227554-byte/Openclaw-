@@ -524,6 +524,7 @@ describe("detectChangedScope", () => {
     expect(detectChangedScope(["scripts/ci-changed-scope.mjs"])).toEqual(
       expectedNodeAndChangedSmokeScope,
     );
+
   });
 
   it("runs changed-smoke for Docker-covered core runtime surfaces", () => {
@@ -654,7 +655,6 @@ describe("detectChangedScope", () => {
     expect(
       detectNodeFastScope([
         "scripts/check-changed.mjs",
-        "scripts/ci-changed-scope.mjs",
         "scripts/run-vitest.mts",
         "scripts/test-projects.test-support.mts",
         "scripts/lib/ci-docker-seed-plan.mts",
@@ -662,7 +662,6 @@ describe("detectChangedScope", () => {
         "src/commands/status.scan-result.test.ts",
         "src/scripts/ci-changed-scope.control-ui.test.ts",
         "src/scripts/ci-changed-scope.native-i18n.test.ts",
-        "src/scripts/ci-changed-scope.test.ts",
         "src/scripts/ci-changed-scope.windows.test.ts",
         "test/scripts/changed-lanes.test.ts",
         "test/scripts/run-vitest.test.ts",
@@ -673,6 +672,16 @@ describe("detectChangedScope", () => {
       runFastOnly: true,
       runPluginContracts: false,
       runCiRouting: true,
+    });
+  });
+
+  it("routes scope-owner edits out of fast-only CI so Windows coverage runs", () => {
+    expect(
+      detectNodeFastScope(["scripts/ci-changed-scope.mjs", "src/scripts/ci-changed-scope.test.ts"]),
+    ).toEqual({
+      runFastOnly: false,
+      runPluginContracts: false,
+      runCiRouting: false,
     });
   });
 

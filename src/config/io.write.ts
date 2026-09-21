@@ -1,6 +1,5 @@
 import type fs from "node:fs";
 import path from "node:path";
-import { err, ok } from "@openclaw/normalization-core/result";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { isVerbose } from "../global-state.js";
 import {
@@ -53,6 +52,10 @@ import type { ConfigIoContext } from "./io.context.js";
 import { prepareCronOwnerWriteRefusal } from "./io.cron-owner-refusal.js";
 import { recordConfigWriteMetadata } from "./io.meta.js";
 import {
+  advanceConfigHealthBaselineForAcceptedWrite,
+  restoreConfigHealthBaselineForRolledBackWrite,
+} from "./io.observe.js";
+import {
   collectEnvRefPaths,
   containsConfigIncludeDirective,
   hashConfigRaw,
@@ -81,10 +84,10 @@ import {
   type ConfigWriteRollbackStatus,
 } from "./io.write-errors.js";
 import { resolvePersistCandidateForWrite } from "./io.write-prepare.js";
+import { rejectConfigWriteForBlockingReasons } from "./io.write-rejected.js";
 import {
   assertBaseSnapshotStillCurrent,
   createGuardedConfigFileSystem,
-  formatConfigArtifactTimestamp,
   resolveConfigSizeBaselineBytes,
   resolveConfigStatMetadata,
   resolveConfigWriteBlockingReasons,
@@ -466,26 +469,15 @@ export async function writeConfigFileFromContext(
     });
   };
   const blockingReasons = resolveConfigWriteBlockingReasons(suspiciousReasons, options);
-  if (blockingReasons.length > 0 && options.allowDestructiveWrite !== true) {
-    const rejectedPath = `${configPath}.rejected.${formatConfigArtifactTimestamp(new Date().toISOString())}`;
-    // Only the completed exclusive create proves this payload is available for inspection.
-    options.assertConfigPathForWrite?.();
-    const rejectedSave = await deps.fs.promises
-      .writeFile(rejectedPath, json, { encoding: "utf-8", mode: 0o600, flag: "wx" })
-      .then(ok, err);
-    const saveDetail = rejectedSave.ok
-      ? `Rejected payload saved to ${rejectedPath}.`
-      : `Rejected payload could not be saved to ${rejectedPath}: ${formatErrorMessage(rejectedSave.error)}.`;
-    const message = `Config write rejected: ${configPath} (${blockingReasons.join(", ")}). ${saveDetail}`;
-    const error = Object.assign(new Error(message), {
-      code: "CONFIG_WRITE_REJECTED",
-      ...(rejectedSave.ok ? { rejectedPath } : {}),
-      reasons: blockingReasons,
-    });
-    deps.logger.warn(message);
-    await appendWriteAudit("rejected", error);
-    throw error;
-  }
+  await rejectConfigWriteForBlockingReasons({
+    deps,
+    configPath,
+    json,
+    blockingReasons,
+    allowDestructiveWrite: options.allowDestructiveWrite,
+    assertConfigPathForWrite: options.assertConfigPathForWrite,
+    appendWriteAudit,
+  });
 
   const preCommitRuntimePreflight =
     options.preCommitRuntimePreflight ??
@@ -577,6 +569,12 @@ export async function writeConfigFileFromContext(
       undefined,
       await deps.fs.promises.stat(configPath).catch(() => null),
     );
+    const healthBaselineCompensation = advanceConfigHealthBaselineForAcceptedWrite(deps, {
+      configPath,
+      raw: json,
+      parsed: stampedOutputConfig,
+      resolved: sourceConfigForPreflight,
+    });
     options.assertConfigPathForWrite?.();
     if (
       configSnapshotAuditRecordMatchesPath(priorSnapshotAuditRecord, configPath) &&
@@ -661,6 +659,7 @@ export async function writeConfigFileFromContext(
               previousWarningFingerprint,
             );
           }
+          restoreConfigHealthBaselineForRolledBackWrite(deps, healthBaselineCompensation);
         },
       },
     };

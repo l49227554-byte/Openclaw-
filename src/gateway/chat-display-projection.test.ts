@@ -488,13 +488,15 @@ describe("oversized multimodal chat history", () => {
 
 describe("transcript metadata projection", () => {
   it("keeps display metadata while omitting oversized upstream prompt metadata", () => {
+    const humanMentions = [{ kind: "everyone", start: 0, end: 9 }];
     const message = {
       role: "user",
-      content: "Keep this visible user message.",
+      content: "@everyone keep this visible user message.",
       __openclaw: {
         id: "message-1",
         mirrorIdentity: "turn-1:prompt",
         replyToId: "message-0",
+        humanMentions,
         upstreamUserText: "private decorated prompt ".repeat(12_000),
       },
     };
@@ -502,11 +504,12 @@ describe("transcript metadata projection", () => {
     expect(messages).toEqual([
       {
         role: "user",
-        content: "Keep this visible user message.",
+        content: "@everyone keep this visible user message.",
         __openclaw: {
           id: "message-1",
           mirrorIdentity: "turn-1:prompt",
           replyToId: "message-0",
+          humanMentions,
         },
       },
     ]);

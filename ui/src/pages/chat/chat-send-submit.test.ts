@@ -158,14 +158,19 @@ describe("structured Goal admission", () => {
 });
 
 describe("human mention submission", () => {
-  it("keeps only selected recipients after annotation and reply prefixes", async () => {
+  it("keeps only selected people and everyone after annotation and reply prefixes", async () => {
     const host = makeChatHost({
-      chatMessage: "  🔎 @Alex please review  ",
-      chatMentions: [{ profileId: "profile-alex", start: 5, end: 10 }],
-      chatAttachments: [createBrowserAnnotationAttachment("mention", "Unselected @Other context")],
+      chatMessage: "  🔎 @Alex @everyone please review  ",
+      chatMentions: [
+        { profileId: "profile-alex", start: 5, end: 10 },
+        { kind: "everyone", start: 11, end: 20 },
+      ],
+      chatAttachments: [
+        createBrowserAnnotationAttachment("mention", "Unselected @Other @everyone context"),
+      ],
       chatReplyTarget: {
         messageId: "synthetic-reply",
-        text: "Unselected @Other quote",
+        text: "Unselected @Other @everyone quote",
         senderLabel: "Reader",
       },
       getWorkContext: () => ({ page: "chat", title: "Unselected @Other work context" }),
@@ -175,17 +180,21 @@ describe("human mention submission", () => {
     await handleSendChat(host);
 
     const expected =
-      "> **Reader:** Unselected @Other quote\n\nUnselected @Other context\n\n🔎 @Alex please review";
-    expect(findChatSendPayload(host)).toMatchObject({
-      message: expected,
-      mentions: [
-        {
-          profileId: "profile-alex",
-          start: expected.indexOf("@Alex"),
-          end: expected.indexOf("@Alex") + 5,
-        },
-      ],
-    });
+      "> **Reader:** Unselected @Other @everyone quote\n\nUnselected @Other @everyone context\n\n🔎 @Alex @everyone please review";
+    const payload = findChatSendPayload(host);
+    expect(payload.message).toBe(expected);
+    expect(payload.mentions).toEqual([
+      {
+        profileId: "profile-alex",
+        start: expected.indexOf("@Alex"),
+        end: expected.indexOf("@Alex") + 5,
+      },
+      {
+        kind: "everyone",
+        start: expected.lastIndexOf("@everyone"),
+        end: expected.lastIndexOf("@everyone") + 9,
+      },
+    ]);
   });
 
   it("does not clear a same-label replacement recipient while history is loading", async () => {

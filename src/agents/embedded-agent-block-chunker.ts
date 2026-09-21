@@ -36,7 +36,15 @@ type ParagraphBreak = {
 
 type BlockChunkDrain = {
   force: boolean;
-  emit: (chunk: string, options?: { sourceText: string; startsAtLineStart: boolean }) => void;
+  emit: (
+    chunk: string,
+    options?: {
+      sourceText: string;
+      sourceStart: number;
+      sourceEnd: number;
+      startsAtLineStart: boolean;
+    },
+  ) => void;
 };
 
 function findSafeSentenceBreakIndex(
@@ -145,6 +153,7 @@ export class EmbeddedBlockChunker {
   #consumedLength = 0;
   #preparedSourceBreaks: number[] = [];
   #sourceBreaks: readonly number[] = [];
+  #sourceOffset = 0;
   #nextSourceBreak = 0;
   #bufferStartsAtLineStart = true;
   readonly #chunking?: BlockReplyChunking;
@@ -162,12 +171,13 @@ export class EmbeddedBlockChunker {
   }
 
   /** Start a new source scope without emitting pending text. */
-  reset(sourceBreaks: readonly number[] = []) {
+  reset(sourceBreaks: readonly number[] = [], sourceOffset = 0) {
     this.#buffer = "";
     this.#reopenPrefix = "";
     this.#consumedLength = 0;
     this.#preparedSourceBreaks = [];
     this.#sourceBreaks = sourceBreaks;
+    this.#sourceOffset = sourceOffset;
     this.#nextSourceBreak = 0;
     this.#bufferStartsAtLineStart = true;
   }
@@ -287,7 +297,12 @@ export class EmbeddedBlockChunker {
     if (!chunking || (force && source.length <= maxChars && !this.#reopenPrefix)) {
       if (!chunking || source.trim().length > 0) {
         preparedSourceBreaks.push(sourceStart + this.#buffer.length);
-        emit(source, { sourceText: this.#buffer, startsAtLineStart });
+        emit(source, {
+          sourceText: this.#buffer,
+          sourceStart: this.#sourceOffset + this.#consumedLength,
+          sourceEnd: this.#sourceOffset + this.#consumedLength + this.#buffer.length,
+          startsAtLineStart,
+        });
       }
       this.#bufferStartsAtLineStart = this.#buffer.endsWith("\n");
       this.#consumedLength += this.#buffer.length;
@@ -341,6 +356,8 @@ export class EmbeddedBlockChunker {
       preparedSourceBreaks.push(sourceStart + sourceOffset(to));
       emit(chunk, {
         sourceText: this.#buffer.slice(sourceOffset(from), sourceOffset(to)),
+        sourceStart: this.#sourceOffset + this.#consumedLength + sourceOffset(from),
+        sourceEnd: this.#sourceOffset + this.#consumedLength + sourceOffset(to),
         startsAtLineStart:
           Boolean(reopenFence) ||
           (from === 0 ? startsAtLineStart : source.charAt(from - 1) === "\n"),

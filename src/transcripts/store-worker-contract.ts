@@ -16,6 +16,7 @@ import type {
   readStoredTranscriptSummary,
   readTranscriptUtterances,
   readTranscriptSummarySnapshot,
+  readTranscriptJsonlDigest,
 } from "./store-sqlite-read.js";
 import type { writeMeetingTranscriptSummaryInDatabase } from "./store-sqlite-write.js";
 import type {
@@ -100,6 +101,10 @@ export type TranscriptReadRequests = {
   "transcripts.summary": {
     input: { session: SessionIdentity };
     output: ReturnType<typeof readStoredTranscriptSummary>;
+  };
+  "transcripts.exportDigest": {
+    input: { session: SessionIdentity };
+    output: ReturnType<typeof readTranscriptJsonlDigest>;
   };
 };
 

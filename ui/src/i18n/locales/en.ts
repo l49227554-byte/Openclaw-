@@ -39,6 +39,7 @@ export const en: TranslationMap & {
       Record<
         | "title"
         | "eyebrow"
+        | "move"
         | "minimize"
         | "expand"
         | "lanes"
@@ -1452,6 +1453,7 @@ export const en: TranslationMap & {
     overlay: {
       title: "System busyness",
       eyebrow: "Live diagnostics",
+      move: "Move system busyness with arrow keys, or drag",
       minimize: "Minimize system busyness",
       expand: "Expand system busyness",
       lanes: "Lanes",

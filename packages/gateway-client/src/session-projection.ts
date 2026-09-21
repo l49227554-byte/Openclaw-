@@ -17,11 +17,12 @@ import {
 } from "./session-projection-message-content.js";
 import {
   createSessionProjectionEntry as createEntry,
-  isLocallyOptimisticSessionMessage,
+  createSessionProjectionEntries as createProjectionEntries,
   sameTranscriptIdentity,
   normalizeSessionProjectionRunId,
   readAssistantStreamSegmentIdentity,
   sameAssistantPersistenceReceipt,
+  retainSessionProjectionSnapshotOccurrences,
   readSessionProjectionString as readNonemptyString,
   type SessionMessageEnvelope,
   type SessionMessageIdentity,
@@ -135,29 +136,6 @@ export type SessionProjectionEvent = ScopedSessionProjectionEvent &
     | { type: "transportGap" }
     | { type: "reconnected" }
   );
-
-function createProjectionEntries(messages: readonly unknown[]): SessionProjectionEntry[] {
-  let pendingUserRunId: string | null = null;
-  return messages.map((message) => {
-    const entry = createEntry(message);
-    if (entry.identity?.role === "user") {
-      pendingUserRunId = entry.pending ? entry.pendingRunId : null;
-      return entry;
-    }
-    if (
-      pendingUserRunId &&
-      entry.identity?.role === "assistant" &&
-      !entry.pending &&
-      isLocallyOptimisticSessionMessage(message)
-    ) {
-      return createEntry(message, { pendingRunId: pendingUserRunId });
-    }
-    if (!isLocallyOptimisticSessionMessage(message)) {
-      pendingUserRunId = null;
-    }
-    return entry;
-  });
-}
 
 export function createSessionProjection(
   scope: SessionProjectionScope = {},
@@ -374,6 +352,7 @@ export function projectLiveSessionMessage(
   const existing =
     matches.find((entry) => sameTranscriptIdentity(entry.identity, incoming.identity)) ??
     (matches.length === 1 ? matches[0] : undefined);
+  let inferredReplacement = false;
   if (
     existing &&
     !sameTranscriptIdentity(existing.identity, incoming.identity) &&
@@ -395,6 +374,7 @@ export function projectLiveSessionMessage(
         return withEntries(state, insertEntry(state.entries, incoming, state.runs));
       }
       if (terminalMatch.inferred && durable.identity && runId && run) {
+        inferredReplacement = true;
         // Keep the original live entry until authoritative history confirms
         // the inference or restores it after revealing a later assistant row.
         const inferredSnapshotTerminal = { entry: provisional, matchedIdentity: durable.identity };
@@ -416,6 +396,11 @@ export function projectLiveSessionMessage(
     // A terminal projection carries no transcript identity; adopting it over the
     // durable row would lose the ID every later snapshot reconciles against.
     return state;
+  }
+  // Tentative adoption can later restore the original beside its candidate.
+  // Only definitive replacements may inherit the original occurrence.
+  if (!inferredReplacement && existing.occurrenceKey !== undefined) {
+    incoming.occurrenceKey = existing.occurrenceKey;
   }
   if (
     incoming.identity.sequence !== null &&
@@ -455,6 +440,11 @@ export function reconcileSessionProjectionSnapshot(
     return createSessionProjection(scope, visibleMessages);
   }
   let entries = createProjectionEntries(visibleMessages);
+  const retainOccurrence = retainSessionProjectionSnapshotOccurrences(
+    state.entries,
+    entries,
+    entryMatches,
+  );
   const runs: Record<string, SessionProjectionRun> = { ...state.runs };
   for (const current of state.entries) {
     if (
@@ -487,6 +477,11 @@ export function reconcileSessionProjectionSnapshot(
             matchedIdentity: terminalMatch.entry.identity,
           },
         };
+      } else if (current.occurrenceKey !== undefined) {
+        const replacement = terminalMatch?.entry ?? uniqueMatch;
+        if (replacement) {
+          retainOccurrence(replacement, current);
+        }
       }
       continue;
     }

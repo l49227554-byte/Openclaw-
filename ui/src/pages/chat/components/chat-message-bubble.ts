@@ -164,6 +164,8 @@ export function renderGroupedMessage(
   messageKey: string,
   opts: {
     isStreaming: boolean;
+    /** Live body continuity is separate from durable action/navigation identity. */
+    markdownKey?: string;
     isForwarded?: boolean;
     sessionKey?: string;
     presented?: boolean;

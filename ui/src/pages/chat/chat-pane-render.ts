@@ -66,6 +66,7 @@ import {
   openSessionWorkspaceFile,
   revealSessionWorkspaceFile,
 } from "./components/chat-session-workspace.ts";
+import { getChatSessionProjection } from "./history-merge.ts";
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import { hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
 import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
@@ -434,6 +435,7 @@ export class ChatPane extends ChatPaneLayoutRender {
         isCurrent: () => this.state === state,
       }),
       messages: catalogKey ? this.catalogMessages : state.chatMessages,
+      projectionEntries: catalogKey ? undefined : getChatSessionProjection(state).entries,
       historyPagination:
         historyHasMore || this.loadingOlder
           ? {
@@ -448,6 +450,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       stream: catalogKey ? null : state.chatStream,
       streamStartedAt: catalogKey ? null : state.chatStreamStartedAt,
       runId: catalogKey ? null : projectionRunId,
+      runLifecycleGeneration: state.chatRunLifecycleGeneration,
       runUsageById: catalogKey ? undefined : state.chatRunUsageById,
       assistantAvatarUrl: resolveChatAvatarUrl(state),
       sendShortcut: state.settings.chatSendShortcut,

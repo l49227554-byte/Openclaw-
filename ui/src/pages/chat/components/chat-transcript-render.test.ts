@@ -37,6 +37,43 @@ describe("chat transcript rendering", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
 
+  it("retains the standalone working row when an anonymous reply begins", async () => {
+    const props = threadProps("pane-anonymous-working", "agent:main:main", []);
+    props.runWorking = true;
+    props.stream = "";
+    props.streamStartedAt = 1_000;
+    const container = document.body.appendChild(document.createElement("div"));
+    const transcript = createTestTranscript();
+    const rerender = () => {
+      render(renderChatThread(props, transcript), container);
+      transcript.hostUpdated();
+    };
+    try {
+      rerender();
+      transcript.hostConnected();
+      await flushDeferredRowPrune();
+      const row = requireClosest(
+        requireElement(container, ".chat-reading-indicator"),
+        ".chat-virtual-row",
+      );
+      const key = row.dataset.virtualRowKey;
+      expect(container.querySelectorAll(".chat-virtual-row")).toHaveLength(1);
+      for (const text of ["The reply starts.", "The reply starts. More detail."]) {
+        props.stream = text;
+        rerender();
+        await flushDeferredRowPrune();
+        const bubble = requireElement(container, ".chat-bubble.streaming");
+        expect(bubble.textContent).toContain(text);
+        expect(requireClosest(bubble, ".chat-virtual-row")).toBe(row);
+        expect(row.dataset.virtualRowKey).toBe(key);
+        expect(container.querySelectorAll(".chat-reading-indicator")).toHaveLength(1);
+      }
+    } finally {
+      transcript.hostDisconnected();
+      container.remove();
+    }
+  });
+
   it.each([
     ["blob:configured-agent", "gutter", "props"],
     ["blob:configured-agent", "gutter", "roster"],

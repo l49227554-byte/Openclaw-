@@ -191,11 +191,62 @@ export function sameTranscriptIdentity(
 export type SessionProjectionEntry = {
   message: unknown;
   identity: SessionMessageIdentity | null;
+  /** Client-local occurrence continuity; never read from or written into transcript data. */
+  occurrenceKey?: string;
   afterSequence?: number | null;
   live: boolean;
   pending: boolean;
   pendingRunId: string | null;
 };
+
+/** Retain only unambiguous occurrences; admission remains with the snapshot reconciler. */
+export function retainSessionProjectionSnapshotOccurrences<Entry extends SessionProjectionEntry>(
+  previous: readonly Entry[],
+  entries: readonly Entry[],
+  matchesEntry: (left: Entry, right: Entry) => boolean,
+) {
+  // Index candidates only; the canonical identity contract still decides reuse.
+  // Ordinary history reloads must not scan the full transcript for every row.
+  const candidates = new Map<string | number, Entry[]>();
+  const occurrenceIdentity = (entry: SessionProjectionEntry) => {
+    const identity = entry.identity;
+    return identity?.isImported
+      ? (identity.externalSource ?? identity.sequence)
+      : (identity?.id ?? identity?.sequence);
+  };
+  for (const entry of entries) {
+    const identity = occurrenceIdentity(entry);
+    if (identity != null) {
+      const matches = candidates.get(identity) ?? [];
+      matches.push(entry);
+      candidates.set(identity, matches);
+    }
+  }
+  const owners = new Map<Entry, Entry | null>();
+  const retain = (entry: Entry, current: Entry) => {
+    const previousOwner = owners.get(entry);
+    const owner = previousOwner === undefined || previousOwner === current ? current : null;
+    owners.set(entry, owner);
+    entry.occurrenceKey = owner?.occurrenceKey;
+  };
+  for (const current of previous) {
+    const identity = occurrenceIdentity(current);
+    if (current.occurrenceKey === undefined || identity == null) {
+      continue;
+    }
+    const matches = candidates
+      .get(identity)
+      ?.filter(
+        (entry) =>
+          matchesEntry(entry, current) && sameTranscriptIdentity(entry.identity, current.identity),
+      );
+    const entry = matches?.length === 1 ? matches[0] : undefined;
+    if (entry) {
+      retain(entry, current);
+    }
+  }
+  return retain;
+}
 
 /** Normalize a message into its live, durable, or pending projection entry. */
 export function createSessionProjectionEntry(
@@ -225,4 +276,29 @@ export function createSessionProjectionEntry(
     pending: pendingRunId !== null,
     pendingRunId,
   };
+}
+
+export function createSessionProjectionEntries(
+  messages: readonly unknown[],
+): SessionProjectionEntry[] {
+  let pendingUserRunId: string | null = null;
+  return messages.map((message) => {
+    const entry = createSessionProjectionEntry(message);
+    if (entry.identity?.role === "user") {
+      pendingUserRunId = entry.pending ? entry.pendingRunId : null;
+      return entry;
+    }
+    if (
+      pendingUserRunId &&
+      entry.identity?.role === "assistant" &&
+      !entry.pending &&
+      isLocallyOptimisticSessionMessage(message)
+    ) {
+      return createSessionProjectionEntry(message, { pendingRunId: pendingUserRunId });
+    }
+    if (!isLocallyOptimisticSessionMessage(message)) {
+      pendingUserRunId = null;
+    }
+    return entry;
+  });
 }

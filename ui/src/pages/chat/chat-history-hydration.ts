@@ -30,7 +30,6 @@ import {
   setChatHistoryLoad,
 } from "./chat-history-state.ts";
 import {
-  materializeVisibleAssistantStreamMessages,
   persistsChatCommentary,
   readRunProjections,
   applyHistoryRun,
@@ -43,7 +42,6 @@ import {
   readChatSessionProjectionScope,
   reduceChatSessionProjection,
   publishChatSessionProjection,
-  publishChatSessionProjectionMessages,
 } from "./history-merge.ts";
 import {
   controlUiNowMs,
@@ -59,6 +57,7 @@ import {
   maybeResetToolStream,
   visibleCurrentAssistantStreamTail,
 } from "./stream-reconciliation.ts";
+import { collectAssistantStreamRetirement } from "./stream-retirement.ts";
 import {
   pruneHistoryReplacedStreamSegments,
   prunePersistedToolStreamMessages,
@@ -309,10 +308,14 @@ export async function hydrateChatHistory(
     const activeStreamBeforeReset = state.chatRunId ? state.chatStream : null;
     const resetStream = !state.chatRunId || state.chatRunId === previousRunId;
     if (resetStream) {
+      const retirement = retainsTranscriptIdentity
+        ? collectAssistantStreamRetirement(state)
+        : undefined;
       const streamReconciliation = {
         persistCommentary: state.chatRunId ? true : persistsChatCommentary(state),
         isHiddenAssistantMessage: shouldHideAssistantChatMessage,
         isHiddenStreamText: isHiddenAssistantStreamText,
+        onReplace: retirement?.replace,
       };
       const hasVisibleStream = hasVisibleStreamParts(state, streamReconciliation);
       const historyReplacedStream = historyReplacedVisibleStream(
@@ -355,17 +358,15 @@ export async function hydrateChatHistory(
           visibleMessageCount: visibleMessages.length,
         });
       } else if (!state.chatRunId) {
-        publishChatSessionProjectionMessages(
-          state,
-          materializeVisibleAssistantStreamMessages(state.chatMessages, state),
-        );
+        const materialization = retirement ?? collectAssistantStreamRetirement(state);
+        materialization.publish(materialization.materialize(state.chatMessages));
         maybeResetToolStream(state);
         state.chatStream = null;
         state.chatStreamStartedAt = null;
       } else if (historyReplacedSomeToolStream) {
-        publishChatSessionProjectionMessages(
-          state,
-          materializeVisibleAssistantStreamMessages(state.chatMessages, state, {
+        const materialization = retirement ?? collectAssistantStreamRetirement(state);
+        materialization.publish(
+          materialization.materialize(state.chatMessages, {
             includeCurrent: false,
             requirePersistedTool: !historyReplacedToolStream,
             persistCommentary: true,
@@ -381,6 +382,7 @@ export async function hydrateChatHistory(
           prunePersistedToolStreamMessages(state, persistedToolStreamIds);
         }
       }
+      retirement?.publish();
     }
 
     applyHistoryRun({

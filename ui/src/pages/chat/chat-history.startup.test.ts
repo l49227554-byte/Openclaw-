@@ -8,10 +8,10 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
 import { handleChatGatewayEvent } from "./chat-gateway.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
-import { materializeVisibleAssistantStreamMessages } from "./chat-history-stream.ts";
 import { activeHistory, createState } from "./chat-history.inflight.test-support.ts";
 import { loadChatHistory } from "./chat-history.ts";
 import { activeChatRunStartupStatus, chatStartupStatusLabel } from "./chat-run-startup.ts";
+import { collectAssistantStreamRetirement } from "./stream-retirement.ts";
 import { handleAgentEvent } from "./tool-stream.ts";
 
 describe("chat history startup progress", () => {
@@ -133,7 +133,7 @@ describe("chat history startup progress", () => {
       const retryLabel = () =>
         chatStartupStatusLabel(activeChatRunStartupStatus(state.chatRunStartup), null);
       const visibleText = () =>
-        materializeVisibleAssistantStreamMessages(state.chatMessages, state).map(extractText);
+        collectAssistantStreamRetirement(state).materialize(state.chatMessages).map(extractText);
 
       await loadChatHistory(state);
       expect(retryLabel()).toBe(retry.data.message);

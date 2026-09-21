@@ -30,6 +30,8 @@ import {
   setChatRunOwner,
 } from "./history-merge.ts";
 import { resetChatInputHistoryNavigation, type ChatInputHistoryState } from "./input-history.ts";
+import { retainAssistantStreamSegmentOccurrences } from "./stream-reconciliation.ts";
+import { materializeRetiringAssistantStream } from "./stream-retirement.ts";
 import type {
   CompactionStatus,
   FallbackStatus,
@@ -584,6 +586,10 @@ export function reconcileChatRunLifecycle(host: RunLifecycleHost, options: Recon
   const agentId = options.agentId ?? resolveUiSelectedSessionAgentId(host, sessionKey);
   const sessionOptions = { ...options, agentId };
 
+  if (!options.clearToolStream && (options.clearLocalRun || options.clearToolStreamForRun)) {
+    retainAssistantStreamSegmentOccurrences(host);
+  }
+
   if (options.clearIndicators ?? true) {
     clearRunIndicators(host, runId);
   }
@@ -756,6 +762,8 @@ export function reconcileChatRunFromSessionRow(
     return false;
   }
   const runId = host.chatRunId;
+  // Shared terminal rows can arrive before the saved reply; cleanup must not erase its body.
+  materializeRetiringAssistantStream(host, row.status);
   let errorMessage: string | undefined;
   if (runId && row.lastRunId === runId && (row.status === "failed" || row.status === "timeout")) {
     // Session publication can beat (or replace) chat.error. Show its diagnostic

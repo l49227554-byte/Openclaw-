@@ -280,8 +280,22 @@ export function getChatModelObservedRunId(
 /** The only mutation boundary for the reducer and its rendered message array. */
 export function publishChatSessionProjection(
   owner: ChatSessionProjectionOwner,
-  projection: SessionProjectionState,
-): void {
+  nextProjection: SessionProjectionState,
+  occurrenceKeys?: ReadonlyMap<unknown, string | undefined>,
+): SessionProjectionState {
+  const projection = occurrenceKeys?.size
+    ? {
+        ...nextProjection,
+        entries: nextProjection.entries.map((entry) => {
+          const key = occurrenceKeys.get(entry.message);
+          // A retained row already owns its DOM; only an ambiguous replacement clears it.
+          return occurrenceKeys.has(entry.message) &&
+            (entry.occurrenceKey === undefined || key === undefined)
+            ? { ...entry, occurrenceKey: key }
+            : entry;
+        }),
+      }
+    : nextProjection;
   const current = chatSessionProjections.get(owner);
   const runId = current?.runId;
   const previousScope = current?.projection?.scope;
@@ -321,7 +335,7 @@ export function publishChatSessionProjection(
   // Run-only transitions share the transcript array. Preserve their ownership
   // updates above without traversing or republishing every displayed row.
   if (current?.projection?.messages === projection.messages) {
-    return;
+    return projection;
   }
   if (
     owner.chatMessages.length !== projection.messages.length ||
@@ -329,6 +343,7 @@ export function publishChatSessionProjection(
   ) {
     owner.chatMessages = [...projection.messages];
   }
+  return projection;
 }
 
 /** Publish one exact live transcript order without dropping reducer-owned entry identity. */
@@ -338,6 +353,7 @@ export function publishChatSessionProjectionMessages(
   options: {
     event?: SessionProjectionEvent;
     scope?: SessionProjectionScope;
+    occurrenceKeys?: ReadonlyMap<unknown, string | undefined>;
   } = {},
 ): SessionProjectionState {
   const scope = options.scope ?? readChatSessionProjectionScope(owner);
@@ -386,8 +402,7 @@ export function publishChatSessionProjectionMessages(
     entries,
     messages: acceptedMessages,
   };
-  publishChatSessionProjection(owner, projection);
-  return projection;
+  return publishChatSessionProjection(owner, projection, options.occurrenceKeys);
 }
 
 /** Custody is its own display collection; only canonical user IDs can replace it. */

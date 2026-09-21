@@ -9,12 +9,14 @@ import {
   sessionsResult,
 } from "../../lib/sessions/session-capability.test-support.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
+import { assistantStreamPartOccurrence } from "./chat-progress.ts";
 import {
   reconcileChatRunFromCurrentSessionRow,
   reconcileChatRunFromSessionRow,
   reconcileChatRunLifecycle,
   reconcileChatRunAfterSessionStatePublication,
 } from "./run-lifecycle.ts";
+import { visibleAssistantStreamParts } from "./stream-reconciliation.ts";
 import { buildToolStreamIdentity } from "./tool-stream-identity.ts";
 
 const CHAT_RUN_STATUS_TOAST_DURATION_MS = 5_000;
@@ -208,6 +210,15 @@ describe("reconcileChatRunFromSessionRow transient projections", () => {
       ]),
     });
 
+    const siblingPart = visibleAssistantStreamParts(
+      { ...host, chatStream: host.chatStream ?? null, chatStreamStartedAt: null },
+      { isHiddenStreamText: () => false },
+    ).find((part) => part.runId === siblingRunId);
+    if (!siblingPart) {
+      throw new Error("Expected the sibling stream before retirement");
+    }
+    const siblingOccurrenceKey = assistantStreamPartOccurrence(host, siblingPart);
+
     expect(
       reconcileChatRunFromSessionRow(host, {
         key: "s1",
@@ -218,7 +229,9 @@ describe("reconcileChatRunFromSessionRow transient projections", () => {
       }),
     ).toBe(true);
 
-    expect(host.chatStreamSegments).toEqual([{ text: "run two", ts: 2, runId: siblingRunId }]);
+    expect(host.chatStreamSegments).toEqual([
+      { text: "run two", ts: 2, runId: siblingRunId, occurrenceKey: siblingOccurrenceKey },
+    ]);
     expect(host.chatToolMessages).toEqual([siblingToolMessage]);
     expect(host.toolStreamById?.has(toolIdentity)).toBe(false);
     expect(host.toolStreamById?.has(siblingToolIdentity)).toBe(true);

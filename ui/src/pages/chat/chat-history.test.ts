@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { reduceSessionProjection } from "@openclaw/gateway-client/browser";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
@@ -9,6 +10,7 @@ import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { syncSelectedSessionMessageSubscription } from "./chat-history-subscription.ts";
 import { createState, type TestState } from "./chat-history.inflight.test-support.ts";
 import { loadChatHistory } from "./chat-history.ts";
+import { assistantStreamPartOccurrence } from "./chat-progress.ts";
 import type { ChatState } from "./chat-state-contract.ts";
 import { ChatAttachmentReadLifecycle } from "./components/chat-attachment-reads.ts";
 import {
@@ -22,6 +24,7 @@ import {
   readChatMessagesFromCache,
   type ChatMessageCache,
 } from "./session-message-cache.ts";
+import { visibleAssistantStreamParts } from "./stream-reconciliation.ts";
 import { buildToolStreamIdentity } from "./tool-stream-identity.ts";
 
 it("preserves prepared quiet activity through older pages and prefetched snapshots", async () => {
@@ -914,12 +917,19 @@ describe("active-run commentary reconciliation", () => {
     state.chatRunId = "run-live";
     state.settings = { chatPersistCommentary: false };
     state.chatStreamSegments = [{ text: "Checking the workspace", ts: 2, itemId: "preamble-live" }];
+    const part = expectDefined(
+      visibleAssistantStreamParts(state, { isHiddenStreamText: () => false }).find(
+        (candidate) => candidate.segmentIndex === 0,
+      ),
+      "live keyed commentary",
+    );
+    const occurrenceKey = assistantStreamPartOccurrence(state, part);
 
     await loadChatHistory(state);
 
     expect(state.chatRunId).toBe("run-live");
     expect(state.chatStreamSegments).toEqual([
-      { text: "Checking the workspace", ts: 2, itemId: "preamble-live" },
+      { text: "Checking the workspace", ts: 2, itemId: "preamble-live", occurrenceKey },
     ]);
   });
 
@@ -1013,6 +1023,13 @@ describe("active-run commentary reconciliation", () => {
       { text: "before foreground", ts: 2, runId: "run-foreground", toolCallId },
       { text: "before background", ts: 3, runId: "run-background", toolCallId },
     ];
+    const part = expectDefined(
+      visibleAssistantStreamParts(state, { isHiddenStreamText: () => false }).find(
+        (candidate) => candidate.segmentIndex === 0,
+      ),
+      "foreground tool preamble",
+    );
+    const occurrenceKey = assistantStreamPartOccurrence(state, part);
 
     await loadChatHistory(state);
 
@@ -1023,7 +1040,7 @@ describe("active-run commentary reconciliation", () => {
     expect(state.toolStreamById.has(backgroundIdentity)).toBe(false);
     expect(state.chatToolMessages).toEqual([foregroundMessage]);
     expect(state.chatStreamSegments).toEqual([
-      { text: "before foreground", ts: 2, runId: "run-foreground", toolCallId },
+      { text: "before foreground", ts: 2, runId: "run-foreground", toolCallId, occurrenceKey },
     ]);
   });
 });

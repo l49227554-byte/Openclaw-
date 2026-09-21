@@ -1,4 +1,5 @@
 // Pane-local search, context menus, selection actions, and presentation resets.
+import type { SessionProjectionEntry } from "@openclaw/gateway-client/browser";
 import { html, nothing, type TemplateResult } from "lit";
 import { ref } from "lit/directives/ref.js";
 import type { ChatPendingInputsPage } from "../../../../../packages/gateway-protocol/src/schema/logs-chat.js";
@@ -104,6 +105,7 @@ export type ChatThreadProps = ChatSendStatusActions & {
   /** Older-history pagination: renders the auto-load sentinel plus the in-flow boundary row. */
   historyPagination?: ChatHistoryBoundaryProps;
   messages: unknown[];
+  projectionEntries?: readonly SessionProjectionEntry[];
   toolMessages: unknown[];
   latestBrowserTabs?: ReadonlyMap<string, BrowserTabSelection>;
   guardianNotices?: ChatGuardianNotice[];
@@ -112,6 +114,7 @@ export type ChatThreadProps = ChatSendStatusActions & {
   streamStartedAt: number | null;
   /** Browser-local active run identity, retained across transient disconnects. */
   runId?: string | null;
+  runLifecycleGeneration?: number;
   runUsageById?: ReadonlyMap<string, RunOutputUsage>;
   runStatus?: ChatRunUiStatus | null;
   queue: ChatQueueItem[];

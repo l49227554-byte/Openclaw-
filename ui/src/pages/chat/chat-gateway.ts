@@ -16,14 +16,12 @@ import {
 // Control UI page module reconciles Chat Gateway events into Chat state.
 import { isUiGlobalSessionKey, resolveUiDefaultAgentId } from "../../lib/sessions/session-key.ts";
 import { chatScopedEventSessionMatches } from "./chat-history-state.ts";
-import { materializeVisibleAssistantStreamMessages } from "./chat-history-stream.ts";
 import type { ChatEventPayload } from "./chat-history.ts";
 import { reconcileChatRunStartup } from "./chat-run-startup.ts";
 import type { ChatState } from "./chat-state-contract.ts";
 import { transcriptRunId } from "./chat-thread-run-identity.ts";
 import {
   getChatSessionProjection,
-  publishChatSessionProjectionMessages,
   readChatSessionProjectionScope,
   setChatRunOwner,
   publishChatSessionProjection,
@@ -42,7 +40,9 @@ import {
   appendTerminalAssistantMessage,
   clearToolStreamSegments,
   terminalMessageReplacesVisibleStream,
+  visibleAssistantStreamParts,
 } from "./stream-reconciliation.ts";
+import { collectAssistantStreamRetirement } from "./stream-retirement.ts";
 import {
   discardStreamSegmentIndexes,
   reconcilePersistedAssistantStream,
@@ -176,6 +176,8 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
     return null;
   }
   const scope = readChatSessionProjectionScope(state);
+  let retirement: ReturnType<typeof collectAssistantStreamRetirement> | undefined;
+  const retire = () => (retirement ??= collectAssistantStreamRetirement(state));
   const publishVisibleTerminal = (
     message: Record<string, unknown>,
     visibleMessages: unknown[],
@@ -183,7 +185,7 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
     afterSequence?: number | null,
   ): void => {
     const event = payload as ChatEventPayload & { messageId?: unknown; messageSeq?: unknown };
-    publishChatSessionProjectionMessages(state, visibleMessages, {
+    retire().publish(visibleMessages, {
       scope,
       event: {
         type: "messagePersisted",
@@ -337,12 +339,28 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
   }
 
   const terminalAfterBoundaryRunId = latestStreamBoundaryRunId(state);
-  const materializeVisibleStream = (
-    materializeOpts: Parameters<typeof materializeVisibleAssistantStreamMessages>[2] = {},
+  const replaceCurrentOccurrence = (message: unknown) => {
+    const part = visibleAssistantStreamParts(state, {
+      isHiddenStreamText: isHiddenAssistantStreamText,
+    }).find((candidate) => candidate.source === "current");
+    if (part && message) {
+      retire().replace(part, [message]);
+    }
+  };
+  const appendTerminal = (
+    messages: unknown[],
+    message: unknown,
+    preserveKeyedCommentary?: boolean,
   ) =>
-    materializeVisibleAssistantStreamMessages(state.chatMessages, state, {
-      ...materializeOpts,
+    appendTerminalAssistantMessage(messages, message, {
+      preserveKeyedCommentary,
+      onReplace: (previous) => retire().replaceMessages(previous, message),
     });
+  const materializeVisibleStream = (
+    materializeOpts: Parameters<
+      ReturnType<typeof collectAssistantStreamRetirement>["materialize"]
+    >[1] = {},
+  ) => retire().materialize(state.chatMessages, materializeOpts);
   if (payload.state === "status") {
     if (!payload.runId || payload.runId !== state.chatRunId) {
       return null;
@@ -396,6 +414,7 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
         : { kind: "none" as const };
       if (boundary.kind === "split") {
         // The tail follows a known transcript boundary; it cannot adopt the saved prefix.
+        replaceCurrentOccurrence(boundary.tailMessage);
         discardStreamSegmentIndexes(state, boundary.replacedSegmentIndexes);
         let visibleMessages = materializeVisibleStream({ includeCurrent: false });
         if (boundary.tailMessage && !shouldHideAssistantChatMessage(boundary.tailMessage)) {
@@ -406,9 +425,11 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
           );
           // A retired commentary item keeps its own identity even when the answer
           // repeats its text. The sequence fence reconciles only the later answer.
-          visibleMessages = appendTerminalAssistantMessage(visibleMessages, liveTail, {
-            preserveKeyedCommentary: boundary.preserveKeyedCommentary,
-          });
+          visibleMessages = appendTerminal(
+            visibleMessages,
+            liveTail,
+            boundary.preserveKeyedCommentary,
+          );
           publishVisibleTerminal(
             boundary.tailMessage,
             visibleMessages,
@@ -416,7 +437,7 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
             boundary.afterSequence,
           );
         } else {
-          publishChatSessionProjectionMessages(state, visibleMessages, { scope });
+          retire().publish(visibleMessages, { scope });
         }
       } else if (finalMessage && !shouldHideAssistantChatMessage(finalMessage)) {
         const visibleMessages = materializeVisibleStream();
@@ -427,17 +448,18 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
         );
         publishVisibleTerminal(
           finalMessage,
-          appendTerminalAssistantMessage(visibleMessages, liveFinal),
+          appendTerminal(visibleMessages, liveFinal),
           terminalRunId,
         );
       } else {
-        publishChatSessionProjectionMessages(state, materializeVisibleStream(), { scope });
+        retire().publish(materializeVisibleStream(), { scope });
       }
     }
     reconcileOwnedTerminalRun();
   } else if (payload.state === "aborted") {
     const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
     if (normalizedMessage && !shouldHideAssistantChatMessage(normalizedMessage)) {
+      replaceCurrentOccurrence(normalizedMessage);
       const visibleMessages = materializeVisibleStream({
         replacementMessages: [normalizedMessage],
         includeCurrent: false,
@@ -450,11 +472,11 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
       );
       publishVisibleTerminal(
         normalizedMessage,
-        appendTerminalAssistantMessage(visibleMessages, liveAborted),
+        appendTerminal(visibleMessages, liveAborted),
         terminalRunId,
       );
     } else {
-      publishChatSessionProjectionMessages(state, materializeVisibleStream(), { scope });
+      retire().publish(materializeVisibleStream(), { scope });
     }
     if (payload.errorMessage?.trim()) {
       setChatRunError(
@@ -485,6 +507,9 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
             persistCommentary: state.settings?.chatPersistCommentary !== false,
           },
         );
+        if (replacesVisibleStream) {
+          replaceCurrentOccurrence(visiblePayloadMessage);
+        }
         const visibleMessages = materializeVisibleStream({
           includeCurrent: !replacesVisibleStream,
         });
@@ -497,16 +522,12 @@ function handleChatEvent(state: ChatState, incoming?: ChatEventPayload) {
         publishVisibleTerminal(
           visiblePayloadMessage,
           replacesVisibleStream
-            ? appendTerminalAssistantMessage(visibleMessages, liveError)
+            ? appendTerminal(visibleMessages, liveError)
             : [...visibleMessages, liveError],
           terminalRunId,
         );
       } else {
-        publishChatSessionProjectionMessages(
-          state,
-          materializeVisibleStream({ includeCurrent: true }),
-          { scope },
-        );
+        retire().publish(materializeVisibleStream({ includeCurrent: true }), { scope });
         const materialized = state.chatMessages.findLast(
           (message) => transcriptRunId(message) === terminalRunId,
         );

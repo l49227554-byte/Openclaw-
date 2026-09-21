@@ -14,8 +14,13 @@ import {
   streamSegmentHasItemId,
   streamSegmentUsesAccumulatedText,
   trimAccumulatedStreamPrefix,
+  type VisibleAssistantStreamPart,
 } from "../../lib/chat/chat-types.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
+import {
+  assistantStreamPartOccurrence,
+  type AssistantStreamOccurrenceState,
+} from "./chat-progress.ts";
 import { isKeyedAssistantStreamFallbackMessage } from "./chat-thread-run-identity.ts";
 import {
   resolveAssistantTextTail,
@@ -46,26 +51,16 @@ type ToolStreamHost = StreamReconciliationState & {
   toolStreamOrder?: unknown[];
 };
 
-type VisibleAssistantStreamPart = {
-  text: string;
-  replacementText: string;
-  source: "segment" | "current";
-  timestamp: number;
-  segmentIndex?: number;
-  itemId?: string;
-  runId?: string;
-  afterBoundaryRunId?: string;
-  boundaryRunId?: string;
-  toolCallId?: string;
-};
-
 type AssistantMessageVisibility = (message: unknown) => boolean;
 type StreamVisibility = (stream: string) => boolean;
 type MaterializeVisibleStreamOptions = {
+  onMaterialize?: (message: unknown, part: VisibleAssistantStreamPart) => void;
+  onReplace?: (part: VisibleAssistantStreamPart, messages: readonly unknown[]) => void;
   includeCurrent?: boolean;
   requirePersistedTool?: boolean;
   replacementMessages?: unknown[];
   persistCommentary?: boolean;
+  retiringRunId?: string | null;
   isHiddenAssistantMessage: AssistantMessageVisibility;
   isHiddenStreamText: StreamVisibility;
 };
@@ -172,8 +167,9 @@ function unkeyedStreamFallbackMetadata(message: unknown): Record<string, unknown
 export function appendTerminalAssistantMessage(
   messages: unknown[],
   message: unknown,
-  opts?: { preserveKeyedCommentary?: boolean },
+  opts?: { preserveKeyedCommentary?: boolean; onReplace?: (previous: unknown[]) => void },
 ): unknown[] {
+  const targetPresent = messages.includes(message);
   const identity = readSessionMessageIdentity(message);
   const terminalRunId =
     (identity?.role === "assistant" ? identity.runId : null) ?? readLiveTerminalRunId(message);
@@ -200,6 +196,15 @@ export function appendTerminalAssistantMessage(
   let terminalCursor = 0;
   for (let index = interval.start; index < interval.end; index += 1) {
     const existing = messages[index];
+    const existingIdentity = targetPresent ? readSessionMessageIdentity(existing) : null;
+    // Accepted durable targets keep the reducer's position and cannot consume
+    // other durable rows, even when those rows retain stream item metadata.
+    if (
+      existing === message ||
+      (targetPresent && (existingIdentity?.id || existingIdentity?.sequence != null))
+    ) {
+      continue;
+    }
     const fallback = streamFallbackMetadata(existing);
     if (!fallback) {
       continue;
@@ -236,6 +241,12 @@ export function appendTerminalAssistantMessage(
     onlyCurrentFallbackIndex !== undefined
   ) {
     removedIndexes.add(onlyCurrentFallbackIndex);
+  }
+  opts?.onReplace?.([...removedIndexes].map((index) => messages[index]));
+  if (targetPresent) {
+    return removedIndexes.size
+      ? messages.filter((_, index) => !removedIndexes.has(index))
+      : messages;
   }
   const retainedInterval: unknown[] = [];
   let insertIndex: number | null = null;
@@ -278,6 +289,7 @@ export function visibleAssistantStreamParts(
     ? streamHost.chatStreamSegments
     : [];
   let toolIndexedSegmentIndex = 0;
+  let segmentOrdinal = 0;
   let latestBoundaryRunId: string | undefined;
   for (const [segmentIndex, segment] of segments.entries()) {
     if (!segment || typeof segment.text !== "string") {
@@ -299,6 +311,7 @@ export function visibleAssistantStreamParts(
       toolIndexedSegmentIndex += 1;
     }
     const usesAccumulatedText = streamSegmentUsesAccumulatedText(segment);
+    const ordinal = !usesItemId && segment.boundaryMarker !== true ? segmentOrdinal++ : undefined;
     const visible = visibleAssistantStreamText(
       usesAccumulatedText ? trimAccumulatedStreamPrefix(segment.text, previousText) : segment.text,
       opts.isHiddenStreamText,
@@ -309,6 +322,11 @@ export function visibleAssistantStreamParts(
         replacementText: segment.text,
         source: "segment",
         segmentIndex,
+        segmentOrdinal: ordinal,
+        sourceStart:
+          usesAccumulatedText && previousText && segment.text.startsWith(previousText)
+            ? previousText.length
+            : 0,
         timestamp:
           typeof segment.ts === "number" && Number.isFinite(segment.ts) ? segment.ts : Date.now(),
         ...(itemId ? { itemId } : {}),
@@ -335,6 +353,8 @@ export function visibleAssistantStreamParts(
         text: visible,
         replacementText: state.chatStream,
         source: "current",
+        sourceStart:
+          previousText && state.chatStream.startsWith(previousText) ? previousText.length : 0,
         timestamp: state.chatStreamStartedAt ?? Date.now(),
         ...(state.chatRunId ? { runId: state.chatRunId } : {}),
         ...(latestBoundaryRunId ? { afterBoundaryRunId: latestBoundaryRunId } : {}),
@@ -342,6 +362,34 @@ export function visibleAssistantStreamParts(
     }
   }
   return parts;
+}
+
+/** Selective retirement must not change a surviving segment's lifetime or ordinal. */
+export function retainAssistantStreamSegmentOccurrences(
+  state: AssistantStreamOccurrenceState & { chatStream?: string | null },
+): void {
+  const keys = new Map(
+    visibleAssistantStreamParts(
+      {
+        ...state,
+        chatStream: state.chatStream ?? null,
+        chatStreamStartedAt: state.chatStreamStartedAt ?? null,
+      },
+      { includeCurrent: false, isHiddenStreamText: () => false },
+    ).map((part) => [part.segmentIndex, assistantStreamPartOccurrence(state, part)]),
+  );
+  let changed = false;
+  const retained = state.chatStreamSegments?.map((segment, index) => {
+    const occurrenceKey = keys.get(index);
+    if (!segment.occurrenceKey && occurrenceKey) {
+      changed = true;
+      return Object.assign({}, segment, { occurrenceKey });
+    }
+    return segment;
+  });
+  if (changed) {
+    state.chatStreamSegments = retained;
+  }
 }
 
 export function visibleCurrentAssistantStreamTail(
@@ -368,9 +416,10 @@ export function hasAssistantStreamPartReplacement(
   isHiddenAssistantMessage: AssistantMessageVisibility,
   startIndex: number,
   endIndex = messages.length,
+  onReplaced?: (indexes: readonly number[]) => void,
 ): boolean {
   if (part.itemId) {
-    return messages.slice(startIndex, endIndex).some((message) => {
+    const replaces = (message: unknown) => {
       const identity = readAssistantStreamSegmentIdentity(message);
       // Native commentary can lack run metadata; the caller's causal interval
       // still bounds that item, but known opposing runs must never replace it.
@@ -379,7 +428,18 @@ export function hasAssistantStreamPartReplacement(
         identity.itemId === part.itemId &&
         (!identity.runId || !part.runId || identity.runId === part.runId)
       );
-    });
+    };
+    const candidates = messages.slice(startIndex, endIndex);
+    if (!onReplaced) {
+      return candidates.some(replaces);
+    }
+    const indexes = candidates.flatMap((message, index) =>
+      replaces(message) ? [startIndex + index] : [],
+    );
+    if (indexes.length) {
+      onReplaced(indexes);
+    }
+    return indexes.length > 0;
   }
   const persistedTexts = messages.slice(startIndex, endIndex).map((message) => {
     const identity = readSessionMessageIdentity(message);
@@ -394,7 +454,23 @@ export function hasAssistantStreamPartReplacement(
     return extractText(message)?.trim() ?? null;
   });
   return [part.replacementText, part.text].some(
-    (text) => Boolean(text.trim()) && !resolveAssistantTextTail(persistedTexts, text.trim()),
+    (text) =>
+      Boolean(text.trim()) &&
+      !resolveAssistantTextTail(
+        persistedTexts,
+        text.trim(),
+        onReplaced
+          ? (_index, consumed) => {
+              const leading = text.length - text.trimStart().length;
+              const sourceStart = text === part.replacementText ? part.sourceStart : 0;
+              onReplaced?.(
+                consumed
+                  .filter((entry) => entry.end + leading > sourceStart)
+                  .map((entry) => startIndex + entry.index),
+              );
+            }
+          : undefined,
+      ),
   );
 }
 
@@ -421,12 +497,15 @@ export function historyReplacedVisibleStream(
   opts: Pick<
     MaterializeVisibleStreamOptions,
     "includeCurrent" | "isHiddenAssistantMessage" | "isHiddenStreamText" | "persistCommentary"
-  >,
+  > & { onReplace?: (part: VisibleAssistantStreamPart, messages: readonly unknown[]) => void },
 ): boolean {
   const parts = visibleAssistantStreamParts(state, opts);
   const requiredParts =
     opts.persistCommentary === true ? parts : parts.filter((part) => !part.itemId);
-  return (
+  const replacements: Array<[VisibleAssistantStreamPart, unknown[]]> | undefined = opts.onReplace
+    ? []
+    : undefined;
+  const replaced =
     parts.length > 0 &&
     (requiredParts.length > 0 ||
       hasVisibleAssistantMessageAfterUser(messages, opts.isHiddenAssistantMessage)) &&
@@ -438,9 +517,17 @@ export function historyReplacedVisibleStream(
         opts.isHiddenAssistantMessage,
         interval.start,
         interval.end,
+        replacements
+          ? (indexes) => replacements.push([part, indexes.map((index) => messages[index])])
+          : undefined,
       );
-    })
-  );
+    });
+  if (replaced && replacements) {
+    for (const [part, targets] of replacements) {
+      opts.onReplace?.(part, targets);
+    }
+  }
+  return replaced;
 }
 
 export function hasVisibleStreamParts(
@@ -531,6 +618,14 @@ export function materializeVisibleStreamState(
   const persistCommentary = opts.persistCommentary === true;
   const replacementMessages = opts.replacementMessages;
   for (const part of visibleAssistantStreamParts(state, opts)) {
+    if (
+      opts.retiringRunId !== undefined &&
+      part.source === "segment" &&
+      (part.segmentIndex === undefined ||
+        state.chatStreamSegments?.[part.segmentIndex]?.runId !== opts.retiringRunId)
+    ) {
+      continue;
+    }
     if (!persistCommentary && part.itemId) {
       continue;
     }
@@ -545,6 +640,13 @@ export function materializeVisibleStreamState(
         opts.isHiddenAssistantMessage,
         replacementInterval.start,
         replacementInterval.end,
+        opts.onReplace
+          ? (indexes) =>
+              opts.onReplace?.(
+                part,
+                indexes.map((index) => replacementCandidates[index]),
+              )
+          : undefined,
       )
     ) {
       continue;
@@ -592,6 +694,7 @@ export function materializeVisibleStreamState(
         .map((message) => readSessionMessageIdentity(message)?.sequence)
         .findLast((sequence): sequence is number => typeof sequence === "number"),
     );
+    opts.onMaterialize?.(streamMessage, part);
     nextMessages = [
       ...nextMessages.slice(0, insertIndex),
       streamMessage,

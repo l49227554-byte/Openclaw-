@@ -12,6 +12,7 @@ import {
   renderActivityGroup,
   renderMessageGroup,
   renderMessageGroupContent,
+  renderMessageGroupEntry,
   renderStreamGroup,
   renderStreamGroupPart,
   renderWorkGroupSummary,
@@ -31,6 +32,7 @@ type AgentRunFrameOptions = {
   isWorkExpanded: (key: string) => boolean;
   onToggleWork: (key: string, expanded: boolean) => void;
   turnRecap?: TurnRecap;
+  messageOccurrences?: ReadonlyMap<unknown, string>;
 };
 
 export function renderAgentRunFrame(frame: AgentRunFrameRenderItem, opts: AgentRunFrameOptions) {
@@ -63,17 +65,55 @@ export function renderAgentRunFrame(frame: AgentRunFrameRenderItem, opts: AgentR
     renderMessageGroupContent(group, opts.renderGroupOptions(group));
   type BodyPart =
     | Exclude<AgentRunFrameRenderItem["parts"][number], { kind: "stream-run" }>
-    | StreamGroupPart;
+    | StreamGroupPart
+    | {
+        kind: "assistant-message";
+        key: string;
+        group: MessageGroup;
+        item: MessageGroup["messages"][number];
+        index: number;
+      }
+    | { kind: "group-previews"; key: string; group: MessageGroup };
   // Grouping does not own body lifetime. A preceding segment becoming history
   // must not reparent the later live answer or reset its reader controls.
-  const bodyParts = frame.parts.flatMap<BodyPart>((part) =>
-    part.kind === "stream-run" ? part.parts : [part],
-  );
+  const bodyParts = frame.parts.flatMap<BodyPart>((part) => {
+    if (part.kind === "stream-run") {
+      return part.parts;
+    }
+    if (part.kind === "group" && part.role === "assistant") {
+      return [
+        ...part.messages.map((item, index) => ({
+          kind: "assistant-message" as const,
+          key: opts.messageOccurrences?.get(item.message) ?? item.key,
+          group: part,
+          item,
+          index,
+        })),
+        { kind: "group-previews", key: part.key, group: part },
+      ];
+    }
+    return [part];
+  });
   const frameContent = [
     repeat(
       bodyParts,
-      (part) => part.kind + ":" + part.key,
+      (part) =>
+        (part.kind === "stream" || part.kind === "assistant-message" ? "message" : part.kind) +
+        ":" +
+        part.key,
       (part) => {
+        if (part.kind === "assistant-message") {
+          return renderMessageGroupEntry(part.group, part.item, part.index, {
+            ...opts.renderGroupOptions(part.group),
+            markdownKey: part.key,
+          });
+        }
+        if (part.kind === "group-previews") {
+          const groupOptions = opts.renderGroupOptions(part.group);
+          return groupOptions.showToolCalls === false
+            ? nothing
+            : renderBrowserTabPreviews([part.group], groupOptions);
+        }
         if (
           part.kind === "stream" ||
           part.kind === "reading-indicator" ||

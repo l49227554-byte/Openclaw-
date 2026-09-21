@@ -451,21 +451,28 @@ export function renderMessageGroupContent(group: MessageGroup, opts: RenderMessa
   if (isActivityMessageGroup(group)) {
     return renderActivityGroup([group], opts, "continuation");
   }
-  const messageOptions = { ...opts, isForwarded: hasForwardedSource(group) };
   const messages = repeat(
     group.messages,
     (item) => item.key,
-    (item, index) =>
-      renderPreparedGroupMessage(
-        group,
-        index,
-        messageOptions,
-        prepareGroupMessage(group, item, opts),
-      ),
+    (item, index) => renderMessageGroupEntry(group, item, index, opts),
   );
   return html`${messages}${
     opts.showToolCalls === false ? nothing : renderBrowserTabPreviews([group], opts)
   }`;
+}
+
+export function renderMessageGroupEntry(
+  group: MessageGroup,
+  item: MessageGroup["messages"][number],
+  index: number,
+  opts: RenderMessageGroupOptions,
+) {
+  return renderPreparedGroupMessage(
+    group,
+    index,
+    { ...opts, isForwarded: hasForwardedSource(group) },
+    prepareGroupMessage(group, item, opts),
+  );
 }
 
 export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroupOptions) {

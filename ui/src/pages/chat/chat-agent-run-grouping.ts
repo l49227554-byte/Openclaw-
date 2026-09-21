@@ -102,7 +102,7 @@ function frameSegmentId(
     hardBoundaryId ??
     parts
       .flatMap((part) => (part.kind === "stream-run" ? part.parts : []))
-      .find((part) => part.kind === "stream" && part.key.includes(":after:"))?.key
+      .find((part) => part.kind === "stream" && part.afterBoundaryRunId !== undefined)?.key
   );
 }
 

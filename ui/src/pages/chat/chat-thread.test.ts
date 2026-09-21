@@ -9,7 +9,6 @@ import type { MessageGroup } from "../../lib/chat/chat-types.ts";
 import { normalizeMessage } from "../../lib/chat/message-normalizer.ts";
 import * as toolCards from "../../lib/chat/tool-cards.ts";
 import { collectGarbageForTest } from "../../test-helpers/garbage-collection.ts";
-import { coalesceAgentRunFrames } from "./chat-agent-run-grouping.ts";
 import { groupMessages } from "./chat-thread-grouping.ts";
 import * as threadItems from "./chat-thread-items.ts";
 import {
@@ -1965,125 +1964,6 @@ describe("buildCachedChatItems working spark", () => {
     ).find((item) => item.kind === "reading-indicator");
 
     expect(indicator).toMatchObject({ kind: "reading-indicator", startedAt: 1_000 });
-  });
-
-  it("keeps one working row from optimistic send through acknowledgement", () => {
-    resetChatThreadState();
-    const sessionKey = "agent:main:working-row";
-    const pendingItems = buildCachedChatItems(
-      createProps({
-        sessionKey,
-        queue: [
-          {
-            id: "queued-send-1",
-            text: "keep the row stable",
-            createdAt: 1_000,
-            sendRunId: "run-1",
-            sendState: "sending",
-            sendSubmittedAtMs: 10,
-          },
-        ],
-        runWorking: true,
-      }),
-    );
-    const pendingIndicator = expectDefined(
-      pendingItems.find((item) => item.kind === "reading-indicator"),
-      "pending working indicator",
-    );
-    const pendingRun = expectDefined(
-      coalesceStreamRuns(pendingItems).find((item) => item.kind === "stream-run"),
-      "pending stream run",
-    );
-    const pendingFrame = expectDefined(
-      coalesceAgentRunFrames(coalesceStreamRuns(pendingItems)).find(
-        (item) => item.kind === "agent-run-frame",
-      ),
-      "pending agent run frame",
-    );
-
-    const acknowledgedItems = buildCachedChatItems(
-      createProps({
-        sessionKey,
-        runId: "run-1",
-        runWorking: true,
-        stream: "",
-        streamStartedAt: 2_000,
-      }),
-    );
-    const acknowledgedIndicator = expectDefined(
-      acknowledgedItems.find((item) => item.kind === "reading-indicator"),
-      "acknowledged working indicator",
-    );
-    const acknowledgedRun = expectDefined(
-      coalesceStreamRuns(acknowledgedItems).find((item) => item.kind === "stream-run"),
-      "acknowledged stream run",
-    );
-    const acknowledgedFrame = expectDefined(
-      coalesceAgentRunFrames(coalesceStreamRuns(acknowledgedItems)).find(
-        (item) => item.kind === "agent-run-frame",
-      ),
-      "acknowledged agent run frame",
-    );
-
-    expect(acknowledgedIndicator).toMatchObject({
-      key: pendingIndicator.key,
-      startedAt: pendingIndicator.startedAt,
-    });
-    expect(acknowledgedRun.key).toBe(pendingRun.key);
-    expect(acknowledgedFrame.key).toBe(pendingFrame.key);
-
-    const streamingItems = buildCachedChatItems(
-      createProps({
-        sessionKey,
-        runId: "run-1",
-        runWorking: true,
-        stream: "The reply has started.",
-        streamStartedAt: 2_000,
-      }),
-    );
-    const visibleStream = expectDefined(
-      streamingItems.find((item) => item.kind === "stream" && item.isStreaming),
-      "visible live stream",
-    );
-    const streamingIndicator = expectDefined(
-      streamingItems.find((item) => item.kind === "reading-indicator"),
-      "streaming working indicator",
-    );
-    const streamingRun = expectDefined(
-      coalesceStreamRuns(streamingItems).find((item) => item.kind === "stream-run"),
-      "streaming run",
-    );
-
-    expect(visibleStream.key).toBe(pendingIndicator.key);
-    expect(streamingIndicator.key).toBe(pendingIndicator.key);
-    expect(streamingRun).toMatchObject({
-      key: pendingRun.key,
-      parts: [{ kind: "stream" }, { kind: "reading-indicator" }],
-    });
-
-    const nextRunIndicator = expectDefined(
-      readingIndicator({
-        sessionKey,
-        runId: "run-2",
-        runWorking: true,
-        stream: "",
-        streamStartedAt: 3_000,
-      }),
-      "next run working indicator",
-    );
-    const otherSessionIndicator = expectDefined(
-      readingIndicator({
-        sessionKey: "agent:other:working-row",
-        runId: "run-1",
-        runWorking: true,
-        stream: "",
-        streamStartedAt: 2_000,
-      }),
-      "other session working indicator",
-    );
-
-    expect(nextRunIndicator.key).not.toBe(pendingIndicator.key);
-    expect(otherSessionIndicator.key).not.toBe(pendingIndicator.key);
   });
 
   it("keeps a future queued send from replacing the active stream run identity", () => {

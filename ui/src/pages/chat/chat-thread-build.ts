@@ -39,6 +39,10 @@ import {
   resolveWorkingProgress,
   shouldRenderQueuedSendInThread,
 } from "./chat-progress.ts";
+import {
+  prepareChatStreamProjection,
+  type ChatStreamProjectionProps,
+} from "./chat-stream-projection.ts";
 import { groupMessages } from "./chat-thread-grouping.ts";
 import {
   appendCanvasBlockToAssistantMessage,
@@ -82,21 +86,14 @@ import {
 } from "./terminal-message-identity.ts";
 import type { CompactionStatus } from "./tool-stream-contract.ts";
 
-export type BuildChatItemsProps = {
+export type BuildChatItemsProps = ChatStreamProjectionProps & {
   paneId: string;
-  sessionKey: string;
   archiveNotice?: Extract<ChatItem, { kind: "notice" }>;
-  runId?: string | null;
   compactionStatus?: CompactionStatus | null;
   /** Invalidates cached display copy when the active UI language changes. */
   locale?: string;
   messages: unknown[];
-  toolMessages: unknown[];
   guardianNotices?: ChatGuardianNotice[];
-  streamSegments: ChatStreamSegment[];
-  stream: string | null;
-  streamStartedAt: number | null;
-  queue?: ChatQueueItem[];
   initialTurnId?: string;
   pendingInputs?: ChatPendingInputsPage["items"];
   workspaceSyncPendingRunIds?: readonly string[];
@@ -466,6 +463,17 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
     (item) => item.kind !== "message" || hasRenderableNormalizedMessage(item.message),
   );
   const segments = props.streamSegments;
+  const stream = prepareChatStreamProjection(props);
+  let progress: ReturnType<typeof resolveWorkingProgress> | null = null;
+  const resolveProgress = () =>
+    (progress ??= resolveWorkingProgress(
+      props.sessionKey,
+      props.runId ?? null,
+      props.streamStartedAt,
+      queuedSends,
+      segments,
+      tools,
+    ));
   const afterBoundaryBySegment = new Map<ChatStreamSegment, string>();
   let latestBoundaryRunId: string | undefined;
   for (const segment of segments) {
@@ -543,6 +551,7 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
         text,
         startedAt: segment.ts,
         isStreaming: false,
+        ...(afterBoundaryRunId ? { afterBoundaryRunId } : {}),
         ...optionalRunIdentity(segment.runId),
         ...optionalBoundaryIdentity(afterBoundaryRunId ?? segment.runId),
       },
@@ -565,8 +574,8 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
           text,
         );
       }
-      if (visibleText.length > 0 && segment.persisted !== true) {
-        const streamKey = `stream-seg:${props.sessionKey}:${i}`;
+      const streamKey = stream.segmentKeys.get(segment);
+      if (visibleText.length > 0 && segment.persisted !== true && streamKey) {
         appendStreamSegment(segment, streamKey, visibleText);
         const tool = toolLookup.get(
           normalizeOptionalString(segment.runId),
@@ -591,8 +600,9 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
   // stream/tool pairs on timestamp ties.
   for (const segment of keyedSegments) {
     const text = sanitizeStreamText(segment.text);
-    if (text.length > 0) {
-      appendStreamSegment(segment, `stream-seg:${props.sessionKey}:${segment.itemId}`, text);
+    const streamKey = stream.segmentKeys.get(segment);
+    if (text.length > 0 && segment.itemId && streamKey) {
+      appendStreamSegment(segment, streamKey, text);
     }
   }
 
@@ -671,19 +681,14 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
           (item.sendState === "submitting" || item.sendState === "sending") &&
           shouldRenderQueuedSendInThread(item),
       ));
-  if (props.runWorking !== true && props.stream === null && !showWorkingIndicator) {
+  if (
+    props.runWorking !== true &&
+    props.stream === null &&
+    !showWorkingIndicator &&
+    stream.parts.length === 0
+  ) {
     clearWorkingProgress(props.sessionKey);
   }
-  let progress: ReturnType<typeof resolveWorkingProgress> | null = null;
-  const resolveProgress = () =>
-    (progress ??= resolveWorkingProgress(
-      props.sessionKey,
-      props.runId ?? null,
-      props.streamStartedAt,
-      queuedSends,
-      segments,
-      tools,
-    ));
   const activeTurnRunId = latestBoundaryRunId ?? normalizeOptionalString(props.runId);
   const activeTurnBounds = activeTurnRunId ? createRunTurnLookup(items)(activeTurnRunId) : null;
   const appendActiveRunItem = (item: ChatItem) => {
@@ -700,17 +705,20 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
     const text = sanitizeStreamText(props.stream);
     const prefix = accumulatedStreamText(segments, sanitizeStreamText);
     const visibleText = trimAccumulatedStreamPrefix(text, prefix);
-    if (visibleText.length > 0 && !stripHeartbeatTokenForDisplay(visibleText).shouldSkip) {
+    if (
+      visibleText.length > 0 &&
+      !stripHeartbeatTokenForDisplay(visibleText).shouldSkip &&
+      stream.currentKey
+    ) {
       const liveProgress = resolveProgress();
       const liveRunId = props.runId ?? liveProgress.runId;
       const liveStreamItem: ChatItem = {
         kind: "stream",
-        key: latestBoundaryRunId
-          ? `${liveProgress.key}:after:${latestBoundaryRunId}`
-          : liveProgress.key,
+        key: stream.currentKey,
         text: visibleText,
         startedAt: timestampAfterVisibleItems(items, props.streamStartedAt ?? Date.now()),
         isStreaming: true,
+        ...(latestBoundaryRunId ? { afterBoundaryRunId: latestBoundaryRunId } : {}),
         ...optionalRunIdentity(liveRunId),
         ...optionalBoundaryIdentity(latestBoundaryRunId ?? liveRunId),
       };

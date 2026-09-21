@@ -189,9 +189,11 @@ export function coalesceStreamRuns(
     const [first] = run;
     if (first) {
       const { runId, boundaryId } = first;
+      // The working shell survives its first body; body occurrence keys own only their leaves.
+      const shell = run.find((part) => part.kind === "reading-indicator") ?? first;
       result.push({
         kind: "stream-run",
-        key: `stream-run:${first.key}`,
+        key: `stream-run:${shell.key}`,
         parts: run,
         replyToSender: run.find((part) => part.kind === "stream")?.replyToSender,
         ...(runId ? { runId } : {}),

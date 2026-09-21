@@ -178,12 +178,12 @@ export function hasSessionProjectionAcceptedFinal(
 }
 
 /** Match an unsequenced live terminal to exactly one durable same-run terminal row. */
-export function findUniqueSnapshotTerminalMatch(
+export function findUniqueSnapshotTerminalMatch<Entry extends TerminalProjectionEntry>(
   current: TerminalProjectionEntry,
-  matches: readonly TerminalProjectionEntry[],
+  matches: readonly Entry[],
   run: TerminalProjectionRun | undefined,
-  snapshot: readonly TerminalProjectionEntry[],
-): { entry: TerminalProjectionEntry; inferred: boolean } | null {
+  snapshot: readonly Entry[],
+): { entry: Entry; inferred: boolean } | null {
   if (
     !current.live ||
     current.identity?.role !== "assistant" ||

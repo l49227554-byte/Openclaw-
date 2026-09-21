@@ -3,10 +3,7 @@ import { asNullableRecord, asOptionalRecord } from "@openclaw/normalization-core
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { accumulatedStreamText, advanceAccumulatedStreamText } from "../../lib/chat/chat-types.ts";
 import { extractText } from "../../lib/chat/message-extract.ts";
-import {
-  isHiddenAssistantStreamText,
-  shouldHideAssistantChatMessage,
-} from "../../lib/chat/message-visibility.ts";
+import { isHiddenAssistantStreamText } from "../../lib/chat/message-visibility.ts";
 import { isSessionRunActive } from "../../lib/session-run-state.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { reconcileChatRunStartup } from "./chat-run-startup.ts";
@@ -28,26 +25,7 @@ import {
   latestPersistedSteerBoundary,
   resolveCumulativeAssistantTail,
 } from "./stream-causal-boundary.ts";
-import { materializeVisibleStreamState } from "./stream-reconciliation.ts";
 import { handleAgentEvent } from "./tool-stream.ts";
-
-export function materializeVisibleAssistantStreamMessages(
-  messages: unknown[],
-  state: ChatState,
-  opts: {
-    includeCurrent?: boolean;
-    requirePersistedTool?: boolean;
-    replacementMessages?: unknown[];
-    persistCommentary?: boolean;
-  } = {},
-): unknown[] {
-  return materializeVisibleStreamState(messages, state, {
-    ...opts,
-    persistCommentary: opts.persistCommentary ?? persistsChatCommentary(state),
-    isHiddenAssistantMessage: shouldHideAssistantChatMessage,
-    isHiddenStreamText: isHiddenAssistantStreamText,
-  });
-}
 
 export function persistsChatCommentary(state: ChatState): boolean {
   return state.settings?.chatPersistCommentary !== false;

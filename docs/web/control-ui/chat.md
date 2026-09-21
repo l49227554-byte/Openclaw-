@@ -406,9 +406,12 @@ code's leading whitespace and final newline when present. Indented Markdown code
 blocks also work at the start of a message and remain literal while streaming,
 including blank lines within the block.
 
-Completed top-level code blocks keep your expansion and wrapping choices while
-later paragraphs stream into the same assistant reply. Replacing the message or
-correcting earlier content starts a fresh view.
+Code blocks keep your expansion, wrapping, and JSON view choices as streamed
+content finishes, later paragraphs arrive, and saved history replaces the live reply.
+Open details also stay open. Replacing or correcting content, combining separate
+messages, changing rendering options, or resolving references that change earlier
+Markdown can start a fresh view. Switching a completed reply to a JSON view or
+adding link favicons can also change the rendered content.
 
 **Copy URL** in browser tab cards also works on plain HTTP connections where the
 browser does not provide its Clipboard API.

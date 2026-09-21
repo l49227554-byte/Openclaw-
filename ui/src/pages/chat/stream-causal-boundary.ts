@@ -229,6 +229,7 @@ export function resolveCumulativeAssistantTail(
   runId: string,
   endIndex = messages.length,
   replayedCommentaryItemIds?: ReadonlySet<string>,
+  onConsumed?: (consumed: readonly AssistantTextConsumption[]) => void,
 ): string | null {
   let ownedPrefixIndex = -1;
   for (let index = 0; index < endIndex; index += 1) {
@@ -269,43 +270,76 @@ export function resolveCumulativeAssistantTail(
         : null;
     return { text, skipOnMismatch: commentaryIdentity !== undefined };
   });
-  return resolveAssistantTextCandidateTail(persistedTexts, cumulativeText);
+  return resolveAssistantTextCandidateTail(
+    persistedTexts,
+    cumulativeText,
+    undefined,
+    onConsumed
+      ? (consumed) =>
+          onConsumed(
+            consumed.map((entry) => Object.assign({}, entry, { index: turnStart + entry.index })),
+          )
+      : undefined,
+  );
 }
+
+export type AssistantTextConsumption = { index: number; start: number; end: number };
 
 export function resolveAssistantTextTail(
   persistedTexts: readonly (string | null)[],
   cumulativeText: string,
+  onReplaced?: (index: number, consumed: readonly AssistantTextConsumption[]) => void,
 ): string | null {
   return resolveAssistantTextCandidateTail(
     persistedTexts.map((text) => ({ text, skipOnMismatch: false })),
     cumulativeText,
+    onReplaced,
   );
 }
 
 function resolveAssistantTextCandidateTail(
   persistedTexts: readonly { text: string | null; skipOnMismatch: boolean }[],
   cumulativeText: string,
+  onReplaced?: (index: number, consumed: readonly AssistantTextConsumption[]) => void,
+  onConsumed?: (consumed: readonly AssistantTextConsumption[]) => void,
 ): string | null {
   let persistedPrefixLength = 0;
-  for (const { text: persistedText, skipOnMismatch } of persistedTexts) {
+  const consumed: AssistantTextConsumption[] | undefined =
+    onReplaced || onConsumed ? [] : undefined;
+  const consume = (index: number, end: number) => {
+    if (end > persistedPrefixLength) {
+      consumed?.push({ index, start: persistedPrefixLength, end });
+      persistedPrefixLength = end;
+    }
+  };
+  let replaced = false;
+  for (const [index, { text: persistedText, skipOnMismatch }] of persistedTexts.entries()) {
     if (!persistedText) {
       continue;
     }
     const remaining = cumulativeText.slice(persistedPrefixLength);
     if (remaining.startsWith(persistedText)) {
-      persistedPrefixLength += persistedText.length;
+      consume(index, persistedPrefixLength + persistedText.length);
       continue;
     }
     if (persistedText.startsWith(remaining)) {
-      return null;
+      // An already exhausted prefix belongs to the earlier consumer, not a
+      // later candidate that happens to start with the empty remainder.
+      consume(index, cumulativeText.length);
+      replaced = true;
+      break;
     }
     const whitespace = persistedPrefixLength > 0 ? /^\s+/u.exec(remaining)?.[0] : undefined;
     if (whitespace && remaining.slice(whitespace.length).startsWith(persistedText)) {
-      persistedPrefixLength += whitespace.length + persistedText.length;
+      consume(index, persistedPrefixLength + whitespace.length + persistedText.length);
       continue;
     }
     if (whitespace && persistedText.startsWith(remaining.slice(whitespace.length))) {
-      return null;
+      if (remaining.length > whitespace.length) {
+        consume(index, cumulativeText.length);
+      }
+      replaced = true;
+      break;
     }
     if (skipOnMismatch) {
       continue;
@@ -314,7 +348,15 @@ function resolveAssistantTextCandidateTail(
       break;
     }
   }
-  return cumulativeText.slice(persistedPrefixLength);
+  const tail = replaced ? null : cumulativeText.slice(persistedPrefixLength);
+  if (consumed) {
+    onConsumed?.(consumed);
+    const last = consumed.at(-1);
+    if (!tail && last) {
+      onReplaced?.(last.index, consumed);
+    }
+  }
+  return tail;
 }
 
 function persistedBoundaryPrefix(state: StreamCausalBoundaryState, terminalText: string) {

@@ -2,7 +2,13 @@ import { asNullableRecord as asRecord } from "@openclaw/normalization-core/recor
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
-import type { ChatGuardianNotice, ChatItem, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import type {
+  ChatGuardianNotice,
+  ChatItem,
+  ChatQueueItem,
+  ChatStreamSegment,
+  VisibleAssistantStreamPart,
+} from "../../lib/chat/chat-types.ts";
 import { formatCompactTokenCount } from "../../lib/format.ts";
 import type { CompactionStatus, RunOutputUsage } from "./tool-stream-contract.ts";
 
@@ -190,7 +196,7 @@ export function resolveWorkingProgress(
   sessionKey: string,
   runId: string | null,
   streamStartedAt: number | null,
-  queue: ChatQueueItem[],
+  queue: readonly ChatQueueItem[],
   streamSegments: Array<{ ts: number; runId?: string }>,
   toolMessages: unknown[],
 ): WorkingProgress {
@@ -257,6 +263,49 @@ export function resolveWorkingProgress(
 
 export function clearWorkingProgress(sessionKey: string): void {
   workingProgressBySession.delete(sessionKey);
+}
+
+export type AssistantStreamOccurrenceState = {
+  sessionKey: string;
+  chatRunId?: string | null;
+  chatRunLifecycleGeneration?: number;
+  chatStreamStartedAt?: number | null;
+  chatQueue?: readonly ChatQueueItem[];
+  chatStreamSegments?: ChatStreamSegment[];
+  chatToolMessages?: unknown[];
+};
+
+export function assistantStreamPartOccurrence(
+  state: AssistantStreamOccurrenceState,
+  part: VisibleAssistantStreamPart,
+): string {
+  const segment =
+    part.segmentIndex === undefined ? undefined : state.chatStreamSegments?.[part.segmentIndex];
+  if (segment?.occurrenceKey) {
+    return segment.occurrenceKey;
+  }
+  const runKey = segment?.runId;
+  const owner =
+    runKey ??
+    resolveWorkingProgress(
+      state.sessionKey,
+      state.chatRunId ?? null,
+      state.chatStreamStartedAt ?? null,
+      state.chatQueue ?? [],
+      state.chatStreamSegments ?? [],
+      state.chatToolMessages ?? [],
+    ).key;
+  // Run identity survives a retry; display lifetime and raw cumulative start
+  // distinguish the new body from already materialized or persisted output.
+  return `stream-body:${JSON.stringify([
+    state.sessionKey,
+    owner,
+    state.chatRunLifecycleGeneration ?? 0,
+    part.afterBoundaryRunId ?? null,
+    part.source,
+    part.itemId ?? part.segmentOrdinal ?? null,
+    part.sourceStart,
+  ])}`;
 }
 
 export function resetWorkingProgress(): void {

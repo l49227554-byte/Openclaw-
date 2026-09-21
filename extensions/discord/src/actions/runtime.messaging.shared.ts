@@ -2,7 +2,6 @@ import { ChannelType } from "discord-api-types/v10";
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-resolution";
 import type { ActionGate } from "openclaw/plugin-sdk/channel-actions";
 import { readStringParam, withNormalizedTimestamp } from "openclaw/plugin-sdk/channel-actions";
-import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-contract";
 import type {
   DiscordAccountConfig,
   DiscordActionConfig,
@@ -22,28 +21,12 @@ import {
 } from "../monitor/allow-list.js";
 import type { DiscordReactOpts } from "../send.types.js";
 import { parseDiscordTarget } from "../targets.js";
+import type {
+  DiscordMessagingActionOptions,
+  DiscordMessagingRuntimeOptions,
+} from "./runtime.messaging.options.js";
 import * as discordMessagingActionRuntime from "./runtime.messaging.runtime.js";
 import { createDiscordActionOptions } from "./runtime.shared.js";
-
-type ConversationReadInvocationOrigin = NonNullable<
-  ChannelMessageActionContext["conversationReadOrigin"]
->;
-
-export type DiscordMessagingActionOptions = {
-  reply?: ChannelMessageActionContext["reply"];
-  progressSnapshot?: ChannelMessageActionContext["progressSnapshot"];
-  mediaAccess?: ChannelMessageActionContext["mediaAccess"];
-  mediaLocalRoots?: readonly string[];
-  mediaReadFile?: (filePath: string) => Promise<Buffer>;
-  conversationReadOrigin?: ConversationReadInvocationOrigin;
-  readContext?: {
-    requesterAccountId?: string | null;
-    currentChannelProvider?: string | null;
-    currentChannelId?: string | null;
-    currentChatType?: NonNullable<ChannelMessageActionContext["toolContext"]>["currentChatType"];
-    currentMessagingTarget?: string | null;
-  };
-};
 
 export type DiscordMessagingActionContext = {
   action: string;
@@ -62,7 +45,7 @@ export type DiscordMessagingActionContext = {
   }) => Promise<void>;
   filterGuildChannelList: <T>(params: { guildId: string; channels: T[] }) => Promise<T[]>;
   resolveReactionChannelId: () => Promise<string>;
-  withOpts: (extra?: Record<string, unknown>) => { cfg: OpenClawConfig; accountId?: string };
+  withOpts: (extra?: Record<string, unknown>) => DiscordMessagingRuntimeOptions;
   withReactionRuntimeOptions: <T extends Record<string, unknown> = Record<string, never>>(
     extra?: T,
   ) => DiscordReactOpts & T;
@@ -312,7 +295,16 @@ export function createDiscordMessagingActionContext(params: {
   const directDmEnabled =
     accountConfig.dm?.enabled !== false && (accountConfig.dmPolicy ?? "pairing") !== "disabled";
   const withOpts = (extra?: Record<string, unknown>) =>
-    createDiscordActionOptions({ cfg: params.cfg, accountId, extra });
+    createDiscordActionOptions({
+      cfg: params.cfg,
+      accountId,
+      extra: {
+        ...(params.options?.onDeliveryResult
+          ? { onDeliveryResult: params.options.onDeliveryResult }
+          : {}),
+        ...extra,
+      },
+    });
   const resolvedReactionAccountId = accountId ?? resolveDefaultDiscordAccountId(params.cfg);
   const isCurrentReadTarget = (channelId: string): boolean => {
     const requesterAccountId = currentReadContext?.requesterAccountId?.trim();

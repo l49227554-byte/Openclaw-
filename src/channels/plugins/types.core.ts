@@ -773,6 +773,8 @@ export type ChannelMessageActionContext = {
   assertDirectAdapterHandoff?: () => void;
   /** Ephemeral-authority sends must not enter replayable recovery. */
   skipQueue?: boolean;
+  /** Reports concrete platform sends before a later multi-send action can fail. */
+  onDeliveryResult?: ChannelMessageSendPollContext["onDeliveryResult"];
 };
 
 export type ChannelToolSend = {
@@ -909,6 +911,7 @@ export type ChannelPollContext = Pick<
   | "silent"
   | "isAnonymous"
   | "gatewayClientScopes"
+  | "onDeliveryResult"
   | "onPlatformSendDispatch"
   | "assertDirectAdapterHandoff"
 > & {

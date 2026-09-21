@@ -27,13 +27,15 @@ import {
   DISCORD_PRESENTATION_CAPABILITIES,
   isDiscordComponentSpecWithinMessageLimit,
 } from "../outbound-components.js";
+import { toDiscordOutboundDeliveryResult } from "../send.receipt.js";
+import type { DiscordSendResult } from "../send.types.js";
 import {
   buildDiscordInteractiveComponents,
   buildDiscordPresentationComponents,
 } from "../shared-interactive.js";
 import { parseDiscordTarget, resolveDiscordChannelId } from "../targets.js";
 import { tryHandleDiscordMessageActionGuildAdmin } from "./handle-action.guild-admin.js";
-import type { DiscordMessagingActionOptions } from "./runtime.messaging.shared.js";
+import type { DiscordMessagingActionOptions } from "./runtime.messaging.options.js";
 import { readDiscordAutoArchiveDurationParam } from "./runtime.shared.js";
 
 const providerId = "discord";
@@ -79,6 +81,7 @@ type DiscordMessageActionContext = Pick<
   | "reply"
   | "progressSnapshot"
   | "assertDirectAdapterHandoff"
+  | "onDeliveryResult"
 >;
 
 export async function handleDiscordMessageAction(
@@ -121,9 +124,23 @@ async function dispatchDiscordMessageAction(
     mediaLocalRoots: ctx.mediaLocalRoots,
     mediaReadFile: ctx.mediaReadFile,
     ...(ctx.reply ? { reply: ctx.reply } : {}),
+    ...(ctx.onDeliveryResult
+      ? {
+          onDeliveryResult: async (result: DiscordSendResult) =>
+            ctx.onDeliveryResult?.(toDiscordOutboundDeliveryResult(result)),
+        }
+      : {}),
     ...(ctx.progressSnapshot ? { progressSnapshot: ctx.progressSnapshot } : {}),
     ...readPolicyOptions,
   } as const;
+  const notifyVisibleDelivery = (to: string, fallbackSessionKey?: string) => {
+    discordInboundEventDelivery.notify({
+      sessionKey: ctx.sessionKey ?? fallbackSessionKey ?? undefined,
+      to,
+      accountId,
+      inboundEventKind: ctx.inboundEventKind,
+    });
+  };
   const notifyVisibleOutbound = (
     result: AgentToolResult<unknown>,
     to: string,
@@ -138,12 +155,7 @@ async function dispatchDiscordMessageAction(
     if (details?.ok !== true) {
       return;
     }
-    discordInboundEventDelivery.notify({
-      sessionKey: ctx.sessionKey ?? fallbackSessionKey ?? undefined,
-      to,
-      accountId,
-      inboundEventKind: ctx.inboundEventKind,
-    });
+    notifyVisibleDelivery(to, fallbackSessionKey);
   };
   const withAdoptedThreadReplyRoute = (
     result: AgentToolResult<unknown>,
@@ -496,7 +508,13 @@ async function dispatchDiscordMessageAction(
         ...(readBooleanParam(params, "silent") === true ? { silent: true } : {}),
       },
       cfg,
-      actionOptions,
+      {
+        ...actionOptions,
+        onDeliveryResult: async (deliveryResult: DiscordSendResult) => {
+          notifyVisibleDelivery(to);
+          await ctx.onDeliveryResult?.(toDiscordOutboundDeliveryResult(deliveryResult));
+        },
+      },
     );
     notifyVisibleOutbound(result, to);
     return result;

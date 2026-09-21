@@ -374,6 +374,7 @@ export const discordMessageActions: ChannelMessageActionAdapter = {
     reply,
     progressSnapshot,
     assertDirectAdapterHandoff,
+    onDeliveryResult,
   }) => {
     return await (
       await loadDiscordChannelActionsRuntime()
@@ -395,6 +396,7 @@ export const discordMessageActions: ChannelMessageActionAdapter = {
       ...(reply ? { reply } : {}),
       ...(progressSnapshot ? { progressSnapshot } : {}),
       ...(assertDirectAdapterHandoff ? { assertDirectAdapterHandoff } : {}),
+      ...(onDeliveryResult ? { onDeliveryResult } : {}),
     });
   },
 };

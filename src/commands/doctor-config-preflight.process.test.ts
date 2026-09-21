@@ -15,10 +15,7 @@ import { loadCronJobsStoreWithConfigJobsReadOnly, loadCronQuarantinedJobs } from
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { hasActiveStartupMigrationLease } from "../infra/startup-migration-checkpoint.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
-import {
-  ensureOpenClawAgentDatabaseSchema,
-  OPENCLAW_AGENT_SCHEMA_VERSION,
-} from "../state/openclaw-agent-db.js";
+import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db.js";
 import {
   createBuiltRuntime,
   createSourceRuntime,
@@ -91,24 +88,6 @@ function seedPluginStateConflict(stateDir: string): void {
   } finally {
     sidecar.close();
   }
-}
-
-function seedOwnerlessSchemaOnlyAgentDatabase(stateDir: string): string {
-  const databasePath = path.join(stateDir, "agent", "openclaw-agent.sqlite");
-  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-  const database = new DatabaseSync(databasePath);
-  try {
-    ensureOpenClawAgentDatabaseSchema(database, {
-      agentId: "openclaw",
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-      path: databasePath,
-      register: false,
-    });
-    database.prepare("UPDATE schema_meta SET agent_id = NULL WHERE meta_key = 'primary'").run();
-  } finally {
-    database.close();
-  }
-  return databasePath;
 }
 
 describe("doctor invalid config process exit", () => {
@@ -712,85 +691,6 @@ describe("gateway startup-migration refusal", () => {
     expect(result.stdout, `${result.stderr}\n${result.stdout}`).toContain("__READY__");
     expect(hasActiveStartupMigrationLease({ env })).toBe(false);
   }, 75_000);
-
-  it.each([
-    { database: true, reason: "agent schema owner is missing or blank" },
-    { database: false, reason: "Deferred legacy agent/session migration: select an agent owner" },
-  ])(
-    "refuses unresolved legacy ownership without changing its source (database=$database)",
-    async ({ database, reason }) => {
-      const root = fs.realpathSync(tempDirs.createTempDir("openclaw-legacy-owner-refusal-"));
-      const stateDir = path.join(root, "state");
-      const configPath = path.join(root, "openclaw.json");
-      const config = {
-        gateway: { mode: "local", auth: { mode: "none" } },
-        agents: {
-          ownership: "explicit",
-          ...(database ? { defaults: { systemAgent: { agentId: "main" } } } : {}),
-          entries: { main: {}, blocker: {}, digest: {} },
-        },
-      } satisfies OpenClawConfig;
-      const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        HOME: root,
-        USERPROFILE: root,
-        OPENCLAW_CONFIG_PATH: configPath,
-        OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-        OPENCLAW_STATE_DIR: stateDir,
-        OPENCLAW_TEST_FAST: "1",
-        NO_COLOR: "1",
-      };
-      delete env.NODE_ENV;
-      delete env.OPENCLAW_HOME;
-      delete env.VITEST;
-
-      fs.mkdirSync(path.join(stateDir, "agent"), { recursive: true });
-      fs.writeFileSync(configPath, JSON.stringify(config));
-      const legacyPath = database
-        ? seedOwnerlessSchemaOnlyAgentDatabase(stateDir)
-        : path.join(stateDir, "agent", "settings.json");
-      if (!database) {
-        fs.writeFileSync(legacyPath, '{"legacy":true}\n');
-      }
-      const before = fs.readFileSync(legacyPath);
-      const preflightUrl = resolveRuntimeWorkerUrl(doctorConfigRuntimeEntrypoints.preflight).href;
-      const script = `
-        const { runDoctorConfigPreflight } = await import(${JSON.stringify(preflightUrl)});
-        try {
-          await runDoctorConfigPreflight({
-            migrateLegacyConfig: false,
-            invalidConfigNote: false,
-            observe: false,
-            requireStartupMigrationCheckpoint: true,
-          });
-          console.log("__READY__");
-        } catch (error) {
-          console.error("__REFUSED__", error instanceof Error ? error.message : String(error));
-          process.exitCode = typeof error.code === "number" ? error.code : 1;
-        }
-      `;
-      const result = await tempDirs.track(
-        runSourceRuntime(
-          createSourceRuntime(root),
-          env,
-          ["--input-type=module", "--eval", script],
-          60_000,
-        ),
-      );
-      const output = `${result.stderr}\n${result.stdout}`;
-
-      expect(result.code, output).toBe(78);
-      expect(result.signal, output).toBeNull();
-      expect(result.stdout, output).not.toContain("__READY__");
-      expect(result.stderr, output).toContain("__REFUSED__");
-      expect(output).toContain(STARTUP_REFUSAL);
-      expect(output).toContain(STARTUP_RECOVERY);
-      expect(output).toContain(reason);
-      expect(fs.readFileSync(legacyPath)).toEqual(before);
-      expect(hasActiveStartupMigrationLease({ env })).toBe(false);
-    },
-    75_000,
-  );
 
   it("refuses before relocating legacy state when a live gateway owns the state directory", async () => {
     const root = fs.realpathSync(tempDirs.createTempDir("openclaw-live-owner-refusal-"));

@@ -18,8 +18,12 @@ ownership before checking runtime readiness. This lets container image upgrades
 complete agent schema, shared-state, session, and workspace migrations without
 an offline operator command. Startup preserves verified SQLite copies before
 schema upgrades, plus Doctor's normal config backups and legacy-file archives.
-An unsafe migration exits with code 78 and its specific reason. Refused default
-or system agents never produce a healthy readiness response.
+An unsafe required store exits with code 78 and its specific reason. Refused default
+or system agents never produce a healthy readiness response. Unused legacy stores,
+including loose `agent/settings.json` files without an agent owner, remain untouched
+and deferred. Startup records an advisory and continues independent migrations;
+Doctor reports the retained source for follow-up. An advisory never hides a separate
+required-store refusal.
 
 When a refused step blocks later work, each blocked execution receipt keeps
 `refusal.code: "blocked-by-prior-refusal"` and includes `originatingRefusal` with

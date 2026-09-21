@@ -2,16 +2,12 @@ import {
   createChannelPartialDeliveryError,
   isChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
-import {
-  createMessageReceiptFromOutboundResults,
-  type MessageReceipt,
-  type MessageReceiptPart,
-  type MessageReceiptPartKind,
-} from "openclaw/plugin-sdk/channel-outbound";
+import type { MessageReceipt, MessageReceiptPartKind } from "openclaw/plugin-sdk/channel-outbound";
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import type { OutboundMediaLoadOptions } from "openclaw/plugin-sdk/outbound-media";
 import { loadOutboundMediaFromUrl, type OpenClawConfig } from "../runtime-api.js";
+import { resolveMSTeamsAccountConfig } from "./accounts.js";
 import {
   classifyMSTeamsSendError,
   formatMSTeamsSendErrorHint,
@@ -38,6 +34,11 @@ import {
 } from "./sdk-proactive.js";
 import { resolveMSTeamsSendContext, type MSTeamsProactiveContext } from "./send-context.js";
 import { assertMSTeamsSendHandoff, type MSTeamsSendHandoff } from "./send-handoff.js";
+import {
+  createMSTeamsSendReceipt,
+  createMSTeamsSendResult,
+  type SendMSTeamsMessageResult,
+} from "./send-result.js";
 
 type MSTeamsSendOptions = MSTeamsSendHandoff & {
   onDeliveryResult?: (result: SendMSTeamsMessageResult) => Promise<void> | void;
@@ -46,6 +47,8 @@ type MSTeamsSendOptions = MSTeamsSendHandoff & {
 type SendMSTeamsMessageParams = {
   /** Full config (for credentials) */
   cfg: OpenClawConfig;
+  /** Optional account ID for multi-account Teams configs */
+  accountId?: string | null;
   /** Conversation ID or user ID to send to */
   to: string;
   /** Message text */
@@ -58,14 +61,6 @@ type SendMSTeamsMessageParams = {
   mediaLocalRoots?: readonly string[];
   mediaReadFile?: (filePath: string) => Promise<Buffer>;
 } & MSTeamsSendOptions;
-
-type SendMSTeamsMessageResult = {
-  messageId: string;
-  conversationId: string;
-  receipt: MessageReceipt;
-  /** If a FileConsentCard was sent instead of the file, this contains the upload ID */
-  pendingUploadId?: string;
-};
 
 /** Threshold for large files that require FileConsentCard flow in personal chats */
 const FILE_CONSENT_THRESHOLD_BYTES = 4 * 1024 * 1024; // 4MB
@@ -111,74 +106,11 @@ async function finishMSTeamsSend(
   }
   return result;
 }
-
-function createMSTeamsSendReceipt(params: {
-  conversationId: string;
-  platformMessageIds: readonly string[];
-  kind: MessageReceiptPartKind;
-  kinds?: readonly MessageReceiptPartKind[];
-}) {
-  const receipt = createMessageReceiptFromOutboundResults({
-    kind: params.kind,
-    results: params.platformMessageIds.map((messageId) => ({
-      channel: "msteams",
-      messageId,
-      conversationId: params.conversationId,
-    })),
-  });
-  if (!params.kinds) {
-    return receipt;
-  }
-  const kinds = params.kinds;
-  return {
-    ...receipt,
-    parts: receipt.parts.map((part, index) => {
-      const nextPart: MessageReceiptPart = {
-        platformMessageId: part.platformMessageId,
-        kind: kinds[index] ?? params.kind,
-        index: part.index,
-      };
-      if (part.threadId) {
-        nextPart.threadId = part.threadId;
-      }
-      if (part.replyToId) {
-        nextPart.replyToId = part.replyToId;
-      }
-      if (part.raw) {
-        nextPart.raw = part.raw;
-      }
-      return nextPart;
-    }),
-  };
-}
-
-function createMSTeamsSendResult(params: {
-  conversationId: string;
-  messageId: string;
-  platformMessageIds?: readonly string[];
-  kind: MessageReceiptPartKind;
-  pendingUploadId?: string;
-}): SendMSTeamsMessageResult {
-  const platformMessageIds = (
-    params.platformMessageIds?.length ? [...params.platformMessageIds] : [params.messageId]
-  )
-    .map((messageId) => messageId.trim())
-    .filter((messageId) => messageId && messageId !== "unknown");
-  return {
-    messageId: params.messageId,
-    conversationId: params.conversationId,
-    receipt: createMSTeamsSendReceipt({
-      conversationId: params.conversationId,
-      platformMessageIds,
-      kind: params.kind,
-    }),
-    ...(params.pendingUploadId ? { pendingUploadId: params.pendingUploadId } : {}),
-  };
-}
-
 type SendMSTeamsPollParams = {
   /** Full config (for credentials) */
   cfg: OpenClawConfig;
+  /** Optional account ID for multi-account Teams configs */
+  accountId?: string | null;
   /** Conversation ID or user ID to send to */
   to: string;
   /** Poll question */
@@ -198,6 +130,8 @@ type SendMSTeamsPollResult = {
 type SendMSTeamsCardParams = {
   /** Full config (for credentials) */
   cfg: OpenClawConfig;
+  /** Optional account ID for multi-account Teams configs */
+  accountId?: string | null;
   /** Conversation ID or user ID to send to */
   to: string;
   /** Adaptive Card JSON object */
@@ -221,13 +155,34 @@ export async function sendMessageMSTeams(
   params: SendMSTeamsMessageParams,
 ): Promise<SendMSTeamsMessageResult> {
   assertMSTeamsSendHandoff(params);
-  const { cfg, to, text, mediaUrl, filename, mediaAccess, mediaLocalRoots, mediaReadFile } = params;
-  const tableMode = resolveMarkdownTableMode({
+  const {
     cfg,
+    accountId,
+    to,
+    text,
+    mediaUrl,
+    filename,
+    mediaAccess,
+    mediaLocalRoots,
+    mediaReadFile,
+  } = params;
+  const scopedCfg = {
+    ...cfg,
+    channels: {
+      ...cfg.channels,
+      msteams: resolveMSTeamsAccountConfig(cfg, accountId),
+    },
+  };
+  const tableMode = resolveMarkdownTableMode({
+    cfg: scopedCfg,
     channel: "msteams",
   });
   const messageText = formatMSTeamsMarkdown(text ?? "", tableMode);
-  const ctx = await resolveMSTeamsSendContext({ cfg, to });
+  const ctx = await resolveMSTeamsSendContext({
+    cfg,
+    ...(accountId ? { accountId } : {}),
+    to,
+  });
   const { conversationId, log, conversationType, tokenProvider, sharePointSiteId } = ctx;
 
   log.debug?.("sending proactive message", {
@@ -520,9 +475,10 @@ export async function sendPollMSTeams(
   params: SendMSTeamsPollParams,
 ): Promise<SendMSTeamsPollResult> {
   assertMSTeamsSendHandoff(params);
-  const { cfg, to, question, options, maxSelections } = params;
+  const { cfg, accountId, to, question, options, maxSelections } = params;
   const ctx = await resolveMSTeamsSendContext({
     cfg,
+    ...(accountId ? { accountId } : {}),
     to,
   });
   const { conversationId, log } = ctx;
@@ -574,9 +530,10 @@ export async function sendAdaptiveCardMSTeams(
   params: SendMSTeamsCardParams,
 ): Promise<SendMSTeamsCardResult> {
   assertMSTeamsSendHandoff(params);
-  const { cfg, to, card } = params;
+  const { cfg, accountId, to, card } = params;
   const ctx = await resolveMSTeamsSendContext({
     cfg,
+    ...(accountId ? { accountId } : {}),
     to,
   });
   const { conversationId, log } = ctx;
@@ -621,6 +578,8 @@ export async function sendAdaptiveCardMSTeams(
 type MSTeamsMessageMutationParams = {
   /** Full config (for credentials) */
   cfg: OpenClawConfig;
+  /** Optional account ID for multi-account Teams configs */
+  accountId?: string | null;
   /** Conversation ID or user ID */
   to: string;
   /** Activity ID of the message to edit or delete */
@@ -675,9 +634,10 @@ export async function editAdaptiveCardMSTeams(
 async function updateMSTeamsMessageActivity(
   params: MSTeamsMessageMutationParams & { activity: Record<string, unknown> },
 ): Promise<MSTeamsMessageMutationResult> {
-  const { cfg, to, activityId, activity } = params;
+  const { cfg, accountId, to, activityId, activity } = params;
   const { app, conversationId, ref, log, sdkCloudOptions } = await resolveMSTeamsSendContext({
     cfg,
+    ...(accountId ? { accountId } : {}),
     to,
   });
 
@@ -706,9 +666,10 @@ async function updateMSTeamsMessageActivity(
 export async function deleteMessageMSTeams(
   params: MSTeamsMessageMutationParams,
 ): Promise<MSTeamsMessageMutationResult> {
-  const { cfg, to, activityId } = params;
+  const { cfg, accountId, to, activityId } = params;
   const { app, conversationId, ref, log, sdkCloudOptions } = await resolveMSTeamsSendContext({
     cfg,
+    ...(accountId ? { accountId } : {}),
     to,
   });
 

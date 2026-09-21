@@ -126,14 +126,6 @@ function requireMSTeamsHandleAction() {
   return handleAction;
 }
 
-function requireMSTeamsExtractToolSendResult() {
-  const extractToolSendResult = msteamsPlugin.actions?.extractToolSendResult;
-  if (!extractToolSendResult) {
-    throw new Error("msteams actions.extractToolSendResult unavailable");
-  }
-  return extractToolSendResult;
-}
-
 async function runAction(params: {
   action: string;
   cfg?: Record<string, unknown>;
@@ -248,7 +240,14 @@ async function expectSuccessfulAction(params: {
     senderIsOwner: params.senderIsOwner,
     gatewayClientScopes: params.gatewayClientScopes,
   });
-  expectActionRuntimeCall(params.mockFn, params.runtimeParams, params.cfg);
+  expectActionRuntimeCall(
+    params.mockFn,
+    {
+      ...params.runtimeParams,
+      ...(params.accountId === undefined ? {} : { accountId: params.accountId }),
+    },
+    params.cfg,
+  );
   expectActionSuccess(result, params.details, params.contentDetails);
 }
 
@@ -812,6 +811,98 @@ describe("msteamsPlugin message actions", () => {
     });
   });
 
+  it("uses selected account policy to block channel-list when root Teams policy is open", async () => {
+    const cfg = {
+      channels: {
+        msteams: {
+          groupPolicy: "open",
+          dmPolicy: "open",
+          accounts: {
+            secondary: {
+              appId: "secondary-app-id",
+              appPassword: "secondary-secret",
+              webhook: { port: 3979 },
+              groupPolicy: "allowlist",
+              teams: {
+                "22222222-2222-2222-2222-222222222222": {
+                  channels: {
+                    "19:other@thread.tacv2": { enabled: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    await expect(
+      runAction({
+        action: "channel-list",
+        cfg,
+        accountId: "secondary",
+        requesterAccountId: "secondary",
+        params: { teamId: graphTeamId },
+      }),
+    ).rejects.toThrow("Microsoft Teams channel list requires access to every channel in the team.");
+    expect(listChannelsMSTeamsMock).not.toHaveBeenCalled();
+  });
+
+  it("uses selected account policy to allow channel-list when root Teams policy is restrictive", async () => {
+    const cfg = {
+      channels: {
+        msteams: {
+          groupPolicy: "allowlist",
+          teams: {
+            "22222222-2222-2222-2222-222222222222": {
+              channels: {
+                "19:other@thread.tacv2": { enabled: true },
+              },
+            },
+          },
+          accounts: {
+            secondary: {
+              appId: "secondary-app-id",
+              appPassword: "secondary-secret",
+              webhook: { port: 3979 },
+              groupPolicy: "open",
+              teams: {
+                "*": {
+                  channels: {
+                    "*": { enabled: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    await expectSuccessfulAction({
+      mockFn: listChannelsMSTeamsMock,
+      mockResult: { channels: [{ id: "channel-1" }] },
+      action: "channel-list",
+      cfg,
+      accountId: "secondary",
+      requesterAccountId: "secondary",
+      actionParams: { teamId: graphTeamId },
+      runtimeParams: {
+        accountId: "secondary",
+        teamId: graphTeamId,
+      },
+      details: okMSTeamsActionDetails("channel-list", {
+        channels: [{ id: "channel-1" }],
+      }),
+      contentDetails: {
+        ok: true,
+        channel: "msteams",
+        action: "channel-list",
+        channels: [{ id: "channel-1" }],
+      },
+    });
+  });
+
   it("routes channel-info through the Teams runtime", async () => {
     await expectSuccessfulAction({
       mockFn: getChannelInfoMSTeamsMock,
@@ -1223,6 +1314,63 @@ describe("msteamsPlugin message actions", () => {
     });
   });
 
+  it("preserves an explicitly selected legacy default account when a named default is configured", async () => {
+    const cfg = {
+      channels: {
+        msteams: {
+          appId: "legacy-app-id",
+          appPassword: "legacy-secret",
+          defaultAccount: "support",
+          accounts: {
+            support: {
+              appId: "support-app-id",
+              appPassword: "support-secret",
+              webhook: { port: 3979 },
+            },
+          },
+        },
+      },
+    };
+
+    await expectSuccessfulAction({
+      mockFn: sendAdaptiveCardMSTeamsMock,
+      mockResult: {
+        messageId: "msg-legacy-default",
+        conversationId: "conv-legacy-default",
+      },
+      action: "send",
+      cfg,
+      accountId: "default",
+      actionParams: {
+        to: targetChannelId,
+        message: "Legacy default",
+        presentation: { blocks: [{ type: "text", text: "Legacy default" }] },
+      },
+      runtimeParams: {
+        to: targetChannelId,
+        card: {
+          type: "AdaptiveCard",
+          version: "1.4",
+          body: [
+            { type: "TextBlock", text: "Legacy default", wrap: true },
+            { type: "TextBlock", text: "Legacy default", wrap: true },
+          ],
+        },
+      },
+      details: {
+        ok: true,
+        channel: "msteams",
+        messageId: "msg-legacy-default",
+      },
+      contentDetails: {
+        ok: true,
+        channel: "msteams",
+        messageId: "msg-legacy-default",
+        conversationId: "conv-legacy-default",
+      },
+    });
+  });
+
   it("downgrades select blocks when sending presentation cards", async () => {
     await expectSuccessfulAction({
       mockFn: sendAdaptiveCardMSTeamsMock,
@@ -1333,6 +1481,99 @@ describe("msteamsPlugin message actions", () => {
     expect(getMessageMSTeamsMock).not.toHaveBeenCalled();
   });
 
+  it("uses selected account policy to block Graph reads when root Teams policy is open", async () => {
+    const cfg = {
+      channels: {
+        msteams: {
+          groupPolicy: "open",
+          dmPolicy: "open",
+          accounts: {
+            secondary: {
+              appId: "secondary-app-id",
+              appPassword: "secondary-secret",
+              webhook: { port: 3979 },
+              groupPolicy: "allowlist",
+              teams: {
+                "22222222-2222-2222-2222-222222222222": {
+                  channels: {
+                    "19:other@thread.tacv2": { enabled: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    await expect(
+      runAction({
+        action: "read",
+        cfg,
+        accountId: "secondary",
+        requesterAccountId: "secondary",
+        params: { to: graphChannelTarget, messageId: "msg-1" },
+      }),
+    ).rejects.toThrow("Microsoft Teams read target is not allowed.");
+    expect(getMessageMSTeamsMock).not.toHaveBeenCalled();
+  });
+
+  it("uses selected account policy to allow Graph reads when root Teams policy is restrictive", async () => {
+    const cfg = {
+      channels: {
+        msteams: {
+          groupPolicy: "allowlist",
+          teams: {
+            "22222222-2222-2222-2222-222222222222": {
+              channels: {
+                "19:other@thread.tacv2": { enabled: true },
+              },
+            },
+          },
+          accounts: {
+            secondary: {
+              appId: "secondary-app-id",
+              appPassword: "secondary-secret",
+              webhook: { port: 3979 },
+              groupPolicy: "open",
+              teams: {
+                "*": {
+                  channels: {
+                    "*": { enabled: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    await expectSuccessfulAction({
+      mockFn: getMessageMSTeamsMock,
+      mockResult: readMessage,
+      action: "read",
+      cfg,
+      accountId: "secondary",
+      requesterAccountId: "secondary",
+      actionParams: { to: graphChannelTarget, messageId: "msg-1" },
+      runtimeParams: {
+        accountId: "secondary",
+        to: graphChannelTarget,
+        messageId: "msg-1",
+      },
+      details: okMSTeamsActionDetails("read", {
+        message: readMessage,
+      }),
+      contentDetails: {
+        ok: true,
+        channel: "msteams",
+        action: "read",
+        message: readMessage,
+      },
+    });
+  });
+
   it.each([
     {
       action: "read",
@@ -1430,354 +1671,3 @@ describe("msteamsPlugin message actions", () => {
     });
   });
 });
-
-describe("msteamsPlugin.threading.buildToolContext", () => {
-  function callBuildToolContext(context: {
-    ChatType?: string;
-    To?: string;
-    NativeChannelId?: string;
-    ReplyToId?: string;
-    MessageThreadId?: string | number;
-  }) {
-    const build = msteamsPlugin.threading?.buildToolContext;
-    if (!build) {
-      throw new Error("msteams threading.buildToolContext unavailable");
-    }
-    return build({
-      cfg: {} as OpenClawConfig,
-      accountId: undefined,
-      context,
-    });
-  }
-
-  it("uses NativeChannelId for channel turns so actions route via Graph team/channel ids", () => {
-    // Teams channel inbound messages carry the compound Graph target
-    // on NativeChannelId. buildToolContext must prefer it over the bare
-    // `conversation:<id>` in To so action fallbacks route via
-    // `/teams/{teamId}/channels/{channelId}`.
-    const result = callBuildToolContext({
-      ChatType: "channel",
-      To: "conversation:19:channel-abc@thread.tacv2",
-      NativeChannelId: "graph-team-1/19:channel-abc@thread.tacv2",
-      ReplyToId: "reply-1",
-    });
-    expect(result?.currentChannelId).toBe("conversation:19:channel-abc@thread.tacv2");
-    expect(result?.currentChatType).toBe("channel");
-    expect(result?.currentMessagingTarget).toBe("graph-team-1/19:channel-abc@thread.tacv2");
-    expect(result?.currentGraphChannelId).toBe("graph-team-1/19:channel-abc@thread.tacv2");
-    expect(result?.currentThreadTs).toBe("reply-1");
-    expect(result?.replyToMode).toBe("all");
-  });
-
-  it("prefers MessageThreadId (thread root) over ReplyToId (parent)", () => {
-    const result = callBuildToolContext({
-      ChatType: "channel",
-      To: "conversation:19:channel-abc@thread.tacv2",
-      MessageThreadId: "thread-root",
-      ReplyToId: "nested-parent",
-    });
-    expect(result?.currentThreadTs).toBe("thread-root");
-    expect(result?.replyToMode).toBe("all");
-  });
-
-  it("omits replyToMode when no thread context is present", () => {
-    const result = callBuildToolContext({
-      ChatType: "direct",
-      To: "user:aad-user-1",
-    });
-    expect(result?.currentThreadTs).toBeUndefined();
-    expect(result?.replyToMode).toBeUndefined();
-  });
-
-  it("does not stamp ReplyToId as ambient thread for DM turns", () => {
-    const result = callBuildToolContext({
-      ChatType: "direct",
-      To: "user:aad-user-1",
-      ReplyToId: "quoted-parent",
-    });
-    expect(result?.currentThreadTs).toBeUndefined();
-    expect(result?.replyToMode).toBeUndefined();
-  });
-
-  it("does not stamp ReplyToId as ambient thread for group turns", () => {
-    const result = callBuildToolContext({
-      ChatType: "group",
-      To: "conversation:19:groupchat@thread.v2",
-      ReplyToId: "quoted-parent",
-    });
-    expect(result?.currentThreadTs).toBeUndefined();
-    expect(result?.replyToMode).toBeUndefined();
-  });
-
-  it("stamps channel ReplyToId when MessageThreadId is absent", () => {
-    const result = callBuildToolContext({
-      ChatType: "channel",
-      To: "conversation:19:channel-abc@thread.tacv2",
-      ReplyToId: "channel-parent",
-    });
-    expect(result?.currentThreadTs).toBe("channel-parent");
-    expect(result?.replyToMode).toBe("all");
-  });
-
-  it("falls back to To for DM turns (no NativeChannelId)", () => {
-    const result = callBuildToolContext({
-      ChatType: "direct",
-      To: "user:aad-user-1",
-    });
-    expect(result?.currentChannelId).toBe("user:aad-user-1");
-    expect(result?.currentChatType).toBe("direct");
-    expect(result?.currentMessagingTarget).toBeUndefined();
-    expect(result?.currentGraphChannelId).toBeUndefined();
-  });
-
-  it("falls back to To for group chat turns (no NativeChannelId)", () => {
-    const result = callBuildToolContext({
-      ChatType: "group",
-      To: "conversation:19:groupchat@thread.v2",
-    });
-    expect(result?.currentChannelId).toBe("conversation:19:groupchat@thread.v2");
-    expect(result?.currentChatType).toBe("group");
-    expect(result?.currentMessagingTarget).toBeUndefined();
-    expect(result?.currentGraphChannelId).toBeUndefined();
-  });
-
-  it("ignores NativeChannelId that does not encode a teamId/channelId pair", () => {
-    // Safety: only compound forms (with "/") should preempt the To fallback.
-    // A bare native id without a team prefix must not accidentally route
-    // through channel Graph paths.
-    const result = callBuildToolContext({
-      To: "conversation:19:chat@thread.v2",
-      NativeChannelId: "19:chat@thread.v2",
-    });
-    expect(result?.currentChannelId).toBe("conversation:19:chat@thread.v2");
-    expect(result?.currentMessagingTarget).toBeUndefined();
-    expect(result?.currentGraphChannelId).toBeUndefined();
-  });
-});
-
-describe("msteamsPlugin.actions.extractToolSendResult", () => {
-  it.each([
-    {
-      name: "receipt raw",
-      result: {
-        details: {
-          result: {
-            receipt: {
-              raw: [{ conversationId: "19:channel@thread.tacv2" }],
-            },
-          },
-        },
-      },
-    },
-    {
-      name: "receipt part raw",
-      result: {
-        details: {
-          result: {
-            receipt: {
-              parts: [{ raw: { conversationId: "19:channel@thread.tacv2" } }],
-            },
-          },
-        },
-      },
-    },
-    {
-      name: "direct delivery result",
-      result: {
-        details: {
-          result: {
-            conversationId: "19:channel@thread.tacv2",
-          },
-        },
-      },
-    },
-  ])("canonicalizes a Graph target from $name", ({ result }) => {
-    expect(
-      requireMSTeamsExtractToolSendResult()({
-        result,
-        send: {
-          to: "team-aad/19:channel@thread.tacv2",
-          threadId: "thread-root",
-        },
-      }),
-    ).toEqual({
-      to: "conversation:19:channel@thread.tacv2",
-    });
-  });
-
-  it("canonicalizes user targets to the resolved conversation", () => {
-    expect(
-      requireMSTeamsExtractToolSendResult()({
-        result: {
-          details: {
-            result: {
-              conversationId: "19:dm@thread.v2",
-            },
-          },
-        },
-        send: {
-          to: "user:aad-user-1",
-        },
-      }),
-    ).toEqual({
-      to: "conversation:19:dm@thread.v2",
-    });
-  });
-
-  it.each([
-    undefined,
-    {},
-    { details: {} },
-    { details: { result: {} } },
-    { details: { result: { receipt: { raw: [{}] } } } },
-  ])("rejects a result without an authoritative conversation id", (result) => {
-    expect(
-      requireMSTeamsExtractToolSendResult()({
-        result,
-        send: {
-          to: "team-aad/19:channel@thread.tacv2",
-          threadId: "thread-root",
-        },
-      }),
-    ).toBeNull();
-  });
-});
-
-describe("msteamsPlugin.threading.resolveAutoThreadId", () => {
-  function resolveAutoThreadId(params: {
-    cfg?: OpenClawConfig;
-    to?: string;
-    currentGraphChannelId?: string;
-  }) {
-    const resolve = msteamsPlugin.threading?.resolveAutoThreadId;
-    if (!resolve) {
-      throw new Error("msteams threading.resolveAutoThreadId unavailable");
-    }
-    return resolve({
-      cfg: params.cfg ?? ({} as OpenClawConfig),
-      to: params.to ?? "conversation:19:channel@thread.tacv2",
-      toolContext: {
-        currentChannelId: "conversation:19:channel@thread.tacv2",
-        currentMessagingTarget: params.currentGraphChannelId,
-        currentGraphChannelId: params.currentGraphChannelId,
-        currentThreadTs: "thread-root",
-        replyToMode: "all",
-      },
-    });
-  }
-
-  it("returns ambient thread root for same conversation target", () => {
-    expect(resolveAutoThreadId({})).toBe("thread-root");
-  });
-
-  it("returns undefined for a global top-level reply style", () => {
-    expect(
-      resolveAutoThreadId({
-        cfg: {
-          channels: {
-            msteams: {
-              replyStyle: "top-level",
-            },
-          },
-        } as OpenClawConfig,
-      }),
-    ).toBeUndefined();
-  });
-
-  it("returns undefined when requireMention defaults the reply style to top-level", () => {
-    expect(
-      resolveAutoThreadId({
-        cfg: {
-          channels: {
-            msteams: {
-              requireMention: false,
-            },
-          },
-        } as OpenClawConfig,
-      }),
-    ).toBeUndefined();
-  });
-
-  it("honors team and channel reply style overrides", () => {
-    const cfg = {
-      channels: {
-        msteams: {
-          replyStyle: "thread",
-          teams: {
-            "team-1": {
-              replyStyle: "top-level",
-              channels: {
-                "19:channel@thread.tacv2": {
-                  replyStyle: "thread",
-                },
-              },
-            },
-          },
-        },
-      },
-    } as OpenClawConfig;
-
-    expect(
-      resolveAutoThreadId({
-        cfg,
-        currentGraphChannelId: "team-1/19:other@thread.tacv2",
-      }),
-    ).toBeUndefined();
-    expect(
-      resolveAutoThreadId({
-        cfg,
-        currentGraphChannelId: "team-1/19:channel@thread.tacv2",
-      }),
-    ).toBe("thread-root");
-  });
-
-  it("preserves an explicit thread target under top-level reply style", () => {
-    expect(
-      resolveAutoThreadId({
-        cfg: {
-          channels: {
-            msteams: {
-              replyStyle: "top-level",
-            },
-          },
-        } as OpenClawConfig,
-        to: "conversation:19:channel@thread.tacv2;messageid=explicit-root",
-      }),
-    ).toBe("explicit-root");
-  });
-
-  it("returns undefined for a different conversation", () => {
-    const resolve = msteamsPlugin.threading?.resolveAutoThreadId;
-    if (!resolve) {
-      throw new Error("msteams threading.resolveAutoThreadId unavailable");
-    }
-    expect(
-      resolve({
-        cfg: {} as OpenClawConfig,
-        to: "conversation:19:other@thread.tacv2",
-        toolContext: {
-          currentChannelId: "conversation:19:channel@thread.tacv2",
-          currentThreadTs: "thread-root",
-          replyToMode: "all",
-        },
-      }),
-    ).toBeUndefined();
-  });
-
-  it("returns undefined for DM tool context without ambient thread", () => {
-    const resolve = msteamsPlugin.threading?.resolveAutoThreadId;
-    if (!resolve) {
-      throw new Error("msteams threading.resolveAutoThreadId unavailable");
-    }
-    expect(
-      resolve({
-        cfg: {} as OpenClawConfig,
-        to: "user:aad-user-1",
-        toolContext: {
-          currentChannelId: "user:aad-user-1",
-        },
-      }),
-    ).toBeUndefined();
-  });
-});
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

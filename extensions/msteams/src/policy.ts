@@ -19,6 +19,7 @@ import {
   resolveChannelEntryMatchWithFallback,
   resolveNestedAllowlistDecision,
 } from "../runtime-api.js";
+import { resolveMSTeamsAccountConfig } from "./accounts.js";
 
 type MSTeamsResolvedRouteConfig = {
   teamConfig?: MSTeamsTeamConfig;
@@ -183,7 +184,7 @@ export function resolveMSTeamsRouteConfig(params: {
 export function resolveMSTeamsGroupToolPolicy(
   params: ChannelGroupContext,
 ): GroupToolPolicyConfig | undefined {
-  const cfg = params.cfg.channels?.msteams;
+  const cfg = resolveMSTeamsAccountConfig(params.cfg, params.accountId);
   if (!cfg) {
     return undefined;
   }

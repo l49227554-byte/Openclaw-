@@ -1,6 +1,7 @@
 import { recordChannelFeedbackEvent } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveMSTeamsAccountConfig } from "./accounts.js";
 import { formatUnknownError } from "./errors.js";
 import { buildFeedbackEvent, runFeedbackReflection } from "./feedback-reflection.js";
 import { extractMSTeamsConversationMessageId, normalizeMSTeamsConversationId } from "./inbound.js";
@@ -52,7 +53,7 @@ export async function runMSTeamsFeedbackInvokeHandler(
     return false;
   }
 
-  const msteamsCfg = deps.cfg.channels?.msteams;
+  const msteamsCfg = resolveMSTeamsAccountConfig(deps.cfg, deps.accountId);
   if (msteamsCfg?.feedbackEnabled === false) {
     deps.log.debug?.("feedback handling disabled");
     return true; // Still consume the invoke
@@ -90,6 +91,7 @@ export async function runMSTeamsFeedbackInvokeHandler(
   const route = core.channel.routing.resolveAgentRoute({
     cfg: deps.cfg,
     channel: "msteams",
+    accountId: deps.accountId,
     peer: {
       kind: isDirectMessage ? "direct" : isChannel ? "channel" : "group",
       id: isDirectMessage ? senderId : conversationId,
@@ -172,6 +174,7 @@ export async function runMSTeamsFeedbackInvokeHandler(
     runFeedbackReflection({
       cfg: deps.cfg,
       app: deps.app,
+      accountId: deps.accountId,
       conversationRef,
       sessionKey: route.sessionKey,
       agentId: route.agentId,

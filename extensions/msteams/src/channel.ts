@@ -3,10 +3,6 @@ import {
   readPositiveIntegerParam,
   resolveReactionMessageId,
 } from "openclaw/plugin-sdk/channel-actions";
-import type {
-  ChannelMessageActionAdapter,
-  ChannelMessageToolDiscovery,
-} from "openclaw/plugin-sdk/channel-contract";
 import { createChatChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import {
   createAccountStatusSink,
@@ -14,10 +10,7 @@ import {
   createRuntimeOutboundDelegates,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { createPairingPrefixStripper } from "openclaw/plugin-sdk/channel-pairing";
-import {
-  createAllowlistProviderGroupPolicyWarningCollector,
-  createConditionalWarningCollector,
-} from "openclaw/plugin-sdk/channel-policy";
+import { createConditionalWarningCollector } from "openclaw/plugin-sdk/channel-policy";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
 import {
   createChannelDirectoryAdapter,
@@ -30,14 +23,8 @@ import {
   normalizeOptionalString,
   normalizeStringEntries,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { Type } from "typebox";
 import { msteamsDirectoryContractPlugin } from "../directory-contract-api.js";
-import type {
-  ChannelMessageActionName,
-  ChannelOutboundAdapter,
-  ChannelPlugin,
-  OpenClawConfig,
-} from "../runtime-api.js";
+import type { ChannelOutboundAdapter, ChannelPlugin } from "../runtime-api.js";
 import {
   buildProbeChannelStatusSummary,
   chunkTextForOutbound,
@@ -45,6 +32,11 @@ import {
   DEFAULT_ACCOUNT_ID,
   PAIRING_APPROVED_MESSAGE,
 } from "../runtime-api.js";
+import {
+  resolveDefaultMSTeamsAccountId,
+  resolveMSTeamsAccount,
+  resolveMSTeamsAccountConfig,
+} from "./accounts.js";
 import { resolveActionContent, resolveActionUploadFilePath } from "./action-params.js";
 import {
   actionError,
@@ -63,7 +55,8 @@ import {
   msTeamsApprovalCapability,
   shouldSuppressLocalMSTeamsExecApprovalPrompt,
 } from "./approval-native.js";
-import { resolveMSTeamsAccount, type ResolvedMSTeamsAccount } from "./channel-config.js";
+import { collectMSTeamsSecurityWarnings, type ResolvedMSTeamsAccount } from "./channel-config.js";
+import { describeMSTeamsMessageTool } from "./channel-message-tool.js";
 import { msteamsSetupPlugin } from "./channel.setup.js";
 import { collectMSTeamsMutableAllowlistWarnings } from "./doctor.js";
 import {
@@ -88,7 +81,6 @@ import {
   resolveMSTeamsUserAllowlist,
 } from "./resolve-allowlist.js";
 import { inferMSTeamsTargetChatType, resolveMSTeamsOutboundSessionRoute } from "./session-route.js";
-
 const TEAMS_GRAPH_PERMISSION_HINTS: Record<string, string> = {
   "ChannelMessage.Read.All": "channel history",
   "Chat.Read.All": "chat history",
@@ -99,18 +91,6 @@ const TEAMS_GRAPH_PERMISSION_HINTS: Record<string, string> = {
   "Files.Read.All": "files (OneDrive)",
 };
 
-const collectMSTeamsSecurityWarnings = createAllowlistProviderGroupPolicyWarningCollector<{
-  cfg: OpenClawConfig;
-}>({
-  providerConfigPresent: (cfg) => cfg.channels?.msteams !== undefined,
-  resolveGroupPolicy: ({ cfg }) => cfg.channels?.msteams?.groupPolicy,
-  collect: ({ groupPolicy }) =>
-    groupPolicy === "open"
-      ? [
-          '- MS Teams groups: groupPolicy="open" allows any member to trigger (mention-gated). Set channels.msteams.groupPolicy="allowlist" + channels.msteams.groupAllowFrom to restrict senders.',
-        ]
-      : [],
-});
 const collectMSTeamsSecurityFindings = createConditionalWarningCollector.findings({
   collectWarnings: collectMSTeamsSecurityWarnings,
   checkId: "channels.msteams.groups.open",
@@ -281,52 +261,6 @@ async function runWithRequiredActionPinnedMessageTarget<T>(
   return await params.run({ to, pinnedMessageId });
 }
 
-function describeMSTeamsMessageTool({
-  cfg,
-}: Parameters<
-  NonNullable<ChannelMessageActionAdapter["describeMessageTool"]>
->[0]): ChannelMessageToolDiscovery {
-  const account = resolveMSTeamsAccount(cfg);
-  const enabled = account.enabled && account.configured && account.tokenStatus === "available";
-  return {
-    actions: enabled
-      ? ([
-          "upload-file",
-          "poll",
-          "edit",
-          "delete",
-          "pin",
-          "unpin",
-          "list-pins",
-          "read",
-          "react",
-          "reactions",
-          "search",
-          "member-info",
-          "channel-list",
-          "channel-info",
-          "addParticipant",
-          "removeParticipant",
-          "renameGroup",
-        ] satisfies ChannelMessageActionName[])
-      : [],
-    capabilities: enabled ? ["presentation"] : [],
-    schema: enabled
-      ? {
-          actions: ["unpin"],
-          properties: {
-            pinnedMessageId: Type.Optional(
-              Type.String({
-                description:
-                  "Pinned message resource ID for unpin (from pin or list-pins, not the chat message ID).",
-              }),
-            ),
-          },
-        }
-      : null,
-  };
-}
-
 const msteamsChannelOutbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
   chunker: chunkTextForOutbound,
@@ -421,7 +355,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
         }),
       }),
       resolver: {
-        resolveTargets: async ({ cfg, inputs, kind, runtime }) => {
+        resolveTargets: async ({ cfg, accountId, inputs, kind, runtime }) => {
           const results = inputs.map((input) => ({
             input,
             resolved: false,
@@ -483,7 +417,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
 
             await resolvePending(
               pending,
-              (entries) => resolveMSTeamsUserAllowlist({ cfg, entries }),
+              (entries) => resolveMSTeamsUserAllowlist({ cfg, accountId, entries }),
               (target, entry) => {
                 target.resolved = entry.resolved;
                 target.id = entry.id;
@@ -520,7 +454,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
 
           await resolvePending(
             pending,
-            (entries) => resolveMSTeamsChannelAllowlist({ cfg, entries }),
+            (entries) => resolveMSTeamsChannelAllowlist({ cfg, accountId, entries }),
             (target, entry) => {
               if (!entry.resolved || !entry.teamId) {
                 target.resolved = false;
@@ -571,6 +505,9 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
               return authError;
             }
           }
+          const accountId = ctx.accountId ?? resolveDefaultMSTeamsAccountId(ctx.cfg);
+          const actionAccountId =
+            ctx.accountId ?? (accountId === DEFAULT_ACCOUNT_ID ? undefined : accountId);
           const authorizeActionTarget = (target: string) =>
             assertMSTeamsReadTargetAllowed({ cfg: ctx.cfg, ctx, target });
           const presentation =
@@ -589,6 +526,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { sendAdaptiveCardMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await sendAdaptiveCardMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   card,
                   assertDirectAdapterHandoff: ctx.assertDirectAdapterHandoff,
@@ -619,6 +557,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { sendMessageMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await sendMessageMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   text: resolveActionContent(ctx.params),
                   mediaUrl,
@@ -664,6 +603,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { editMessageMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await editMessageMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   activityId: target.messageId,
                   text: content,
@@ -683,6 +623,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { deleteMessageMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await deleteMessageMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   activityId: target.messageId,
                 });
@@ -718,6 +659,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { getMessageMSTeams } = await loadMSTeamsChannelRuntime();
                 const message = await getMessageMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   messageId: target.messageId,
                 });
@@ -735,6 +677,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { pinMessageMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await pinMessageMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   messageId: target.messageId,
                 });
@@ -752,6 +695,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { unpinMessageMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await unpinMessageMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   pinnedMessageId: target.pinnedMessageId,
                 });
@@ -767,7 +711,11 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
               run: async (to) => {
                 const allowedTarget = await authorizeActionTarget(to);
                 const { listPinsMSTeams } = await loadMSTeamsChannelRuntime();
-                const result = await listPinsMSTeams({ cfg: ctx.cfg, to: allowedTarget });
+                const result = await listPinsMSTeams({
+                  cfg: ctx.cfg,
+                  accountId: actionAccountId,
+                  to: allowedTarget,
+                });
                 return jsonMSTeamsOkActionResult("list-pins", result);
               },
             });
@@ -801,6 +749,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                   const { unreactMessageMSTeams } = await loadMSTeamsChannelRuntime();
                   const result = await unreactMessageMSTeams({
                     cfg: ctx.cfg,
+                    accountId: actionAccountId,
                     to,
                     messageId: target.messageId,
                     reactionType: emoji,
@@ -814,6 +763,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { reactMessageMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await reactMessageMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   messageId: target.messageId,
                   reactionType: emoji,
@@ -836,6 +786,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { listReactionsMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await listReactionsMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   messageId: target.messageId,
                 });
@@ -860,6 +811,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { searchMessagesMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await searchMessagesMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to: allowedTarget,
                   query,
                   from: from || undefined,
@@ -886,6 +838,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { getMemberInfoMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await getMemberInfoMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   userId,
                   currentRequesterId,
@@ -906,7 +859,11 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
               teamId,
             });
             const { listChannelsMSTeams } = await loadMSTeamsChannelRuntime();
-            const result = await listChannelsMSTeams({ cfg: ctx.cfg, teamId: graphTeamId });
+            const result = await listChannelsMSTeams({
+              cfg: ctx.cfg,
+              accountId: actionAccountId,
+              teamId: graphTeamId,
+            });
             return jsonMSTeamsOkActionResult("channel-list", result);
           }
 
@@ -924,6 +881,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
             const { getChannelInfoMSTeams } = await loadMSTeamsChannelRuntime();
             const result = await getChannelInfoMSTeams({
               cfg: ctx.cfg,
+              accountId: actionAccountId,
               teamId: graphTeamId,
               channelId: graphChannelId,
             });
@@ -946,6 +904,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { addParticipantMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await addParticipantMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   userId,
                   role,
@@ -968,6 +927,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { removeParticipantMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await removeParticipantMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   userId,
                 });
@@ -989,6 +949,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                 const { renameGroupMSTeams } = await loadMSTeamsChannelRuntime();
                 const result = await renameGroupMSTeams({
                   cfg: ctx.cfg,
+                  accountId: actionAccountId,
                   to,
                   name,
                 });
@@ -1007,8 +968,12 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
           buildProbeChannelStatusSummary(snapshot, {
             port: snapshot.port ?? null,
           }),
-        probeAccount: async ({ cfg }) =>
-          await (await loadMSTeamsChannelRuntime()).probeMSTeams(cfg.channels?.msteams),
+        probeAccount: async ({ account }) =>
+          await (
+            await loadMSTeamsChannelRuntime()
+          ).probeMSTeams(account.config, {
+            accountId: account.accountId,
+          }),
         formatCapabilitiesProbe: ({ probe }) => {
           const teamsProbe = probe;
           const lines: Array<{ text: string; tone?: "error" }> = [];
@@ -1052,18 +1017,23 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
       gateway: {
         startAccount: async (ctx) => {
           const { monitorMSTeamsProvider } = await import("./index.js");
-          const port = ctx.cfg.channels?.msteams?.webhook?.port ?? 3978;
-          const statusSink = createAccountStatusSink({
+          const account = resolveMSTeamsAccount({
+            cfg: ctx.cfg,
             accountId: ctx.accountId,
+          });
+          const accountId = account.accountId;
+          const port = account.config.webhook?.port ?? 3978;
+          const statusSink = createAccountStatusSink({
+            accountId,
             setStatus: ctx.setStatus,
           });
           statusSink({ port });
-          ctx.log?.info(`starting provider (port ${port})`);
-          if (isMSTeamsNativeApprovalClientEnabled({ cfg: ctx.cfg, accountId: ctx.accountId })) {
+          ctx.log?.info(`starting provider account ${accountId} (port ${port})`);
+          if (isMSTeamsNativeApprovalClientEnabled({ cfg: ctx.cfg, accountId })) {
             registerChannelRuntimeContext({
               channelRuntime: ctx.channelRuntime,
               channelId: "msteams",
-              accountId: ctx.accountId,
+              accountId,
               capability: CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY,
               context: {},
               abortSignal: ctx.abortSignal,
@@ -1071,6 +1041,8 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
           }
           return monitorMSTeamsProvider({
             cfg: ctx.cfg,
+            accountId,
+            msteamsCfg: account.config,
             runtime: ctx.runtime,
             abortSignal: ctx.abortSignal,
             statusSink,
@@ -1079,17 +1051,18 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
       },
     },
     security: {
-      collectWarnings: ({ cfg }) => collectMSTeamsSecurityFindings({ cfg }),
+      collectWarnings: ({ cfg, accountId }) => collectMSTeamsSecurityFindings({ cfg, accountId }),
     },
     pairing: {
       text: {
         idLabel: "msteamsUserId",
         message: PAIRING_APPROVED_MESSAGE,
         normalizeAllowEntry: createPairingPrefixStripper(/^(msteams|user):/i),
-        notify: async ({ cfg, id, message }) => {
+        notify: async ({ cfg, accountId, id, message }) => {
           const { sendMessageMSTeams } = await loadMSTeamsChannelRuntime();
           await sendMessageMSTeams({
             cfg,
+            accountId,
             to: id,
             text: message,
           });
@@ -1126,9 +1099,9 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
           hasRepliedRef,
         };
       },
-      resolveAutoThreadId: ({ cfg, to, toolContext }) =>
+      resolveAutoThreadId: ({ cfg, accountId, to, toolContext }) =>
         resolveMSTeamsAutoThreadId({
-          cfg: cfg.channels?.msteams,
+          cfg: resolveMSTeamsAccountConfig(cfg, accountId),
           to,
           toolContext,
         }),

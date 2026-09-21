@@ -6,11 +6,13 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { TICK_INTERVAL_MS } from "../gateway/server-constants.js";
 import {
   GATEWAY_SERVICE_STOP_TIMEOUT_MS,
+  GATEWAY_SHUTDOWN_RESERVE_MS,
   GATEWAY_SHUTDOWN_TIMEOUT_MS,
 } from "../infra/gateway-shutdown-budget.js";
 import { resolveGatewayRestartDeferralTimeoutMs } from "../infra/restart.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "../infra/sqlite-coordinator.js";
 import { acquireGatewayLifecycleCoordinator } from "../infra/state-database-coordinator.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -27,7 +29,7 @@ afterEach(() => {
   closeOpenClawStateDatabaseForTest();
 });
 
-function fixture(mode: "foreground" | "supervised" = "foreground") {
+function fixture(mode: "foreground" | "supervised" = "foreground", published = true) {
   const stateDir = dirs.make("doctor-foreground-settlement-");
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(stateDir, "openclaw.json"));
@@ -38,43 +40,61 @@ function fixture(mode: "foreground" | "supervised" = "foreground") {
     startedAt: getFileLockProcessStartTime(process.pid),
   };
   expect(owner.startedAt).not.toBeNull();
-  withOpenClawStateStartupMigrationCheckpointDatabase((db) => {
-    db.prepare(
-      `INSERT INTO state_leases
+  const publish = () =>
+    withOpenClawStateStartupMigrationCheckpointDatabase((db) => {
+      db.prepare(
+        `INSERT INTO state_leases
        (scope, lease_key, owner, expires_at, heartbeat_at, payload_json, created_at, updated_at)
        VALUES ('gateway-owner', 'global', 'previous-gateway', ?, ?, ?, ?, ?)`,
-    ).run(
-      Date.now() + 600_000,
-      Date.now(),
-      JSON.stringify({
-        owner,
-        port: 19483,
-        mode,
-        supervisor: mode === "supervised" ? { kind: "external", name: "fixture" } : null,
-      }),
-      Date.now(),
-      Date.now(),
-    );
-  });
+      ).run(
+        Date.now() + 600_000,
+        Date.now(),
+        JSON.stringify({
+          owner,
+          port: 19483,
+          mode,
+          supervisor: mode === "supervised" ? { kind: "external", name: "fixture" } : null,
+        }),
+        Date.now(),
+        Date.now(),
+      );
+    });
+  if (published) {
+    publish();
+  } else {
+    withOpenClawStateStartupMigrationCheckpointDatabase(() => {});
+  }
   closeOpenClawStateDatabaseForTest();
   const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
   const coordinator = acquireGatewayLifecycleCoordinator({ databasePath });
   coordinator.release();
   const predecessor = tryAcquireExclusiveSqliteCoordinator(coordinator.path, { busyTimeoutMs: 0 });
   expect(predecessor).not.toBeNull();
-  return { databasePath, predecessor };
+  return { databasePath, predecessor, publish };
 }
 
-it.each(["released", "slow-released", "owner-changed", "authority-lost", "deadline"] as const)(
+it.each([
+  "released",
+  "slow-released",
+  "owner-changed",
+  "authority-lost",
+  "deadline",
+  "rowless-released",
+  "rowless-deadline",
+  "rowless-replaced",
+] as const)(
   "settles the foreground state owner before update Doctor admission: %s",
   async (outcome) => {
-    const { databasePath, predecessor } = fixture();
+    const { databasePath, predecessor, publish } = fixture(
+      "foreground",
+      !outcome.startsWith("rowless-"),
+    );
     const before = fs.readFileSync(databasePath);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     let monotonicMs = 0;
     vi.spyOn(performance, "now").mockImplementation(() => monotonicMs);
     let authorized = true;
-    const waiting = Promise.withResolvers<void>();
+    const waiting = createDeferredCore();
     let settled = false;
     const result = beginDoctorMaintenance({
       options: { repair: true, nonInteractive: true },
@@ -111,8 +131,19 @@ it.each(["released", "slow-released", "owner-changed", "authority-lost", "deadli
         expect(settled).toBe(false);
         expect(fs.readFileSync(databasePath)).toEqual(before);
       }
-      if (outcome === "released" || outcome === "slow-released") {
+      if (outcome === "rowless-released") {
+        monotonicMs = GATEWAY_SHUTDOWN_RESERVE_MS - 50;
+        await vi.advanceTimersToNextTimerAsync();
+        expect(settled).toBe(false);
+      }
+      const released =
+        outcome === "released" || outcome === "slow-released" || outcome === "rowless-released";
+      if (released) {
         predecessor?.release();
+      } else if (outcome === "rowless-deadline") {
+        monotonicMs = GATEWAY_SHUTDOWN_RESERVE_MS;
+      } else if (outcome === "rowless-replaced") {
+        publish();
       } else if (outcome === "owner-changed") {
         withOpenClawStateStartupMigrationCheckpointDatabase((db) => {
           db.prepare("UPDATE state_leases SET owner = 'replacement-gateway'").run();
@@ -126,10 +157,16 @@ it.each(["released", "slow-released", "owner-changed", "authority-lost", "deadli
           resolveGatewayRestartDeferralTimeoutMs() +
           GATEWAY_SERVICE_STOP_TIMEOUT_MS;
       }
-      await vi.advanceTimersToNextTimerAsync();
+      if (outcome === "rowless-released") {
+        monotonicMs = GATEWAY_SHUTDOWN_RESERVE_MS;
+        await vi.advanceTimersByTimeAsync(50);
+        expect(vi.getTimerCount()).toBe(0);
+      } else {
+        await vi.advanceTimersToNextTimerAsync();
+      }
       const completed = await result;
       maintenance = "maintenance" in completed ? completed.maintenance : undefined;
-      if (outcome === "released" || outcome === "slow-released") {
+      if (released) {
         expect(maintenance).toBeDefined();
         await maintenance?.finish({});
       } else {
@@ -145,6 +182,11 @@ it.each(["released", "slow-released", "owner-changed", "authority-lost", "deadli
       }
     } finally {
       predecessor?.release();
+      if (!settled) {
+        await vi.runOnlyPendingTimersAsync();
+        const completed = await result;
+        maintenance = "maintenance" in completed ? completed.maintenance : undefined;
+      }
       await maintenance?.release();
     }
   },

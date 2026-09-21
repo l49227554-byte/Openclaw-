@@ -587,6 +587,8 @@ finishes shutting down, it waits for the same process to release state, up to
 the installation-check interval plus the existing restart-drain and service-stop
 allowances. Doctor retains the updater's live
 authority and still acquires its normal maintenance locks before repairing state.
+If shutdown has already removed the process identity, Doctor allows only the
+existing ten-second cleanup reserve and refuses any newly appearing owner.
 A different Gateway owner, lost update authority, or unresolved contention stops
 maintenance with recovery guidance. Ordinary Doctor commands and older update
 drivers without delegated Doctor authority retain their immediate refusal.

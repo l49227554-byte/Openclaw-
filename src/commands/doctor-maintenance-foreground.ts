@@ -1,7 +1,10 @@
 import { TICK_INTERVAL_MS } from "../gateway/server-constants.js";
 import { acquireWithWait } from "../infra/acquire-with-wait.js";
 import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
-import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
+import {
+  GATEWAY_SERVICE_STOP_TIMEOUT_MS,
+  GATEWAY_SHUTDOWN_RESERVE_MS,
+} from "../infra/gateway-shutdown-budget.js";
 import { resolveGatewayRestartDeferralTimeoutMs } from "../infra/restart.js";
 import {
   acquireGatewayMaintenanceCoordinator,
@@ -21,6 +24,7 @@ export async function acquireDoctorGatewayMaintenanceCoordinator(
 ) {
   const updateRepair = isDoctorUpdateRepairMode(resolveDoctorRepairMode(params.options));
   let foreground: ReturnType<typeof readGatewayOwnerLease>;
+  let ownerlessDeadlineMs: number | undefined;
   return await acquireWithWait({
     acquire: () => {
       params.assertCurrent?.();
@@ -44,7 +48,19 @@ export async function acquireDoctorGatewayMaintenanceCoordinator(
         openStateSchemaReadAdmission: openDoctorStateSchemaReadAdmission,
       });
       if (!foreground) {
-        if (current?.state !== "live" || current.mode !== "foreground") {
+        if (!current) {
+          // Lease deletion precedes asynchronous lock-file cleanup. A late
+          // arrival gets the shutdown reserve, never a fresh drain allowance.
+          if (ownerlessDeadlineMs === undefined) {
+            ownerlessDeadlineMs = performance.now() + GATEWAY_SHUTDOWN_RESERVE_MS;
+            params.runtime.log("Waiting for Gateway state ownership cleanup to finish.");
+          }
+          return performance.now() < ownerlessDeadlineMs;
+        }
+        if (ownerlessDeadlineMs !== undefined) {
+          return false;
+        }
+        if (current.state !== "live" || current.mode !== "foreground") {
           return false;
         }
         foreground = current;
@@ -72,6 +88,11 @@ export async function acquireDoctorGatewayMaintenanceCoordinator(
       GATEWAY_SERVICE_STOP_TIMEOUT_MS,
     pollIntervalMs: 100,
     maxPollIntervalMs: 1_000,
-    sleep,
+    sleep: (ms) =>
+      sleep(
+        ownerlessDeadlineMs === undefined
+          ? ms
+          : Math.min(ms, Math.max(0, ownerlessDeadlineMs - performance.now())),
+      ),
   });
 }

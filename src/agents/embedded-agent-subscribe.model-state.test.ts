@@ -466,7 +466,15 @@ describe("subscribeEmbeddedAgentSession model state", () => {
         expect(subscription.getLastAssistantUsage()).toMatchObject(expected);
         expect(subscription.getCurrentAttemptAssistant()).toEqual(completed);
         expect(subscription.hasSuccessfulModelResponse()).toBe(completed?.stopReason === "stop");
-        expect(onContextAccountingEvent.mock.calls).toEqual([[{ kind: "model", contextTokens }]]);
+        expect(onContextAccountingEvent.mock.calls).toEqual([
+          [
+            {
+              kind: "model",
+              contextTokens,
+              stopReason: "stopReason" in call ? call.stopReason : "stop",
+            },
+          ],
+        ]);
         expect(
           onAgentEvent.mock.calls
             .map(([event]) => event)
@@ -666,7 +674,7 @@ describe("subscribeEmbeddedAgentSession model state", () => {
           },
         );
         expect(onContextAccountingEvent.mock.calls).toEqual([
-          [{ kind: "model", contextTokens: undefined }],
+          [{ kind: "model", contextTokens: undefined, stopReason: "stop" }],
         ]);
         const usageEvents = onAgentEvent.mock.calls
           .map(([event]) => event)

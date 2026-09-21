@@ -208,6 +208,7 @@ export function createEmbeddedModelState(
             contextTokens: deriveSessionTotalTokens({
               lastCallUsage: normalizeUsage(message.usage),
             }),
+            stopReason: message.stopReason,
           });
       }
     },

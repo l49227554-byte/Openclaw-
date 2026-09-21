@@ -329,6 +329,11 @@ through `sandbox_exec`. Denying `process` removes `sandbox_process` and backgrou
 continuation, while `sandbox_exec` runs to completion under the existing timeout,
 sandbox backend, and workspace-access policy.
 
+Sandbox turns also use these tools when Codex allows only managed hooks and cannot
+install the native process-admission hook. OpenClaw selects this existing execution
+path before preparing the tool catalog and prompt. Existing policies that require
+other enforcing native hooks still require their normal preflight to pass.
+
 The sandbox exec-server option does not bypass those tool restrictions. Node-backed
 `remote-exec` on a paired device or cloud worker instead uses its
 placement-owned environment without that experimental flag. A dedicated cloud worker with a completed project preparation keeps the bound workspace and `HOME` paths, so native commands can reuse setup caches. The node exec-server still uses a separate temporary `CODEX_HOME` for each connection. Ending the connection removes that Codex state and preserves the prepared project home.

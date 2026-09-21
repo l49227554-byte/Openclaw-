@@ -514,7 +514,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       loopDetectionPreToolUseRelay: appServer.loopDetectionPreToolUseRelay,
       signal: runAbortController.signal,
       hostCapabilities: params.hostCapabilities,
-      nativeProcessAuthority: nativeProcessAuthority
+      nativeProcessAuthority: requiresProcessAdmission
         ? { owner: nativeProcessAuthority, client: () => state.client }
         : undefined,
       assertCurrent: connection.assertCurrent,

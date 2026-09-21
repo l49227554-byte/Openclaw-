@@ -13,6 +13,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runNativeHookRelayCliFromArgv } from "../../cli/native-hook-relay-cli.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import {
+  createAgentRuntimeApprovalAuthorityValidator,
+  mintAgentRuntimeIdentityToken,
+} from "../../gateway/agent-runtime-identity-token.js";
 import { nativeHookRelayHandlers } from "../../gateway/server-methods/native-hook-relay.js";
 import { validateAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
 import {
@@ -345,6 +349,59 @@ describe("native hook relay registry", () => {
     });
   });
 
+  it("rejects a bound pre-tool policy result after exact host authority closes", async () => {
+    let active = true;
+    const admitExecution = vi.fn();
+    let resolvePolicy:
+      | ((value: { blocked: false; params: Record<string, unknown> }) => void)
+      | undefined;
+    const runBeforeToolCall = vi.fn(
+      () =>
+        new Promise<{ blocked: false; params: Record<string, unknown> }>((resolve) => {
+          resolvePolicy = resolve;
+        }),
+    );
+    const relay = registerOwnedNativeHookRelay({
+      provider: "codex",
+      relayId: "codex-bound-authority-close",
+      sessionId: "session-1",
+      runId: "run-1",
+      allowedEvents: ["pre_tool_use"],
+      runBeforeToolCall,
+      executionAdmission: { toolNames: ["exec"], admit: admitExecution },
+      assertActive: () => {
+        if (!active) {
+          throw new Error("agent harness host capability is no longer active");
+        }
+      },
+    });
+    const invocation = invokeNativeHookRelay({
+      provider: "codex",
+      relayId: relay.relayId,
+      event: "pre_tool_use",
+      rawPayload: {
+        hook_event_name: "PreToolUse",
+        openclaw_approval_mode: "report",
+        cwd: "/repo",
+        tool_name: "Bash",
+        tool_use_id: "native-close-1",
+        tool_input: { command: "git status" },
+      },
+    });
+    await vi.waitFor(() => expect(runBeforeToolCall).toHaveBeenCalledTimes(1));
+    active = false;
+    resolvePolicy?.({ blocked: false, params: { command: "git status" } });
+
+    await expect(invocation).rejects.toThrow("agent harness host capability is no longer active");
+    expect(admitExecution).not.toHaveBeenCalled();
+    expect(runBeforeToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalMode: "defer",
+        nativeOperation: { cwd: "/repo" },
+      }),
+    );
+  });
+
   it("keeps flat agent ids on the ordinary foreground policy path", async () => {
     const runBeforeToolCall = vi.fn(async () => ({ blocked: false as const, params: {} }));
     const relay = registerNativeHookRelay({
@@ -423,6 +480,143 @@ describe("native hook relay registry", () => {
     await expect(invocation).rejects.toThrow("foreground invocation not allowed");
     expect(testing.getNativeHookRelayRegistrationForTests(relay.relayId)).toBeDefined();
     closeAdmittedRunDelegatedAuthority(admittedRunContext);
+    relay.unregister();
+  });
+
+  it("keeps only a claimed flat native child after foreground cleanup", async () => {
+    const { admittedRunContext, hostCapabilities } = await createAdmittedHostCapabilityTestFixture({
+      runId: "run-retained-child",
+    });
+    const delegatedAuthority = getAdmittedRunDelegatedAuthority(admittedRunContext);
+    if (!delegatedAuthority) {
+      throw new Error("Expected admitted delegated authority");
+    }
+    const afterToolCall = vi.fn();
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "after_tool_call", handler: afterToolCall }]),
+    );
+    const approvalRequester = vi.fn(async () => "allow" as const);
+    const admitExecution = vi.fn();
+    testing.setNativeHookRelayPermissionApprovalRequesterForTests(approvalRequester);
+    let retainChild = true;
+    const relay = registerOwnedNativeHookRelay({
+      provider: "codex",
+      relayId: "codex-retained-direct-child",
+      sessionId: "session-1",
+      runId: "run-retained-child",
+      allowedEvents: ["pre_tool_use", "permission_request", "post_tool_use"],
+      runBeforeToolCall: hostCapabilities.runBeforeToolCall,
+      assertActive: hostCapabilities.assertActive,
+      executionAdmission: { toolNames: ["exec"], admit: admitExecution },
+      retention: {
+        readClaim: readTestNativeAgentId,
+        shouldRetainAfterForegroundClose: () => retainChild,
+        allowPreToolUse: (claim) => claim === "child-thread",
+        onDispose: () => {},
+      },
+    });
+    const invoke = (
+      event: Parameters<typeof invokeNativeHookRelay>[0]["event"],
+      rawPayload: unknown,
+    ) => invokeNativeHookRelay({ provider: "codex", relayId: relay.relayId, event, rawPayload });
+
+    await expect(
+      invoke("pre_tool_use", { tool_name: "Bash", tool_input: { command: "true" } }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+
+    const permission = await invoke("permission_request", {
+      agent_id: "child-thread",
+      hook_event_name: "PermissionRequest",
+      tool_name: "Bash",
+      tool_input: { command: "true" },
+    });
+    expect(JSON.parse(permission.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "allow" },
+      },
+    });
+    expect(approvalRequester).toHaveBeenCalledOnce();
+
+    await expect(
+      invoke("post_tool_use", {
+        agent_id: "child-thread",
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "true" },
+        tool_response: { output: "ok" },
+        tool_use_id: "child-post-tool",
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    expect(afterToolCall).toHaveBeenCalledOnce();
+
+    expect(closeAdmittedRunDelegatedAuthority(admittedRunContext)).toBe(true);
+    expect(validateAgentRunDelegatedAuthority(delegatedAuthority)).toBe(false);
+    await expect(
+      mintAgentRuntimeIdentityToken({
+        agentId: "main",
+        sessionKey: "agent:main:session-1",
+        operationalRunInstance: admittedRunContext.operationalRunInstance,
+      }),
+    ).rejects.toThrow("requires active delegated run authority");
+    expect(
+      createAgentRuntimeApprovalAuthorityValidator()({
+        kind: "agentRuntime",
+        agentId: "main",
+        sessionKey: "agent:main:session-1",
+        operationalRunInstance: admittedRunContext.operationalRunInstance,
+        delegatedAuthority: { kind: "local", ...delegatedAuthority },
+      }),
+    ).toBe(false);
+    relay.unregister();
+    await expect(
+      invoke("pre_tool_use", {
+        agent_id: "child-thread",
+        tool_name: "Bash",
+        tool_input: { command: "true" },
+      }),
+    ).resolves.toMatchObject({ exitCode: 0 });
+    await expect(
+      invoke("permission_request", {
+        agent_id: "child-thread",
+        hook_event_name: "PermissionRequest",
+        tool_name: "Bash",
+        tool_input: { command: "true" },
+      }),
+    ).rejects.toThrow("foreground invocation not allowed");
+    await expect(
+      invoke("post_tool_use", {
+        agent_id: "child-thread",
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "true" },
+        tool_response: { output: "ok" },
+        tool_use_id: "child-post-tool-after-close",
+      }),
+    ).rejects.toThrow("foreground invocation not allowed");
+    await expect(
+      invoke("pre_tool_use", {
+        agent_id: "unknown-child",
+        tool_name: "Bash",
+        tool_input: { command: "true" },
+      }),
+    ).rejects.toThrow("retained invocation not allowed");
+    await expect(
+      invoke("pre_tool_use", {
+        agent: { agent_id: "child-thread" },
+        tool_name: "Bash",
+        tool_input: { command: "true" },
+      }),
+    ).rejects.toThrow("foreground invocation not allowed");
+
+    expect(admitExecution).toHaveBeenCalledTimes(2);
+    expect(admitExecution).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        rawPayload: expect.objectContaining({ agent_id: "child-thread" }),
+      }),
+      expect.any(Function),
+    );
+    retainChild = false;
     relay.unregister();
   });
 

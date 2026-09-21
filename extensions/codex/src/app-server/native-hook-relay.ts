@@ -47,7 +47,6 @@ const CODEX_NATIVE_HOOK_RELAY_DEFAULT_TIMEOUT_SEC = 10;
 const CODEX_NATIVE_HOOK_RELAY_UNREGISTER_GRACE_MS = 10_000;
 const CODEX_NATIVE_HOOK_RELAY_UNREGISTER_EXTRA_GRACE_MS = 5_000;
 const MAX_PENDING_DIRECT_CHILD_ADMISSIONS = 32;
-const nativeHookPolicyByClient = new WeakMap<object, Promise<void>>();
 
 const CODEX_HOOK_MATCHER_NAMES_BY_TOOL_ID: Readonly<Record<string, readonly string[]>> = {
   exec: ["Bash", "exec", "exec_command"],
@@ -71,48 +70,42 @@ export type CodexNativeHookRelay = ReturnType<typeof registerNativeHookRelayForB
   rejectPendingDirectChild: (threadId: string, reason: string) => void;
 };
 
+export class CodexManagedHooksOnlyError extends Error {
+  constructor() {
+    super(
+      "Codex managed-only hooks disable the OpenClaw native hook relay; refusing unenforced execution",
+    );
+    this.name = "CodexManagedHooksOnlyError";
+  }
+}
+
 /** Enterprise managed-only policy silently drops the session-layer hooks that enforce OpenClaw. */
 export async function assertCodexNativeHookRelayAllowed(
   client: Pick<CodexAppServerClient, "request">,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<void> {
-  let attestation = nativeHookPolicyByClient.get(client);
-  if (!attestation) {
-    attestation = client
-      .request("configRequirements/read", undefined, { signal })
-      .then((response) => {
-        if (!isJsonObject(response) || !Object.hasOwn(response, "requirements")) {
-          throw new Error("Codex configRequirements/read returned an invalid hook policy response");
-        }
-        const requirements = response.requirements;
-        if (requirements === null) {
-          return;
-        }
-        if (!isJsonObject(requirements)) {
-          throw new Error(
-            "Codex configRequirements/read returned invalid hook policy requirements",
-          );
-        }
-        const managedOnly = requirements.allowManagedHooksOnly;
-        if (managedOnly !== undefined && managedOnly !== null && typeof managedOnly !== "boolean") {
-          throw new Error(
-            "Codex configRequirements/read returned invalid managed-only hook policy",
-          );
-        }
-        if (managedOnly === true) {
-          throw new Error(
-            "Codex managed-only hooks disable the OpenClaw native hook relay; refusing unenforced execution",
-          );
-        }
-      });
-    nativeHookPolicyByClient.set(client, attestation);
-    attestation.catch(() => {
-      if (nativeHookPolicyByClient.get(client) === attestation) {
-        nativeHookPolicyByClient.delete(client);
-      }
-    });
+  const response = await client.request("configRequirements/read", undefined, {
+    signal,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+  if (!isJsonObject(response) || !Object.hasOwn(response, "requirements")) {
+    throw new Error("Codex configRequirements/read returned an invalid hook policy response");
   }
-  await attestation;
+  const requirements = response.requirements;
+  if (requirements === null) {
+    return;
+  }
+  if (!isJsonObject(requirements)) {
+    throw new Error("Codex configRequirements/read returned invalid hook policy requirements");
+  }
+  const managedOnly = requirements.allowManagedHooksOnly;
+  if (managedOnly !== undefined && managedOnly !== null && typeof managedOnly !== "boolean") {
+    throw new Error("Codex configRequirements/read returned invalid managed-only hook policy");
+  }
+  if (managedOnly === true) {
+    throw new CodexManagedHooksOnlyError();
+  }
 }
 
 /** Defers relay unregister so late native hook subprocesses can still resolve. */

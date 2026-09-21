@@ -41,10 +41,7 @@ import {
   setNativeHookRelayPermissionApprovalRequesterForTests as setNativeHookRelayPermissionApprovalRequesterForTestsImpl,
 } from "./native-hook-relay-permissions.js";
 import type { NativeHookRelayDeferredToolApprovalRequester } from "./native-hook-relay-permissions.js";
-import {
-  buildNativeHookRelayCommandPlan,
-  normalizeNativeHookRelayEvents,
-} from "./native-hook-relay-plan.js";
+import { buildNativeHookRelayCommandPlan } from "./native-hook-relay-plan.js";
 import {
   MAX_NATIVE_HOOK_RELAY_INVOCATIONS,
   nativeHookRelayState,
@@ -64,6 +61,7 @@ import type {
   RegisterNativeHookRelayParams,
   RelayLifetime,
 } from "./native-hook-relay-types.js";
+import { NATIVE_HOOK_RELAY_EVENTS } from "./native-hook-relay-types.js";
 import {
   isJsonValue,
   normalizePositiveInteger,
@@ -177,7 +175,9 @@ function registerNativeHookRelayInternal(
   if (expiresAtMs === undefined) {
     throw new Error("Native hook relay expiry is outside the supported Date range");
   }
-  const allowedEvents = normalizeNativeHookRelayEvents(params.allowedEvents);
+  const allowedEvents = params.allowedEvents?.length
+    ? [...new Set(params.allowedEvents)]
+    : NATIVE_HOOK_RELAY_EVENTS;
   const stateDbPath = resolveOpenClawStateSqlitePath();
   let partialRegistration: ActiveNativeHookRelayRegistration | undefined;
   const policy = prepareNativeHookRelayMcpPolicy(

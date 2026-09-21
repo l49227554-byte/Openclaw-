@@ -1,6 +1,7 @@
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { invokeNativeHookRelay } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
@@ -10,15 +11,23 @@ import {
 } from "./host-capability.test-support.js";
 import { buildCodexNativeHookRelayId } from "./native-hook-relay.js";
 import {
+  flattenCodexDynamicToolFunctions,
+  type CodexThreadStartParams,
+  type CodexTurnStartParams,
+} from "./protocol.js";
+import {
   createCodexRuntimePlanFixture,
   createParams,
+  createRuntimeDynamicTool,
   createStartedThreadHarness,
   runCodexAppServerAttempt,
+  setCodexAppServerClientFactoryForTest,
   setCodexTestModelSupportsTools,
   setupRunAttemptTestHooks,
   tempDir,
   threadStartResult,
   turnStartResult,
+  userMessage,
 } from "./run-attempt-test-harness.js";
 import { sandboxExecServerRegistry } from "./sandbox-exec-server-registry.js";
 import {
@@ -27,6 +36,11 @@ import {
 } from "./sandbox-exec-server.js";
 import { createSandboxContext, openSocket, rpc } from "./sandbox-exec-server.test-helpers.js";
 import { readCodexAppServerBinding } from "./session-binding.test-helpers.js";
+import {
+  appendSqliteHistoryMessage,
+  attachSqliteSessionTarget,
+  readTranscriptMessagesByIdentity,
+} from "./sqlite-session.test-helpers.js";
 
 setupRunAttemptTestHooks();
 
@@ -48,7 +62,6 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
   const threadId = "qualification-shared-thread";
   const terminals = new Map<string, Terminal>();
   const terminated: Actor[] = [];
-  const settled: Actor[] = [];
   const activeRuns: Array<{ controller: AbortController; run: Promise<unknown> }> = [];
   const events: Array<{ stream: string; data: Record<string, unknown> }> = [];
   const turns: string[] = [];
@@ -251,7 +264,6 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
     terminals.set(processId, terminal);
     void child.closed.then(async () => {
       terminal.alive = false;
-      settled.push(actor);
       await harness.notify({
         method: "item/completed",
         params: {
@@ -315,7 +327,6 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
   return {
     begin,
     terminated,
-    settled,
     events,
     harness,
     sessionFile,
@@ -345,6 +356,39 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
   };
 }
 
+function createSandboxPolicyRun() {
+  const params = createParams(
+    path.join(tempDir, "managed-policy.jsonl"),
+    path.join(tempDir, "workspace"),
+  );
+  const controller = new AbortController();
+  const preparation: string[] = [];
+  const exec = createRuntimeDynamicTool("exec");
+  params.hostCapabilities = createCodexTestHostCapabilities({
+    retainSourceAuthority: () => ({
+      signal: controller.signal,
+      assertCurrent: () => controller.signal.throwIfAborted(),
+      release: () => {},
+    }),
+  });
+  params.sandbox = {
+    ...createSandboxContext({}),
+    sessionKey: params.sessionKey!,
+    workspaceDir: params.workspaceDir,
+    agentWorkspaceDir: params.workspaceDir,
+    runtimeId: `managed-policy-${path.basename(tempDir)}`,
+  };
+  params.abortSignal = controller.signal;
+  params.runtimePlan = createCodexRuntimePlanFixture();
+  setCodexTestModelSupportsTools(params, true);
+  const selectTools = vi.fn(() => {
+    preparation.push("tools");
+    return [exec];
+  });
+  setCodexTestToolFactory(params, selectTools);
+  return { params, controller, exec, preparation, selectTools };
+}
+
 describe("native background process source authority", () => {
   it("reports failed real-child settlement and preserves its command custody", async () => {
     const f = await fixture({ failSettlement: true });
@@ -353,6 +397,7 @@ describe("native background process source authority", () => {
       await f.retainSecondConsumer();
       await guest.complete();
       guest.revoke();
+      await expect(guest.terminal.settled).rejects.toThrow("fixture backend settlement failed");
       await vi.waitFor(() =>
         expect(f.events).toContainEqual(
           expect.objectContaining({
@@ -374,39 +419,8 @@ describe("native background process source authority", () => {
       const staff = await f.begin("maintainer");
       expect(staff.terminal.alive).toBe(true);
       expect(readAttemptTerminal(await staff.complete()).aborted).toBe(false);
-      await staff.terminal.closed;
+      await staff.terminal.settled;
       expect(staff.terminal.alive).toBe(false);
-      expect(f.terminated).toEqual([]);
-    } finally {
-      await f.dispose();
-    }
-  });
-
-  it("normal completion preserves background work while an independent sandbox consumer remains", async () => {
-    const f = await fixture();
-    try {
-      const staff = await f.begin("maintainer");
-      await f.retainSecondConsumer();
-      expect(readAttemptTerminal(await staff.complete()).aborted).toBe(false);
-      expect(staff.terminal.alive).toBe(true);
-      expect(f.terminated).toEqual([]);
-    } finally {
-      await f.dispose();
-    }
-  });
-
-  it("source cancellation interrupts the exact guest foreground turn and joins its process", async () => {
-    const f = await fixture();
-    try {
-      const guest = await f.begin("guest");
-      guest.revoke();
-      expect(readAttemptTerminal(await guest.run).aborted).toBe(true);
-      expect(f.harness.requests).toContainEqual({
-        method: "turn/interrupt",
-        params: { threadId: f.threadId, turnId: guest.turnId },
-      });
-      expect(guest.terminal.alive).toBe(false);
-      expect(f.settled).toEqual(["guest"]);
       expect(f.terminated).toEqual([]);
     } finally {
       await f.dispose();
@@ -434,7 +448,6 @@ describe("native background process source authority", () => {
       });
       expect(guest.terminal.alive).toBe(false);
       await guest.terminal.settled;
-      expect(f.settled).toEqual(["guest"]);
       expect(f.terminated).toEqual([]);
       expect(staff.terminal.alive).toBe(true);
     } finally {
@@ -447,16 +460,21 @@ describe("native background process source authority", () => {
     try {
       const staff = await f.begin("maintainer");
       await f.retainSecondConsumer();
-      await staff.complete();
+      expect(readAttemptTerminal(await staff.complete()).aborted).toBe(false);
       expect(staff.terminal.alive).toBe(true);
+      expect(f.terminated).toEqual([]);
       const guest = await f.begin("guest");
       expect((await readCodexAppServerBinding(f.sessionFile))?.threadId).toBe(f.threadId);
       expect(f.harness.requests.filter(({ method }) => method === "thread/start")).toHaveLength(1);
       expect(staff.terminal.alive).toBe(true);
       guest.revoke();
       expect(readAttemptTerminal(await guest.run).aborted).toBe(true);
+      expect(f.harness.requests).toContainEqual({
+        method: "turn/interrupt",
+        params: { threadId: f.threadId, turnId: guest.turnId },
+      });
+      await guest.terminal.settled;
       expect(guest.terminal.alive).toBe(false);
-      expect(f.settled, "Only guest-authorized background work may terminate").toEqual(["guest"]);
       expect(f.terminated).toEqual([]);
       expect(staff.terminal.alive).toBe(true);
     } finally {
@@ -471,13 +489,248 @@ describe("native background process source authority", () => {
       await guest.complete();
       const staff = await f.begin("maintainer");
       guest.revoke();
-      await vi.waitFor(() => expect(guest.terminal.alive).toBe(false));
+      await guest.terminal.settled;
+      expect(guest.terminal.alive).toBe(false);
       expect(staff.terminal.alive).toBe(true);
-      expect(f.settled).toEqual(["guest"]);
       expect(f.harness.requests.some(({ method }) => method === "turn/interrupt")).toBe(false);
       expect(readAttemptTerminal(await staff.complete()).aborted).toBe(false);
     } finally {
       await f.dispose();
+    }
+  });
+});
+
+describe("managed-only Codex sandbox compatibility", () => {
+  it.each(["fresh", "native catalog upgrade"] as const)(
+    "executes the advertised sandbox alias under managed-only policy (%s)",
+    async (mode) => {
+      const f = createSandboxPolicyRun();
+      const options = {
+        pluginConfig: { appServer: { experimental: { sandboxExecServer: true } } },
+      };
+      const savedText = "Keep this saved conversation across the native catalog change.";
+      let priorMessages: Array<Record<string, unknown>> = [];
+      const createPolicyHarness = (managedOnly: boolean, threadId: string) => {
+        const started = createDeferred<void>();
+        const harness = createStartedThreadHarness(async (method) => {
+          if (method === "configRequirements/read") {
+            f.preparation.push(managedOnly ? "managed" : "allowed");
+            return { requirements: { allowManagedHooksOnly: managedOnly } };
+          }
+          if (method === "thread/start") {
+            return threadStartResult(threadId, { cwd: f.params.workspaceDir });
+          }
+          if (method === "thread/read") {
+            return {
+              thread: {
+                ...threadStartResult("native-original").thread,
+                status: { type: "notLoaded" },
+                turns: [],
+              },
+            };
+          }
+          if (method === "turn/start") {
+            started.resolve();
+          }
+          return undefined;
+        });
+        vi.spyOn(harness.client, "getInstanceId").mockReturnValue(`${threadId}-client`);
+        return { ...harness, started: started.promise };
+      };
+      let harness = createPolicyHarness(mode === "fresh", "native-original");
+      let run: ReturnType<typeof runCodexAppServerAttempt> | undefined;
+      try {
+        if (mode === "native catalog upgrade") {
+          await attachSqliteSessionTarget(
+            f.params,
+            path.join(tempDir, "managed-history.sqlite"),
+            f.params.sessionId,
+          );
+          await appendSqliteHistoryMessage(f.params, userMessage(savedText, 1));
+          priorMessages = await readTranscriptMessagesByIdentity(f.params);
+          run = runCodexAppServerAttempt(f.params, options);
+          await Promise.race([harness.started, run]);
+          await nextTurn();
+          expect(
+            harness.requests.find(({ method }) => method === "thread/start")?.params,
+          ).toMatchObject({
+            config: { "features.code_mode": true },
+            environments: [expect.objectContaining({ environmentId: expect.any(String) })],
+          });
+          await harness.completeTurn({ threadId: "native-original", turnId: "turn-1" });
+          expect(readAttemptTerminal(await run).aborted).toBe(false);
+          expect((await readCodexAppServerBinding(f.params.sessionFile))?.threadId).toBe(
+            "native-original",
+          );
+          harness.close();
+          harness = createPolicyHarness(true, "managed-fallback");
+          f.params.runId = "managed-policy-upgrade";
+          f.preparation.length = 0;
+        }
+        run = runCodexAppServerAttempt(f.params, options);
+        await Promise.race([harness.started, run]);
+        await nextTurn();
+        const start = harness.requests.find(({ method }) => method === "thread/start")
+          ?.params as CodexThreadStartParams;
+        const turn = harness.requests.find(({ method }) => method === "turn/start")
+          ?.params as CodexTurnStartParams;
+        expect(start).toMatchObject({
+          environments: [],
+          config: { "features.code_mode": false, "features.code_mode_only": false },
+        });
+        expect(turn.environments).toEqual([]);
+        expect(f.preparation.indexOf("managed")).toBeGreaterThanOrEqual(0);
+        expect(f.preparation.indexOf("managed")).toBeLessThan(f.preparation.indexOf("tools"));
+        const alias = flattenCodexDynamicToolFunctions(start.dynamicTools ?? undefined).find(
+          (tool) => tool.name === "sandbox_exec",
+        );
+        expect(alias).toBeDefined();
+        const response = await harness.handleServerRequest({
+          id: "managed-exec",
+          method: "item/tool/call",
+          params: {
+            threadId: turn.threadId,
+            turnId: "turn-1",
+            callId: "managed-exec",
+            namespace: null,
+            tool: alias!.name,
+            arguments: {},
+          },
+        });
+        expect(response).toMatchObject({
+          success: true,
+          contentItems: [{ type: "inputText", text: "exec done" }],
+        });
+        expect(f.exec.execute).toHaveBeenCalledOnce();
+        if (mode === "native catalog upgrade") {
+          expect(JSON.stringify(turn.input)).toContain(savedText);
+          expect(harness.requests.some(({ method }) => method === "thread/resume")).toBe(false);
+        }
+        await harness.completeTurn({ threadId: turn.threadId, turnId: "turn-1" });
+        expect(readAttemptTerminal(await run).aborted).toBe(false);
+        expect((await readCodexAppServerBinding(f.params.sessionFile))?.threadId).toBe(
+          turn.threadId,
+        );
+        if (mode === "native catalog upgrade") {
+          expect(turn.threadId).toBe("managed-fallback");
+          expect(await readTranscriptMessagesByIdentity(f.params)).toEqual(
+            expect.arrayContaining(priorMessages),
+          );
+        }
+      } finally {
+        f.controller.abort(new Error("managed policy fixture cleanup"));
+        await Promise.allSettled([run]);
+        harness.close();
+      }
+    },
+  );
+
+  it.each(["same client", "replacement client"] as const)(
+    "revalidates managed hook policy at actual startup (%s)",
+    async (mode) => {
+      const f = createSandboxPolicyRun();
+      let reads = 0;
+      const planning = createStartedThreadHarness(async (method) => {
+        if (method !== "configRequirements/read") {
+          return undefined;
+        }
+        const managed = mode === "same client" && reads++ > 0;
+        f.preparation.push(managed ? "managed" : "allowed");
+        return { requirements: { allowManagedHooksOnly: managed } };
+      });
+      const startup =
+        mode === "same client"
+          ? planning
+          : createStartedThreadHarness(async (method) => {
+              if (method !== "configRequirements/read") {
+                return undefined;
+              }
+              f.preparation.push("managed");
+              return { requirements: { allowManagedHooksOnly: true } };
+            });
+      vi.spyOn(planning.client, "getInstanceId").mockReturnValue("planning-client");
+      if (startup !== planning) {
+        vi.spyOn(startup.client, "getInstanceId").mockReturnValue("startup-client");
+      }
+      let acquisitions = 0;
+      setCodexAppServerClientFactoryForTest(async () =>
+        acquisitions++ === 0 ? planning.client : startup.client,
+      );
+      try {
+        await expect(
+          runCodexAppServerAttempt(f.params, {
+            pluginConfig: { appServer: { experimental: { sandboxExecServer: true } } },
+          }),
+        ).rejects.toThrow(/managed-only hooks.*OpenClaw native hook relay/i);
+        expect(acquisitions).toBeGreaterThanOrEqual(2);
+        expect(f.preparation.indexOf("allowed")).toBeLessThan(f.preparation.indexOf("tools"));
+        expect(f.preparation.indexOf("tools")).toBeLessThan(f.preparation.indexOf("managed"));
+        expect(
+          [...planning.requests, ...startup.requests].filter(({ method }) =>
+            ["thread/start", "thread/resume", "turn/start"].includes(method),
+          ),
+        ).toEqual([]);
+        expect(f.exec.execute).not.toHaveBeenCalled();
+      } finally {
+        f.controller.abort();
+        planning.close();
+        startup.close();
+      }
+    },
+  );
+
+  it("bounds the early managed-hook policy read through the real native request owner", async () => {
+    const f = createSandboxPolicyRun();
+    const entered = createDeferred<void>();
+    const pending = createDeferred<{ requirements: null }>();
+    const harness = createStartedThreadHarness(
+      async (method) => {
+        if (method === "configRequirements/read") {
+          entered.resolve();
+          return await pending.promise;
+        }
+        return undefined;
+      },
+      { persistedThreads: [] },
+    );
+    await harness.client.initialize();
+    setCodexAppServerClientFactoryForTest(async () => harness.client);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let outcome: { error?: unknown; completed?: true } | undefined;
+    const run = runCodexAppServerAttempt(f.params, {
+      pluginConfig: {
+        appServer: { requestTimeoutMs: 100, experimental: { sandboxExecServer: true } },
+      },
+    });
+    const settled = run.then(
+      () => {
+        outcome = { completed: true };
+      },
+      (error: unknown) => {
+        outcome = { error };
+      },
+    );
+    try {
+      await Promise.race([entered.promise, settled]);
+      await vi.advanceTimersByTimeAsync(101);
+      await nextTurn();
+      expect(outcome).toMatchObject({
+        error: expect.objectContaining({
+          message: expect.stringMatching(/configRequirements\/read.*timed out/i),
+        }),
+      });
+      expect(f.selectTools).not.toHaveBeenCalled();
+      expect(
+        harness.requests.filter(({ method }) =>
+          ["thread/start", "thread/resume", "turn/start"].includes(method),
+        ),
+      ).toEqual([]);
+    } finally {
+      f.controller.abort();
+      pending.resolve({ requirements: null });
+      await settled;
+      vi.useRealTimers();
+      harness.close();
     }
   });
 });

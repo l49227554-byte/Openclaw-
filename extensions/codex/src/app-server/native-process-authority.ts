@@ -81,11 +81,14 @@ export class CodexNativeProcessClient {
     });
     client.addCloseHandler(() => {
       this.closed = true;
+      const owners = new Set<CodexNativeProcessAuthority>();
       for (const commands of this.threads.values()) {
         for (const command of commands.values()) {
-          this.closeAdmission(command);
-          command.owner.cancelClient(this);
+          owners.add(command.owner);
         }
+      }
+      for (const owner of owners) {
+        owner.cancelClient(this);
       }
     });
   }

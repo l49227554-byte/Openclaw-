@@ -1,4 +1,5 @@
 /** Registers shutdown completion deadlines in the original run-loop signal fixture. */
+import { performance } from "node:perf_hooks";
 import { expect, it, vi, type Mock } from "vitest";
 import { LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS } from "../../daemon/launchd-plist.js";
 import {
@@ -97,6 +98,7 @@ export function registerShutdownCompletionTests({
           throw new Error("close owner failed");
         });
         vi.useFakeTimers();
+        const clock = vi.spyOn(performance, "now").mockImplementation(() => Date.now());
         try {
           captureSignal("SIGTERM")();
           await vi.advanceTimersByTimeAsync(deadlineMs - 1);
@@ -113,6 +115,7 @@ export function registerShutdownCompletionTests({
             { shutdownStep: "gateway-server-close" },
           );
         } finally {
+          clock.mockRestore();
           vi.clearAllTimers();
           vi.useRealTimers();
         }
@@ -210,6 +213,48 @@ export function registerShutdownCompletionTests({
           `log flush did not settle within ${timeoutMs}ms; continuing shutdown`,
         );
       } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("retains the restart deadline when a managed update arrives after final cleanup fails", async () => {
+    vi.clearAllMocks();
+    process.env.OPENCLAW_SUPERVISOR_MODE = "external";
+    consumeGatewayRestartIntent.mockReturnValueOnce({ force: true });
+    restartGatewayProcessWithFreshPid.mockReturnValueOnce({ mode: "supervised" });
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const { close, start, runtime, exited } = await createSignaledLoopHarness(undefined, true);
+      flushLogger.mockRejectedValueOnce(new Error("shutdown cleanup failed"));
+      const restartSignal = captureSignal("SIGUSR2");
+      vi.useFakeTimers();
+      try {
+        restartSignal();
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(close).toHaveBeenCalledOnce();
+        expect(gatewayLog.error).toHaveBeenCalledWith(
+          "gateway lifecycle completion failed: shutdown cleanup failed",
+        );
+        consumeGatewayRestartIntent.mockReturnValueOnce({
+          force: true,
+          reason: "update.run",
+          successorOwner: managedUpdateSuccessorOwner,
+        });
+        restartSignal();
+        await vi.advanceTimersByTimeAsync(314_999);
+        expect(runtime.exit).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
+        await expect(exited).resolves.toBe(1);
+        expect(cancelManagedServiceUpdateHandoff).toHaveBeenCalledExactlyOnceWith(
+          managedUpdateSuccessorOwner,
+        );
+        expect(requestManagedServiceUpdateHandoffPark).not.toHaveBeenCalled();
+        expect(start).toHaveBeenCalledOnce();
+        expect(armShutdownHardExitWatchdog).toHaveBeenCalledOnce();
+        expect(cancelShutdownHardExitWatchdog).not.toHaveBeenCalled();
+      } finally {
+        vi.clearAllTimers();
         vi.useRealTimers();
       }
     });

@@ -118,10 +118,12 @@ async function inspectScratchPayload(
 }
 
 async function cleanupBackupScratchDirectory(
-  directory: string,
-  boundary: Root | undefined,
+  initialDirectory: string,
+  initialBoundary: Root | undefined,
   log?: (message: string) => void,
 ): Promise<string | undefined> {
+  let directory = initialDirectory;
+  let boundary = initialBoundary;
   try {
     if (boundary && !path.basename(directory).startsWith(retiredPrefix)) {
       const expected = await boundary.stat(".");

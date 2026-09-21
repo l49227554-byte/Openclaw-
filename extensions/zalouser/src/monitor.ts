@@ -25,7 +25,7 @@ import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import {
-  DEFAULT_GROUP_HISTORY_LIMIT,
+  resolveGroupHistoryLimit,
   type HistoryEntry,
   createChannelHistoryWindow,
 } from "openclaw/plugin-sdk/reply-history";
@@ -812,11 +812,8 @@ export async function monitorZalouserProvider(
   });
 
   const core = getZalouserRuntime();
-  const historyLimit = Math.max(
-    0,
-    account.config.historyLimit ??
-      config.messages?.groupChat?.historyLimit ??
-      DEFAULT_GROUP_HISTORY_LIMIT,
+  const historyLimit = resolveGroupHistoryLimit(
+    account.config.historyLimit ?? config.messages?.groupChat?.historyLimit,
   );
   const groupHistories = new Map<string, HistoryEntry[]>();
 

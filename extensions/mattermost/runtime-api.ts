@@ -59,6 +59,7 @@ export { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 // code should use createChannelHistoryWindow.
 export {
   DEFAULT_GROUP_HISTORY_LIMIT,
+  resolveGroupHistoryLimit,
   createChannelHistoryWindow,
   buildPendingHistoryContextFromMap,
   clearHistoryEntriesIfEnabled,

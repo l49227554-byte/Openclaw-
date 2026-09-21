@@ -5,7 +5,7 @@ import {
 import { fanInChannelIngressLifecycles } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { resolveChannelContextVisibilityMode } from "openclaw/plugin-sdk/context-visibility-runtime";
 import {
-  DEFAULT_GROUP_HISTORY_LIMIT,
+  resolveGroupHistoryLimit,
   createChannelHistoryWindow,
   type HistoryEntry,
 } from "openclaw/plugin-sdk/reply-history";
@@ -53,11 +53,8 @@ export function createMSTeamsMessageHandler(deps: MSTeamsMessageHandlerDeps) {
     cfg,
     channel: "msteams",
   });
-  const historyLimit = Math.max(
-    0,
-    msteamsCfg?.historyLimit ??
-      cfg.messages?.groupChat?.historyLimit ??
-      DEFAULT_GROUP_HISTORY_LIMIT,
+  const historyLimit = resolveGroupHistoryLimit(
+    msteamsCfg?.historyLimit ?? cfg.messages?.groupChat?.historyLimit,
   );
   const conversationHistories = new Map<string, HistoryEntry[]>();
   const readConfig = createRuntimeConfigReader(cfg);

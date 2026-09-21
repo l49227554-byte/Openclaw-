@@ -2294,6 +2294,22 @@ describe("legacy migrate mention routing", () => {
     ]);
   });
 
+  it("removes JSON integer-maximum group history windows", () => {
+    const res = migrateLegacyConfigForTest({
+      messages: {
+        groupChat: {
+          historyLimit: Number.MAX_SAFE_INTEGER,
+          visibleReplies: "automatic",
+        },
+      },
+    });
+
+    expect(res.config?.messages?.groupChat).toEqual({ visibleReplies: "automatic" });
+    expect(res.changes).toEqual([
+      "Removed unbounded messages.groupChat.historyLimit; JSON integer maximum is not a prompt history window.",
+    ]);
+  });
+
   it("moves channels.telegram.requireMention into the wildcard group default", () => {
     const res = migrateLegacyConfigForTest({
       channels: {

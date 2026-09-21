@@ -448,6 +448,44 @@ describe("telegram doctor", () => {
     ]);
   });
 
+  it("removes JSON integer-maximum Telegram history windows", () => {
+    const normalize = telegramDoctor.normalizeCompatibilityConfig;
+    if (!normalize) {
+      throw new Error("expected telegram compatibility normalizer");
+    }
+
+    const result = normalize({
+      cfg: {
+        channels: {
+          telegram: {
+            historyLimit: Number.MAX_SAFE_INTEGER,
+            dmHistoryLimit: Number.MAX_SAFE_INTEGER,
+            accounts: {
+              work: {
+                historyLimit: Number.MAX_SAFE_INTEGER,
+                dms: {
+                  "42": { historyLimit: Number.MAX_SAFE_INTEGER },
+                },
+              },
+            },
+          },
+        },
+      } as never,
+    });
+
+    const telegram = result.config.channels?.telegram;
+    expect(Object.hasOwn(telegram ?? {}, "historyLimit")).toBe(false);
+    expect(Object.hasOwn(telegram ?? {}, "dmHistoryLimit")).toBe(false);
+    expect(Object.hasOwn(telegram?.accounts?.work ?? {}, "historyLimit")).toBe(false);
+    expect(Object.hasOwn(telegram?.accounts?.work?.dms?.["42"] ?? {}, "historyLimit")).toBe(false);
+    expect(result.changes).toEqual([
+      "Removed unbounded channels.telegram.accounts.work.historyLimit; JSON integer maximum is not a prompt history window.",
+      "Removed unbounded channels.telegram.accounts.work.dms.42.historyLimit; JSON integer maximum is not a prompt history window.",
+      "Removed unbounded channels.telegram.historyLimit; JSON integer maximum is not a prompt history window.",
+      "Removed unbounded channels.telegram.dmHistoryLimit; JSON integer maximum is not a prompt history window.",
+    ]);
+  });
+
   it("finds invalid allowFrom entries across scopes", async () => {
     const warnings = await collectPreviewWarnings({
       channels: {

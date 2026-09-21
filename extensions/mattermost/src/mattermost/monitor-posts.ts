@@ -43,7 +43,7 @@ import type { MattermostMonitorContext } from "./monitor-types.js";
 import type { MattermostEventPayload } from "./monitor-websocket.js";
 import {
   createChannelHistoryWindow,
-  DEFAULT_GROUP_HISTORY_LIMIT,
+  resolveGroupHistoryLimit,
   logInboundDrop,
   type HistoryEntry,
 } from "./runtime-api.js";
@@ -60,11 +60,8 @@ export function createMattermostPostHandler(monitor: MattermostMonitorContext) {
   });
   const { resolveMattermostMedia, resolveUserInfo } = resources;
   const channelHistories = new Map<string, HistoryEntry[]>();
-  const historyLimit = Math.max(
-    0,
-    account.config.historyLimit ??
-      cfg.messages?.groupChat?.historyLimit ??
-      DEFAULT_GROUP_HISTORY_LIMIT,
+  const historyLimit = resolveGroupHistoryLimit(
+    account.config.historyLimit ?? cfg.messages?.groupChat?.historyLimit,
   );
 
   const recoverThread = createMattermostThreadBackfill({ monitor, channelHistories, historyLimit });

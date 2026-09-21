@@ -29,6 +29,7 @@ export { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
 // code should use createChannelHistoryWindow.
 export {
   DEFAULT_GROUP_HISTORY_LIMIT,
+  resolveGroupHistoryLimit,
   createChannelHistoryWindow,
 } from "openclaw/plugin-sdk/reply-history";
 export { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-targets";

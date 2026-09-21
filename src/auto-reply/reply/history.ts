@@ -5,6 +5,36 @@ export const HISTORY_CONTEXT_MARKER = "[Chat messages since your last reply - fo
 export const RECENT_HISTORY_CONTEXT_MARKER = "[Recent chat messages - for context]";
 export const CURRENT_MESSAGE_MARKER = "[Current message - respond to this]";
 export const DEFAULT_GROUP_HISTORY_LIMIT = 50;
+/** Hard cap for prompt-injected history windows. JSON-schema integer maximum is not a window. */
+export const MAX_PROMPT_HISTORY_LIMIT = 200;
+
+/** True when a stored integer is the JSON-schema max, not an operator window size. */
+export function isSchemaMaxHistoryLimit(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= Number.MAX_SAFE_INTEGER;
+}
+
+/** Bounds a configured prompt history window, treating schema-max as unset. */
+export function resolvePromptHistoryLimit(
+  configured: number | undefined,
+  fallback: number,
+): number {
+  if (typeof configured !== "number" || !Number.isFinite(configured)) {
+    return fallback;
+  }
+  if (configured <= 0) {
+    return 0;
+  }
+  const limit = Math.trunc(configured);
+  if (isSchemaMaxHistoryLimit(limit)) {
+    return fallback;
+  }
+  return Math.min(limit, MAX_PROMPT_HISTORY_LIMIT);
+}
+
+/** Resolves group chat historyLimit for prompt injection. */
+export function resolveGroupHistoryLimit(configured?: number): number {
+  return resolvePromptHistoryLimit(configured, DEFAULT_GROUP_HISTORY_LIMIT);
+}
 
 /** Maximum number of group history keys to retain (LRU eviction when exceeded). */
 const MAX_HISTORY_KEYS = 1000;

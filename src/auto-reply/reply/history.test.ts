@@ -1,6 +1,13 @@
 // Tests reply history loading, trimming, and rendering for prompt context.
 import { describe, expect, it } from "vitest";
-import { normalizeHistoryMediaEntries, recordPendingHistoryEntryWithMedia } from "./history.js";
+import {
+  DEFAULT_GROUP_HISTORY_LIMIT,
+  MAX_PROMPT_HISTORY_LIMIT,
+  normalizeHistoryMediaEntries,
+  recordPendingHistoryEntryWithMedia,
+  resolveGroupHistoryLimit,
+  resolvePromptHistoryLimit,
+} from "./history.js";
 import type { HistoryEntry } from "./history.types.js";
 
 describe("history media recording", () => {
@@ -211,5 +218,16 @@ describe("history media recording", () => {
         ],
       },
     ]);
+  });
+});
+
+describe("prompt history limit resolution", () => {
+  it("treats JSON integer maximum as unset and keeps explicit zero off", () => {
+    expect(resolveGroupHistoryLimit(undefined)).toBe(DEFAULT_GROUP_HISTORY_LIMIT);
+    expect(resolveGroupHistoryLimit(0)).toBe(0);
+    expect(resolveGroupHistoryLimit(12)).toBe(12);
+    expect(resolveGroupHistoryLimit(Number.MAX_SAFE_INTEGER)).toBe(DEFAULT_GROUP_HISTORY_LIMIT);
+    expect(resolvePromptHistoryLimit(Number.MAX_SAFE_INTEGER, 10)).toBe(10);
+    expect(resolvePromptHistoryLimit(5000, 10)).toBe(MAX_PROMPT_HISTORY_LIMIT);
   });
 });

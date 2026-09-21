@@ -60,7 +60,10 @@ describe("applyPatch through directory aliases", () => {
             ? "*** Begin Patch\n*** Add File: alias/new.txt\n+new\n*** End Patch"
             : "*** Begin Patch\n*** Update File: source.txt\n*** Move to: alias/new.txt\n@@\n-original\n+new\n*** End Patch";
 
-        await expect(applyPatch(input, { cwd: dir })).rejects.toThrow(/symlink/i);
+        await expect(applyPatch(input, { cwd: dir })).rejects.toMatchObject({
+          name: "FsSafeError",
+          code: "symlink",
+        });
 
         await expect(fs.readdir(realDir)).resolves.toEqual([]);
         await expect(fs.readFile(path.join(dir, "source.txt"), "utf8")).resolves.toBe("original\n");

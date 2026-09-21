@@ -809,7 +809,7 @@ describe("applyPatch", () => {
 *** End Patch`;
 
         await expect(applyPatch(patch, { cwd: dir })).rejects.toThrow(
-          /path alias under sandbox root|symlink escapes sandbox root/i,
+          /symlink escapes sandbox root/i,
         );
         await expect(fs.readFile(sourcePath, "utf8")).resolves.toBe("before\n");
         await expectMissingPath(fs.readFile(outsideTarget, "utf8"));

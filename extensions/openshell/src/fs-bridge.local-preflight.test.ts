@@ -15,9 +15,12 @@ it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
     });
     const lockedDir = path.join(workspace.dir, "locked");
     await fs.mkdir(lockedDir);
+    const mkdirpRemotePath = vi
+      .fn<OpenShellMirrorBackend["mkdirpRemotePath"]>()
+      .mockResolvedValue(undefined);
     const backend: OpenShellMirrorBackend = {
       remoteAgentWorkspaceDir: "/agent",
-      mkdirpRemotePath: vi.fn().mockResolvedValue(undefined),
+      mkdirpRemotePath,
       renameRemotePath: vi.fn().mockResolvedValue(undefined),
       removeRemotePath: vi.fn().mockResolvedValue(undefined),
       syncLocalPathToRemote: vi.fn().mockResolvedValue(undefined),
@@ -37,7 +40,7 @@ it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
       await expect(bridge.mkdirp({ filePath: "locked/nested" })).rejects.toMatchObject({
         code: "EACCES",
       });
-      expect(backend.mkdirpRemotePath).not.toHaveBeenCalled();
+      expect(mkdirpRemotePath).not.toHaveBeenCalled();
     } finally {
       await fs.chmod(lockedDir, 0o700);
     }

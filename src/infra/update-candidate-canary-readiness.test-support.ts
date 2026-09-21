@@ -7,7 +7,7 @@ import { expect, it, onTestFinished, vi, type Mock } from "vitest";
 import { startProxy, stopProxy, type ProxyHandle } from "./net/proxy/proxy-lifecycle.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import { FakeChild, stubHealthyGateway } from "./update-candidate-canary.test-support.js";
-import { prepareUpdateCandidateRehearsal } from "./update-candidate-rehearsal.js";
+import * as rehearsals from "./update-candidate-rehearsal.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
 export function expectCanaryReadinessWarning(
@@ -43,12 +43,15 @@ export function registerCanaryReadinessBudgetTests(
   it.each(["gateway-only", "proxy", "block"] as const)(
     "probes the canary with managed proxy mode %s",
     async (loopbackMode) => {
-      const rehearsal = await prepareUpdateCandidateRehearsal({
+      const rehearsal = await rehearsals.prepareUpdateCandidateRehearsal({
         candidateRoot: root(),
         stateDir: root(),
         config: {},
         env: {},
       });
+      const prepare = vi
+        .spyOn(rehearsals, "prepareUpdateCandidateRehearsal")
+        .mockResolvedValueOnce(rehearsal);
       const requests: string[] = [];
       const proxyRequests: string[] = [];
       const server = createServer((request, response) => {
@@ -86,7 +89,6 @@ export function registerCanaryReadinessBudgetTests(
           stateDir: root(),
           config: {},
           env: {},
-          rehearsal,
           timeoutMs: 1_000,
         });
         if (loopbackMode === "gateway-only") {
@@ -124,6 +126,7 @@ export function registerCanaryReadinessBudgetTests(
           expect(proxyRequests).toEqual([]);
         }
       } finally {
+        prepare.mockRestore();
         await stopProxy(handle);
         setGlobalDispatcher(dispatcher);
         vi.unstubAllEnvs();

@@ -595,6 +595,7 @@ function runCiManifestFixture(options: {
   bundledPlanner: boolean;
   nodeTestShards?: Record<string, unknown>[];
   nodeTestGroupsCodec?: boolean;
+  bunTestRuntime?: boolean;
   startupCorpusCoverage?: boolean;
   changedPlannerSource?: string | null;
   changedPlannerDependencies?: string[];
@@ -632,6 +633,13 @@ function runCiManifestFixture(options: {
   try {
     const scriptsDir = path.join(root, "scripts", "lib");
     mkdirSync(scriptsDir, { recursive: true });
+    if (options.bunTestRuntime) {
+      writeFileSync(
+        path.join(scriptsDir, "ci-test-runtime.mts"),
+        `export const ciTestShardRequiresBun = (shard, policy) =>
+          policy !== "node" && shard.configs?.includes("fixture-bun.config.ts");`,
+      );
+    }
     for (const dependency of options.changedPlannerDependencies ?? []) {
       const destination = path.join(root, dependency);
       mkdirSync(path.dirname(destination), { recursive: true });
@@ -13220,6 +13228,56 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       }
     },
     55_000,
+  );
+
+  it.each([
+    { eventName: "pull_request", capability: true, policy: "bun-compatible", bun: true },
+    { eventName: "workflow_dispatch", capability: true, policy: "dual", bun: true },
+    { eventName: "push", capability: true, policy: "node", bun: false },
+    { eventName: "workflow_dispatch", capability: false, policy: "node", bun: false },
+  ] as const)(
+    "routes test runtimes without adding jobs ($eventName, capability=$capability)",
+    ({ eventName, capability, policy, bun }) => {
+      const manifest = runCiManifestFixture({
+        bundledPlanner: true,
+        bunTestRuntime: capability,
+        eventName,
+        nodeTestShards: [
+          {
+            checkName: "runtime-proof",
+            shardName: "runtime-proof",
+            configs: ["fixture-bun.config.ts"],
+            requiresDist: false,
+            runner: "ubuntu-24.04",
+          },
+        ],
+        changedPaths: ["scripts/lib/ci-node-test-plan.mts"],
+      });
+      expect(manifest.status, manifest.output).toBe(0);
+      const rows = JSON.parse(
+        expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "Node test matrix"),
+      ).include;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ test_runtime_policy: policy, requires_bun: bun });
+      const job = readCiWorkflow().jobs["checks-node-core-test-nondist-shard"];
+      const context = {
+        eventName,
+        repository: "openclaw/openclaw",
+        matrix: rows[0],
+        runAttempt: 1,
+      };
+      const setup = job.steps.find((step: WorkflowStep) => step.name === "Setup Node environment");
+      const run = job.steps.find((step: WorkflowStep) => step.name === "Run Node test shard");
+      expect(setup.with["install-bun"]).toBe("false");
+      const bunSetup = job.steps.find(
+        (step: WorkflowStep) => step.name === "Setup pinned Bun test runtime",
+      );
+      expect(bunSetup.uses).toBe("./.ci-harness/.github/actions/setup-test-bun");
+      expect(evaluateWorkflowExpression(`\${{ ${bunSetup.if} }}`, context)).toBe(bun);
+      expect(evaluateWorkflowExpression(run.env.OPENCLAW_CI_TEST_RUNTIME_POLICY, context)).toBe(
+        policy,
+      );
+    },
   );
 
   it("runs the startup corpus once when a canonical PR admits every complete Node file", () => {

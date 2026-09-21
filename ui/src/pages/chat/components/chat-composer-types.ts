@@ -97,7 +97,9 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   fallbackStatus?: FallbackStatus | null;
   progressCard?: ProgressCard | null;
   progressCardIdentity?: string;
-  progressCardInitialLoading?: boolean;
+  progressCardInitiallyCollapsed?: boolean;
+  progressCardInitialRunId?: string | null;
+  progressCardRecoveredRunId?: string;
   progressCardRefresh?: SessionProgressCardRefreshAction;
   gatewayScope?: object;
   runActive?: boolean;

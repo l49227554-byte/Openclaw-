@@ -61,11 +61,6 @@
   max-width: none;
 }
 
-/* Reserve the collapsed card slot without delaying the real composer or transcript. */
-.agent-chat__progress-float--loading {
-  min-height: 44px;
-}
-
 .agent-chat__goal {
   align-self: center;
   display: flex;

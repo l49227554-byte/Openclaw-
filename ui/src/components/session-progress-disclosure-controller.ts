@@ -15,6 +15,9 @@ import {
 export type ComposerProgressRunLifecycle = {
   gatewayScope?: object;
   sessionIdentity?: string;
+  initiallyCollapsed?: boolean;
+  initialRunId?: string | null;
+  recoveredRunId?: string;
   activeRunId?: string | null;
   completedRunId?: string | null;
   readingHistory?: boolean;
@@ -75,6 +78,9 @@ class ProgressDisclosureController {
       ? manualChoicesByGateway.get(this.gatewayScope)?.get(sessionKey)
       : undefined;
     const runId = lifecycle?.activeRunId ?? lifecycle?.completedRunId;
+    const initiallyCollapsed =
+      lifecycle?.initiallyCollapsed === true &&
+      (!runId || runId === lifecycle.initialRunId || runId === lifecycle.recoveredRunId);
     const manualOpen =
       typeof remembered === "object"
         ? remembered.runId === runId
@@ -83,7 +89,8 @@ class ProgressDisclosureController {
         : remembered;
     return resolveProgressDisclosure(undefined, {
       type: "mount",
-      open: initialOpen,
+      open: initialOpen && !initiallyCollapsed,
+      initiallyCollapsed,
       manualOpen,
       activeRunId: lifecycle?.activeRunId ?? null,
       completedRunId: lifecycle?.completedRunId ?? null,
@@ -102,7 +109,12 @@ class ProgressDisclosureController {
     if (lifecycle?.activeRunId && lifecycle.activeRunId !== this.state.activeRunId) {
       this.resetScrollInput();
       this.cancelDrag();
-      this.dispatch({ type: "run", runId: lifecycle.activeRunId, open: !collapseByDefault });
+      this.dispatch({
+        type: "run",
+        runId: lifecycle.activeRunId,
+        open: !collapseByDefault,
+        recovered: lifecycle.recoveredRunId === lifecycle.activeRunId,
+      });
     }
     const readingHistory = lifecycle?.readingHistory === true;
     if (readingHistory !== this.state.readingHistory) {
@@ -139,7 +151,7 @@ class ProgressDisclosureController {
       choices.set(this.sessionKey, this.state.open);
       manualChoicesByGateway.set(this.gatewayScope, choices);
     } else if (
-      (event.type === "extent" || event.type === "clamp") &&
+      (event.type === "extent" || event.type === "clamp" || event.type === "run") &&
       typeof this.state.manualOpen === "number"
     ) {
       const runId = this.state.activeRunId ?? this.state.completedRunId;

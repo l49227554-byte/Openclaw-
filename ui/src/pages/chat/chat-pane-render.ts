@@ -69,7 +69,6 @@ import {
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
 import { hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
 import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
-import { resolveChatProjectionRunId } from "./tool-stream-status.ts";
 import { workspaceResultConflictFromPlacement } from "./workspace-conflict.ts";
 
 export class ChatPane extends ChatPaneLayoutRender {
@@ -84,7 +83,8 @@ export class ChatPane extends ChatPaneLayoutRender {
     }
     const selectedSession = selectedChatSessionRow(state);
     const readTarget = this.resolveChatReadTarget();
-    const progressPresentation = this.progressCardPresentation;
+    const progressRun = this.progressRunPresentation;
+    const progressPresentation = this.progressCardPresentation(progressRun);
     const selectedSessionArchived = this.isCurrentSessionArchived(state);
     const mutationAccess = readChatPaneMutationAccess(
       this.context.gateway.snapshot,
@@ -230,11 +230,7 @@ export class ChatPane extends ChatPaneLayoutRender {
     if (selfUser?.identity?.type === "profile") {
       this.presentationUserId = selfUser.identity.id;
     }
-    const projectionRunId = resolveChatProjectionRunId({
-      localRunId: state.chatRunId,
-      activeRunIds: selectedSession?.activeRunIds,
-      queue: state.chatQueue,
-    });
+    const projectionRunId = progressRun.runId;
     const historyHasMore = catalogKey
       ? Boolean(this.catalogCursor)
       : state.chatHistoryPagination.hasMore;
@@ -415,8 +411,10 @@ export class ChatPane extends ChatPaneLayoutRender {
       providerPolicyNotice: catalogKey ? null : state.providerPolicyNotice,
       progressCard: progressPresentation?.card ?? null,
       progressCardIdentity: progressPresentation?.identity,
+      progressCardInitiallyCollapsed: progressPresentation?.initiallyCollapsed,
+      progressCardInitialRunId: progressPresentation?.initialRunId,
+      progressCardRecoveredRunId: progressRun.recoveredRunId,
       gatewayScope: gatewayPresentationScope(this.context.gateway),
-      progressCardInitialLoading: this.progressCardInitialLoading,
       progressCardRefresh,
       collapseTaskProgress: state.settings.chatCollapseTaskProgress === true,
       readingHistory: state.chatReadingHistory,

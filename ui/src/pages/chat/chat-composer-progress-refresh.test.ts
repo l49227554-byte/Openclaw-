@@ -1,10 +1,11 @@
 /* @vitest-environment jsdom */
-import { html, render } from "lit";
+import { html, nothing, render } from "lit";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   renderComposerFixture as renderComposer,
   resetComposerFixture,
 } from "./chat-composer.test-support.ts";
+import { renderChatComposer } from "./components/chat-composer.ts";
 afterEach(() => resetComposerFixture());
 
 describe("progress card refresh admission", () => {
@@ -42,4 +43,43 @@ describe("progress card refresh admission", () => {
       expect(view.props.queue).toEqual([]);
     },
   );
+});
+
+it("keeps late disclosure stable through refresh states without overriding a manual choice", async () => {
+  const onRefresh = vi.fn();
+  const card = {
+    sessionKey: "agent:main:work",
+    revision: 1,
+    updatedAt: 1,
+    markdown: "Late progress",
+  };
+  const view = renderComposer({
+    progressCard: card,
+    progressCardInitiallyCollapsed: true,
+    progressCardRefresh: { onRefresh },
+  });
+  onTestFinished(() => {
+    render(nothing, view.container);
+  });
+  const details = view.container.querySelector<HTMLDetailsElement>(
+    ".session-progress-card--composer",
+  )!;
+  expect(details.open).toBe(false);
+  const writes = vi.spyOn(details, "open", "set");
+  view.container.querySelector<HTMLButtonElement>(".session-progress-card__refresh")!.click();
+  expect(onRefresh).toHaveBeenCalledExactlyOnceWith(card);
+  for (const state of ["pending", "failed", "timeout", "updated"] as const) {
+    view.props.progressCardRefresh = { onRefresh, state };
+    render(renderChatComposer(view.props), view.container);
+    await Promise.resolve();
+    expect(details.open).toBe(false);
+  }
+  expect(writes.mock.calls.every(([open]) => !open)).toBe(true);
+  details.querySelector("summary")!.click();
+  expect(details.open).toBe(true);
+  view.props.progressCardRefresh = { onRefresh, state: "pending" };
+  render(renderChatComposer(view.props), view.container);
+  await Promise.resolve();
+  expect(details.open).toBe(true);
+  expect(view.props.onSend).not.toHaveBeenCalled();
 });

@@ -1,6 +1,8 @@
 /* @vitest-environment jsdom */
 
 import { describe, expect, it, vi } from "vitest";
+import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
+import { createInitializationContext, createRenderTestChatPane } from "./chat-pane.test-support.ts";
 import * as chatThread from "./chat-thread.ts";
 import { createTestTranscript } from "./chat-view.test-helpers.ts";
 import { renderChatThread } from "./components/chat-thread.ts";
@@ -40,6 +42,44 @@ describe("resolveChatProjectionRunId", () => {
 });
 
 describe("transcript run identity", () => {
+  it("marks outbox-only recovery without misclassifying a new local run", () => {
+    const pane = createRenderTestChatPane();
+    const state = pane.initialize(createInitializationContext());
+    state.sessionKey = "agent:main:main";
+    state.sessions.reconcile(
+      {
+        key: state.sessionKey,
+        kind: "direct",
+        updatedAt: 1,
+        hasActiveRun: true,
+        activeRunIds: ["restored"],
+      },
+      createSessionsListResult().defaults,
+    );
+    state.sessionsResult = state.sessions.state.result;
+    state.chatQueue = [
+      {
+        id: "pending",
+        text: "Reconnect",
+        createdAt: 1,
+        sendRunId: "restored",
+        sendState: "waiting-reconnect",
+      },
+    ];
+    pane.render();
+    expect(pane.chatProps).toMatchObject({
+      runId: "restored",
+      progressCardRecoveredRunId: "restored",
+    });
+    state.chatRecoveredRunId = "restored";
+    state.chatRunId = "new-local";
+    pane.render();
+    expect(pane.chatProps).toMatchObject({
+      runId: "new-local",
+      progressCardRecoveredRunId: undefined,
+    });
+  });
+
   it("does not project a session row's first active run without an explicit run id", () => {
     const build = vi.spyOn(chatThread, "buildCachedChatItems").mockReturnValue([]);
 

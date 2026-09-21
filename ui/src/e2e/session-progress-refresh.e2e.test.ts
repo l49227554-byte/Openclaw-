@@ -81,7 +81,12 @@ suite.define(() => {
         const card = page.locator(".session-progress-card--composer");
         await card.waitFor();
         await waitForChatScrollIdle(page);
-        if (collapsed) {
+        // This suite tests refresh in explicit disclosure states, not the
+        // first-arrival default (which may legitimately be late/collapsed).
+        const initiallyOpen = await card.evaluate(
+          (element) => (element as HTMLDetailsElement).open,
+        );
+        if (initiallyOpen !== !collapsed) {
           await card.locator("summary").click();
         }
         await expect

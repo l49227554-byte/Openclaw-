@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { vi } from "vitest";
 import type { Mock } from "vitest";
+import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import type { MsgContext } from "../auto-reply/templating.js";
@@ -24,7 +25,10 @@ export type GetReplyFromConfigFn = (
   configOverride?: OpenClawConfig,
 ) => Promise<ReplyPayload | ReplyPayload[] | undefined>;
 type CronIsolatedRunFn = (...args: unknown[]) => Promise<RunCronAgentTurnResult>;
-type AgentCommandFn = (...args: unknown[]) => Promise<void>;
+type AgentCommandResult = Awaited<
+  ReturnType<(typeof import("../agents/agent-command.js"))["agentCommand"]>
+>;
+type AgentCommandFn = (...args: unknown[]) => Promise<AgentCommandResult | void>;
 type SendWhatsAppFn = (...args: unknown[]) => Promise<{ messageId: string; toJid: string }>;
 export type RunBtwSideQuestionFn = (...args: unknown[]) => Promise<unknown>;
 type DispatchInboundMessageFn = (...args: unknown[]) => Promise<unknown>;
@@ -37,16 +41,7 @@ type GatewayTestHoistedState = {
   agentDiscoveryMock: {
     enabled: boolean;
     discoverCalls: number;
-    models: Array<{
-      id: string;
-      name?: string;
-      provider: string;
-      contextWindow?: number;
-      contextWindows?: Array<{ id: string; label: string; contextWindow: number }>;
-      contextWindowDefault?: string;
-      reasoning?: boolean;
-      input?: string[];
-    }>;
+    models: Array<Omit<ModelCatalogEntry, "name"> & { name?: string }>;
   };
   cronIsolatedRun: Mock<CronIsolatedRunFn>;
   agentCommand: Mock<AgentCommandFn>;

@@ -2,10 +2,10 @@ import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 // Msteams tests cover graph thread plugin behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  buildThreadContext,
   fetchChannelMessage,
   fetchChatMessageText,
   fetchThreadReplies,
-  formatThreadContext,
   stripHtmlFromTeamsMessage,
 } from "./graph-thread.js";
 import { fetchGraphJson } from "./graph.js";
@@ -199,8 +199,8 @@ describe("fetchThreadReplies", () => {
   });
 });
 
-describe("formatThreadContext", () => {
-  it("formats messages as sender: content lines", () => {
+describe("buildThreadContext", () => {
+  it("preserves message identity, sender and body in thread order", () => {
     const messages = [
       {
         id: "m1",
@@ -213,7 +213,10 @@ describe("formatThreadContext", () => {
         body: { content: "World!", contentType: "text" },
       },
     ];
-    expect(formatThreadContext(messages)).toBe("Alice: Hello!\nBob: World!");
+    expect(buildThreadContext(messages)).toEqual([
+      { message_id: "m1", sender: "Alice", body: "Hello!" },
+      { message_id: "m2", sender: "Bob", body: "World!" },
+    ]);
   });
 
   it("skips the current message by id", () => {
@@ -229,7 +232,9 @@ describe("formatThreadContext", () => {
         body: { content: "Current", contentType: "text" },
       },
     ];
-    expect(formatThreadContext(messages, "m2")).toBe("Alice: Hello!");
+    expect(buildThreadContext(messages, "m2")).toEqual([
+      { message_id: "m1", sender: "Alice", body: "Hello!" },
+    ]);
   });
 
   it("strips HTML from html contentType messages", () => {
@@ -240,7 +245,9 @@ describe("formatThreadContext", () => {
         body: { content: "<p>Hello <b>world</b></p>", contentType: "html" },
       },
     ];
-    expect(formatThreadContext(messages)).toBe("Carol: Hello world");
+    expect(buildThreadContext(messages)).toEqual([
+      { message_id: "m1", sender: "Carol", body: "Hello world" },
+    ]);
   });
 
   it("uses application displayName when user is absent", () => {
@@ -251,7 +258,9 @@ describe("formatThreadContext", () => {
         body: { content: "automated msg", contentType: "text" },
       },
     ];
-    expect(formatThreadContext(messages)).toBe("BotApp: automated msg");
+    expect(buildThreadContext(messages)).toEqual([
+      { message_id: "m1", sender: "BotApp", body: "automated msg" },
+    ]);
   });
 
   it("skips messages with empty content", () => {
@@ -267,7 +276,9 @@ describe("formatThreadContext", () => {
         body: { content: "actual content", contentType: "text" },
       },
     ];
-    expect(formatThreadContext(messages)).toBe("Bob: actual content");
+    expect(buildThreadContext(messages)).toEqual([
+      { message_id: "m2", sender: "Bob", body: "actual content" },
+    ]);
   });
 
   it("falls back to 'unknown' sender when from is missing", () => {
@@ -277,10 +288,12 @@ describe("formatThreadContext", () => {
         body: { content: "orphan msg", contentType: "text" },
       },
     ];
-    expect(formatThreadContext(messages)).toBe("unknown: orphan msg");
+    expect(buildThreadContext(messages)).toEqual([
+      { message_id: "m1", sender: "unknown", body: "orphan msg" },
+    ]);
   });
 
-  it("returns empty string for empty messages array", () => {
-    expect(formatThreadContext([])).toBe("");
+  it("returns no context for an empty thread", () => {
+    expect(buildThreadContext([])).toEqual([]);
   });
 });

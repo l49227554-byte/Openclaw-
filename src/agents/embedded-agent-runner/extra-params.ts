@@ -37,17 +37,26 @@ import {
   type ProviderRuntimePluginHandle,
 } from "../../plugins/provider-hook-runtime.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
-import { resolveModelExtraParamSources } from "../model-extra-params.js";
-import {
-  getModelProviderRequestRouteFacts,
-  resolveProviderRequestPolicyConfig,
-} from "../provider-request-config.js";
 import type { AgentRuntimeTransport } from "../runtime-plan/types.js";
 import type { StreamFn } from "../runtime/index.js";
 import type { SettingsManager } from "../sessions/index.js";
+import {
+  canonicalizeExtraParamAlias,
+  canonicalizeOpenRouterResponseCacheParams,
+  resolveAliasedParamValue,
+  resolveAliasedParamValueFromKeys,
+  resolveExtraBodyRecord,
+  resolveExtraParams,
+  sanitizeExtraParamsRecord,
+  shouldStripOpenAICompletionsStore,
+} from "./extra-params.resolve.js";
 import { log } from "./logger.js";
 import { parseCacheRetention, resolveCacheRetention } from "./prompt-cache-retention.js";
 import type { ProviderThinkLevel } from "./utils.js";
+
+// Re-exported: `resolveExtraParams` moved to `./extra-params.resolve.js` (a leaf
+// module) to break an import cycle, but external callers still import it from here.
+export { resolveExtraParams };
 
 function requireBaseStreamFn(streamFn: StreamFn | undefined): StreamFn {
   if (!streamFn) {
@@ -67,48 +76,6 @@ const GPT_PARALLEL_TOOL_CALLS_APIS = new Set([
 /** True when a provider API accepts GPT parallel-tool-call payload settings. */
 function supportsGptParallelToolCallsPayload(api: unknown): boolean {
   return typeof api === "string" && GPT_PARALLEL_TOOL_CALLS_APIS.has(api);
-}
-
-/**
- * Resolve provider-specific extra params from model config.
- * Used to pass through stream params like temperature/maxTokens.
- */
-export function resolveExtraParams(params: {
-  cfg: OpenClawConfig | undefined;
-  provider: string;
-  modelId: string;
-  agentId?: string;
-}): Record<string, unknown> | undefined {
-  const { defaultParams, modelParams, agentModelParams, agentParams } =
-    resolveModelExtraParamSources({
-      config: params.cfg,
-      provider: params.provider,
-      modelId: params.modelId,
-      agentId: params.agentId,
-    });
-  const sources = [defaultParams, modelParams, agentModelParams, agentParams];
-  const merged = Object.assign({}, ...sources);
-  canonicalizeExtraParamAlias(merged, sources, ["parallel_tool_calls", "parallelToolCalls"]);
-  canonicalizeExtraParamAlias(
-    merged,
-    [modelParams, agentModelParams, agentParams],
-    ["text_verbosity", "textVerbosity"],
-  );
-  canonicalizeExtraParamAlias(merged, sources, ["response_format", "responseFormat"]);
-  canonicalizeMaxTokensParam({ merged, sources });
-  canonicalizeExtraParamAlias(
-    merged,
-    sources,
-    ["cached_content", "cachedContent"],
-    "cachedContent",
-  );
-  if (params.provider === "openrouter") {
-    canonicalizeOpenRouterResponseCacheParams(merged, sources);
-  }
-
-  applyDefaultOpenAIGptRuntimeParams(params, merged);
-
-  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 type CacheRetentionStreamOptions = Partial<SimpleStreamOptions> & {
@@ -210,19 +177,6 @@ export function resolvePreparedExtraParams(params: {
   return result;
 }
 
-function sanitizeExtraParamsRecord(
-  value: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  if (!value) {
-    return undefined;
-  }
-  return Object.fromEntries(
-    Object.entries(value).filter(
-      ([key]) => key !== "__proto__" && key !== "prototype" && key !== "constructor",
-    ),
-  );
-}
-
 function sanitizeExtraParamsOverride(value: Record<string, unknown> | undefined) {
   return value && Object.keys(value).length > 0
     ? sanitizeExtraParamsRecord(
@@ -248,34 +202,6 @@ function hasRequestScopedExtraParams(value: Record<string, unknown> | undefined)
     return false;
   }
   return [...REQUEST_SCOPED_EXTRA_PARAM_KEYS].some((key) => Object.hasOwn(value, key));
-}
-
-function shouldApplyDefaultOpenAIGptRuntimeParams(params: {
-  provider: string;
-  modelId: string;
-}): boolean {
-  if (params.provider !== "openai") {
-    return false;
-  }
-  return /^gpt-5(?:[.-]|$)/i.test(params.modelId);
-}
-
-function applyDefaultOpenAIGptRuntimeParams(
-  params: { provider: string; modelId: string },
-  merged: Record<string, unknown>,
-): void {
-  if (!shouldApplyDefaultOpenAIGptRuntimeParams(params)) {
-    return;
-  }
-  if (
-    !Object.hasOwn(merged, "parallel_tool_calls") &&
-    !Object.hasOwn(merged, "parallelToolCalls")
-  ) {
-    merged.parallel_tool_calls = true;
-  }
-  if (!Object.hasOwn(merged, "text_verbosity") && !Object.hasOwn(merged, "textVerbosity")) {
-    merged.text_verbosity = "low";
-  }
 }
 
 export function resolveAgentTransportOverride(params: {
@@ -448,94 +374,6 @@ function createStreamFnWithExtraParams(
   return wrappedStreamFn;
 }
 
-function resolveAliasedParamValue(
-  sources: Array<Record<string, unknown> | undefined>,
-  snakeCaseKey: string,
-  camelCaseKey: string,
-): unknown {
-  return resolveAliasedParamValueFromKeys(sources, [snakeCaseKey, camelCaseKey]);
-}
-
-function resolveAliasedParamValueFromKeys(
-  sources: Array<Record<string, unknown> | undefined>,
-  keys: readonly string[],
-): unknown {
-  let resolved: unknown = undefined;
-  let seen = false;
-  for (const source of sources) {
-    if (!source) {
-      continue;
-    }
-    for (const key of keys) {
-      if (!Object.hasOwn(source, key)) {
-        continue;
-      }
-      resolved = source[key];
-      seen = true;
-      break;
-    }
-  }
-  return seen ? resolved : undefined;
-}
-
-function canonicalizeExtraParamAlias(
-  merged: Record<string, unknown>,
-  sources: Array<Record<string, unknown> | undefined>,
-  keys: readonly [string, string],
-  canonical = keys[0],
-): void {
-  const resolved = resolveAliasedParamValueFromKeys(sources, keys);
-  if (resolved !== undefined) {
-    merged[canonical] = resolved;
-    delete merged[keys[0] === canonical ? keys[1] : keys[0]];
-  }
-}
-
-function applyCanonicalAliasedParamValue(params: {
-  merged: Record<string, unknown>;
-  sources: Array<Record<string, unknown> | undefined>;
-  keys: readonly string[];
-  canonicalKey: string;
-}): void {
-  const resolved = resolveAliasedParamValueFromKeys(params.sources, params.keys);
-  if (resolved === undefined) {
-    return;
-  }
-  for (const key of params.keys) {
-    delete params.merged[key];
-  }
-  params.merged[params.canonicalKey] = resolved;
-}
-
-function canonicalizeOpenRouterResponseCacheParams(
-  merged: Record<string, unknown>,
-  sources: Array<Record<string, unknown> | undefined>,
-): void {
-  applyCanonicalAliasedParamValue({
-    merged,
-    sources,
-    keys: ["responseCache", "response_cache"],
-    canonicalKey: "responseCache",
-  });
-  applyCanonicalAliasedParamValue({
-    merged,
-    sources,
-    keys: [
-      "responseCacheTtlSeconds",
-      "response_cache_ttl_seconds",
-      "responseCacheTtl",
-      "response_cache_ttl",
-    ],
-    canonicalKey: "responseCacheTtlSeconds",
-  });
-  applyCanonicalAliasedParamValue({
-    merged,
-    sources,
-    keys: ["responseCacheClear", "response_cache_clear"],
-    canonicalKey: "responseCacheClear",
-  });
-}
-
 function createParallelToolCallsWrapper(
   baseStreamFn: StreamFn | undefined,
   enabled: boolean,
@@ -554,27 +392,6 @@ function createParallelToolCallsWrapper(
   };
 }
 
-function shouldStripOpenAICompletionsStore(model: ProviderRuntimeModel): boolean {
-  if (model.api !== "openai-completions") {
-    return false;
-  }
-  const compat =
-    model.compat && typeof model.compat === "object"
-      ? (model.compat as Record<string, unknown>)
-      : undefined;
-  const capabilities =
-    getModelProviderRequestRouteFacts(model)?.capabilities ??
-    resolveProviderRequestPolicyConfig({
-      provider: typeof model.provider === "string" ? model.provider : undefined,
-      api: model.api,
-      baseUrl: typeof model.baseUrl === "string" ? model.baseUrl : undefined,
-      compat,
-      capability: "llm",
-      transport: "stream",
-    }).capabilities;
-  return !capabilities.usesKnownNativeOpenAIRoute;
-}
-
 function createOpenAICompletionsStoreCompatWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
   const underlying = requireBaseStreamFn(baseStreamFn);
   return (model, context, options) => {
@@ -585,31 +402,6 @@ function createOpenAICompletionsStoreCompatWrapper(baseStreamFn: StreamFn | unde
       delete payloadObj.store;
     });
   };
-}
-
-function sanitizeExtraBodyRecord(value: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(sanitizeExtraParamsRecord(value) ?? {}).filter(
-      ([, entry]) => entry !== undefined,
-    ),
-  );
-}
-
-function resolveExtraBodyRecord(
-  value: unknown,
-  param: "extra_body" | "chat_template_kwargs",
-): Record<string, unknown> | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (typeof value !== "object" || Array.isArray(value)) {
-    log.warn(
-      `ignoring invalid ${param} param: ${typeof value === "string" ? value : typeof value}`,
-    );
-    return undefined;
-  }
-  const record = sanitizeExtraBodyRecord(value as Record<string, unknown>);
-  return Object.keys(record).length > 0 ? record : undefined;
 }
 
 function createOpenAICompletionsChatTemplateKwargsWrapper(params: {

@@ -8,6 +8,10 @@ import {
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SecurityAuditFinding } from "../../security/audit.types.js";
 import { isPathInside } from "../../security/scan-paths.js";
+import {
+  findContainingAllowedSkillSymlinkTarget,
+  resolveAllowedSkillSymlinkTargetRealPaths,
+} from "../loading/symlink-targets.js";
 
 type WorkspaceSkillScanLimits = {
   maxFiles?: number;
@@ -136,6 +140,13 @@ export async function collectWorkspaceSkillSymlinkEscapeFindings(params: {
     return findings;
   }
 
+  // Trusted symlink targets (skills.load.allowSymlinkTargets) are exempt from
+  // the workspace-root containment rule, matching the runtime skill loader's
+  // boundary in resolveContainedSkillPath. Shared skills linked into a
+  // workspace from a documented allowlisted directory are a supported setup and
+  // must not be reported as escapes.
+  const allowedSymlinkTargetRealPaths = resolveAllowedSkillSymlinkTargetRealPaths(params.cfg);
+
   const escapedSkillFiles: Array<{
     workspaceDir: string;
     skillFilePath: string;
@@ -183,6 +194,12 @@ export async function collectWorkspaceSkillSymlinkEscapeFindings(params: {
         continue;
       }
       if (isPathInside(workspaceRealPath, skillRealPath)) {
+        continue;
+      }
+      if (
+        findContainingAllowedSkillSymlinkTarget(allowedSymlinkTargetRealPaths, skillRealPath) !==
+        null
+      ) {
         continue;
       }
       escapedSkillFiles.push({

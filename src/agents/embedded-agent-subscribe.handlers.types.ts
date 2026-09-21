@@ -349,6 +349,7 @@ type ToolHandlerParams = Pick<
   | "onAgentToolResult"
   | "observeToolTerminal"
   | "onToolResult"
+  | "questionPrompt"
   | "config"
   | "messageChannel"
   | "sessionKey"

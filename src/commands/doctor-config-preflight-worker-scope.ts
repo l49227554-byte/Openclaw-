@@ -4,6 +4,7 @@ export async function withDoctorConfigPreflightWorkerScope<T>(
   options: DoctorConfigPreflightOptions,
   run: () => Promise<T>,
 ): Promise<T> {
+  options.signal?.throwIfAborted();
   // Reuse child imports for this state operation; every read still acquires fresh admission.
   // The scope joins its child after the preflight releases its migration lease and heartbeat.
   if (

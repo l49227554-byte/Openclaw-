@@ -22,6 +22,13 @@ import { captureEnv, withEnvAsync } from "../test-utils/env.js";
 import { ExpectedCliError } from "./failure-output.js";
 import { getGatewayRunRuntimeHooks } from "./gateway-cli/runtime-hooks.js";
 import type { RootHelpRenderOptions } from "./program/root-help.js";
+import {
+  registerGatewayStartupBootstrapTests,
+  registerGatewayStartupProxyExitTests,
+  type ConfigSnapshotStub,
+  type GatewayRunCommandHooks,
+  type CliExecutionBootstrapOptions,
+} from "./run-main.gateway-startup.test-support.js";
 import { getPendingCliDisposers } from "./runtime-cleanup.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "./signal-exit-barrier.js";
 
@@ -32,17 +39,6 @@ type RunMainModule = typeof import("./run-main.js");
 
 let runCli: RunMainModule["runCli"];
 let shouldStartProxyForCli: RunMainModule["shouldStartProxyForCli"];
-
-type ConfigSnapshotStub = {
-  exists: boolean;
-  hash?: string;
-  issues?: Array<{ message: string; path: string }>;
-  legacyIssues?: Array<{ message: string; path: string }>;
-  path?: string;
-  raw?: string | null;
-  valid: boolean;
-  sourceConfig: Record<string, unknown>;
-};
 
 const tryRouteCliMock = vi.hoisted(() => vi.fn());
 const loadDotEnvMock = vi.hoisted(() => vi.fn());
@@ -158,12 +154,6 @@ const resolveControlUiLinksMock = vi.hoisted(() =>
   })),
 );
 const commanderParseAsyncMock = vi.hoisted(() => vi.fn(async () => {}));
-type GatewayRunCommandHooks = {
-  beforeRun?: (opts: { reset?: boolean }) => Promise<void>;
-};
-type CliExecutionBootstrapOptions = {
-  beforeStateMigrations?: (snapshot?: ConfigSnapshotStub) => Promise<boolean>;
-};
 const addGatewayRunCommandMock = vi.hoisted(() =>
   vi.fn<(command: unknown, hooks?: GatewayRunCommandHooks) => unknown>((command) => command),
 );
@@ -1009,32 +999,11 @@ describe("runCli exit behavior", () => {
     expect(parseOrder).toBeGreaterThan(captureOrder);
   });
 
-  it("configures the gateway foreground fast path with the standard CLI bootstrap", async () => {
-    await runCli(["node", "openclaw", "gateway", "--force"]);
-
-    expect(readConfigFileSnapshotMock.mock.calls).toEqual([
-      [{ isolateEnv: true, observe: false, pluginValidation: "core-only" }],
-    ]);
-    const hooks = addGatewayRunCommandMock.mock.calls[0]?.[1] as
-      | { beforeRun?: (opts: { reset?: boolean }) => Promise<void> }
-      | undefined;
-    await hooks?.beforeRun?.({});
-
-    expect(ensureCliExecutionBootstrapMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        beforeStateMigrations: expect.any(Function),
-        commandPath: ["gateway"],
-        loadPlugins: false,
-      }),
-    );
-    expect(readConfigFileSnapshotMock.mock.calls).toEqual([
-      [{ isolateEnv: true, observe: false, pluginValidation: "core-only" }],
-      [{ isolateEnv: true, observe: false, pluginValidation: "core-only" }],
-    ]);
-    const admissionOrder = readConfigFileSnapshotMock.mock.invocationCallOrder[1] ?? 0;
-    const bootstrapOrder = ensureCliExecutionBootstrapMock.mock.invocationCallOrder[0] ?? 0;
-    expect(admissionOrder).toBeGreaterThan(0);
-    expect(bootstrapOrder).toBeGreaterThan(admissionOrder);
+  registerGatewayStartupBootstrapTests({
+    runCli: (...args) => runCli(...args),
+    readConfigFileSnapshotMock,
+    addGatewayRunCommandMock,
+    ensureCliExecutionBootstrapMock,
   });
 
   it("defers config-drift exit to the migration owner before startup migrations", async () => {
@@ -3507,6 +3476,16 @@ describe("runCli exit behavior", () => {
       stderr.mockRestore();
     }
     expect(getPendingCliDisposers()).not.toContain("managed-proxy");
+  });
+
+  registerGatewayStartupProxyExitTests({
+    runCli: (...args) => runCli(...args),
+    makeProxyHandle,
+    startProxyMock,
+    stopProxyMock,
+    commanderParseAsyncMock,
+    addGatewayRunCommandMock,
+    ensureCliExecutionBootstrapMock,
   });
 
   it("synchronously kills the managed proxy during hard process exit", async () => {

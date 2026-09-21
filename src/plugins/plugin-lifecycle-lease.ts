@@ -38,6 +38,8 @@ type PluginLifecycleLeaseOptions = Pick<
 > & {
   schemaPolicy?: "existing";
   signal?: AbortSignal;
+  /** Cancel waiting without revoking the acquired lease needed for settlement. */
+  acquisitionSignal?: AbortSignal;
   leaseMs?: number;
   waitMs?: number;
   /** Additional live caller authority; never replaces the plugin lease. */
@@ -73,6 +75,32 @@ export async function withPluginLifecycleLease<T>(
   options: PluginLifecycleLeaseOptions,
   run: (lease: PluginLifecycleLeaseContext) => Promise<T>,
 ): Promise<T> {
+  if (options.acquisitionSignal) {
+    const { acquisitionSignal, ...lifetimeOptions } = options;
+    const acquisition = new AbortController();
+    const abortAcquisition = () => acquisition.abort(acquisitionSignal.reason);
+    acquisitionSignal.addEventListener("abort", abortAcquisition, { once: true });
+    if (acquisitionSignal.aborted) {
+      abortAcquisition();
+    }
+    try {
+      return await withPluginLifecycleLease(
+        {
+          ...lifetimeOptions,
+          signal: lifetimeOptions.signal
+            ? AbortSignal.any([lifetimeOptions.signal, acquisition.signal])
+            : acquisition.signal,
+        },
+        (lease) => {
+          // Work owns cancellation after admission; rollback keeps the same live lease.
+          acquisitionSignal.removeEventListener("abort", abortAcquisition);
+          return run(lease);
+        },
+      );
+    } finally {
+      acquisitionSignal.removeEventListener("abort", abortAcquisition);
+    }
+  }
   const active = activePluginLifecycleLease.getStore();
   const refusal: PluginLifecycleRefusal = active?.refusal ?? {};
   const assertAuthority = (check: () => void) => {

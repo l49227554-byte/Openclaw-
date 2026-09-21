@@ -21,6 +21,8 @@ export type DoctorConfigPreflightOptions = {
   recoverCorruptTargetStore?: boolean;
   invalidConfigNote?: string | false;
   observe?: boolean;
+  /** Cancel process-owned startup work when the Gateway receives SIGINT/SIGTERM. */
+  signal?: AbortSignal;
   measure?: ConfigSnapshotReadMeasure;
   /** Return false or reject on config drift; the preflight always unwinds owned resources. */
   beforeStateMigrations?: (snapshot?: ConfigFileSnapshot) => Promise<boolean>;

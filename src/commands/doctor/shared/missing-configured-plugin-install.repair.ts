@@ -108,6 +108,7 @@ export async function repairMissingConfiguredPluginInstalls(params: {
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   onWarning?: (warning: PluginInstallRepairWarning) => void;
   beforePersistentEffect?: () => void | Promise<void>;
+  signal?: AbortSignal;
   /**
    * Optional pre-seeded records. When provided, this map is used instead of
    * the disk-loaded install-record snapshot. Pass the in-memory records
@@ -130,6 +131,7 @@ export async function repairMissingConfiguredPluginInstalls(params: {
       onWarning: params.onWarning,
       ...(params.onCapabilityConsent ? { onCapabilityConsent: params.onCapabilityConsent } : {}),
       beforePersistentEffect: params.beforePersistentEffect,
+      ...(params.signal ? { signal: params.signal } : {}),
       ...(params.baselineRecords ? { baselineRecords: params.baselineRecords } : {}),
     }),
   );
@@ -148,6 +150,7 @@ export async function repairMissingPluginInstallsForIds(params: {
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   onWarning?: (warning: PluginInstallRepairWarning) => void;
   beforePersistentEffect?: () => void | Promise<void>;
+  signal?: AbortSignal;
 }): Promise<RepairMissingPluginInstallsResult> {
   return repairMissingPluginInstalls(
     copyPluginInstallTransactionRequest(params, {
@@ -171,6 +174,7 @@ export async function repairMissingPluginInstallsForIds(params: {
       ...(params.onCapabilityConsent ? { onCapabilityConsent: params.onCapabilityConsent } : {}),
       onWarning: params.onWarning,
       beforePersistentEffect: params.beforePersistentEffect,
+      ...(params.signal ? { signal: params.signal } : {}),
       ...(params.baselineRecords ? { baselineRecords: params.baselineRecords } : {}),
     }),
   );
@@ -189,55 +193,61 @@ async function repairMissingPluginInstalls(params: {
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   onWarning?: (warning: PluginInstallRepairWarning) => void;
   beforePersistentEffect?: () => void | Promise<void>;
+  signal?: AbortSignal;
 }): Promise<RepairMissingPluginInstallsResult> {
   // Baseline, awaited review, package publication, and the index write share one generation.
-  return await withPluginLifecycleLease({ env: params.env }, (lease) =>
-    withPluginInstallTransactions(
-      params,
-      () => lease.assertOwned(),
-      async (owned, assertCurrent) => {
-        const dependencyRepairMarkers = new Map<string, string>();
-        let result: RepairMissingPluginInstallsResult | undefined;
-        let failure: unknown;
-        try {
-          result = await repairMissingPluginInstallsWithLease(
-            owned,
-            lease,
-            dependencyRepairMarkers,
-            assertCurrent,
-          );
-        } catch (error) {
-          failure = error;
-        }
-        // Markers belong to this repair only; never remove pre-existing retention.
-        const cleanupErrors: unknown[] = [];
-        for (const [pluginId, packageDir] of dependencyRepairMarkers) {
-          if (result?.repairedPluginIds?.includes(pluginId)) {
-            continue;
-          }
+  return await withPluginLifecycleLease(
+    { env: params.env, acquisitionSignal: params.signal },
+    (lease) =>
+      withPluginInstallTransactions(
+        copyPluginInstallTransactionRequest(params, {
+          ...params,
+          signal: params.signal ? AbortSignal.any([params.signal, lease.signal]) : lease.signal,
+        }),
+        () => lease.assertOwned(),
+        async (owned, assertCurrent) => {
+          const dependencyRepairMarkers = new Map<string, string>();
+          let result: RepairMissingPluginInstallsResult | undefined;
+          let failure: unknown;
           try {
-            await clearRetainedManagedNpmInstallMarker(packageDir, assertCurrent);
-          } catch (error) {
-            cleanupErrors.push(error);
-          }
-        }
-        if (!result) {
-          if (cleanupErrors.length > 0) {
-            throw new AggregateError(
-              [failure, ...cleanupErrors],
-              "Plugin dependency repair failed and its retention markers could not be cleared.",
+            result = await repairMissingPluginInstallsWithLease(
+              owned,
+              lease,
+              dependencyRepairMarkers,
+              assertCurrent,
             );
+          } catch (error) {
+            failure = error;
           }
-          throw failure;
-        }
-        result.warnings.push(
-          ...cleanupErrors.map(
-            (error) => `Failed to clear dependency repair retention marker: ${String(error)}`,
-          ),
-        );
-        return result;
-      },
-    ),
+          // Markers belong to this repair only; never remove pre-existing retention.
+          const cleanupErrors: unknown[] = [];
+          for (const [pluginId, packageDir] of dependencyRepairMarkers) {
+            if (result?.repairedPluginIds?.includes(pluginId)) {
+              continue;
+            }
+            try {
+              await clearRetainedManagedNpmInstallMarker(packageDir, assertCurrent);
+            } catch (error) {
+              cleanupErrors.push(error);
+            }
+          }
+          if (!result) {
+            if (cleanupErrors.length > 0) {
+              throw new AggregateError(
+                [failure, ...cleanupErrors],
+                "Plugin dependency repair failed and its retention markers could not be cleared.",
+              );
+            }
+            throw failure;
+          }
+          result.warnings.push(
+            ...cleanupErrors.map(
+              (error) => `Failed to clear dependency repair retention marker: ${String(error)}`,
+            ),
+          );
+          return result;
+        },
+      ),
   );
 }
 
@@ -247,6 +257,7 @@ async function repairMissingPluginInstallsWithLease(
   dependencyRepairMarkers: Map<string, string>,
   assertCurrent: () => void,
 ): Promise<RepairMissingPluginInstallsResult> {
+  params.signal?.throwIfAborted();
   const env = params.env ?? process.env;
   const {
     knownIds,
@@ -357,6 +368,7 @@ async function repairMissingPluginInstallsWithLease(
   };
 
   for (const [pluginId, record] of Object.entries(records)) {
+    params.signal?.throwIfAborted();
     const bundled = bundledPluginsById.get(pluginId);
     if (
       operatorManagedPluginIds.has(pluginId) ||
@@ -494,6 +506,7 @@ async function repairMissingPluginInstallsWithLease(
         },
         ...(params.onCapabilityConsent ? { onCapabilityConsent: params.onCapabilityConsent } : {}),
         beforePersistentEffect: params.beforePersistentEffect,
+        ...(params.signal ? { signal: params.signal } : {}),
       }),
     );
     for (const outcome of updateResult.outcomes) {
@@ -568,6 +581,7 @@ async function repairMissingPluginInstallsWithLease(
       ...operatorManagedPluginIds,
     ]),
   })) {
+    params.signal?.throwIfAborted();
     const repair = resolveConfiguredPluginCandidateRepair({
       candidate,
       records: nextRecords,
@@ -609,8 +623,10 @@ async function repairMissingPluginInstallsWithLease(
         repairReason,
         ...(params.onCapabilityConsent ? { onCapabilityConsent: params.onCapabilityConsent } : {}),
         beforePersistentEffect: params.beforePersistentEffect,
+        ...(params.signal ? { signal: params.signal } : {}),
       }),
     );
+    params.signal?.throwIfAborted();
     if (shouldReplaceBrokenOfficialInstall) {
       const installedRecord = installed.records[candidate.pluginId];
       const replacementSucceeded = installed.records !== previousRecords;
@@ -621,6 +637,7 @@ async function repairMissingPluginInstallsWithLease(
           !installPathsEqual(resolveUserPath(installedRecord.installPath, env), removalPath))
       ) {
         await params.beforePersistentEffect?.();
+        params.signal?.throwIfAborted();
         // Authority refusal is not a package-cleanup warning. Planning may
         // yield, so both owners must still hold at dispatch without another await.
         lease.assertOwned();
@@ -671,6 +688,7 @@ async function repairMissingPluginInstallsWithLease(
         await params.beforePersistentEffect();
       }
     }
+    params.signal?.throwIfAborted();
     lease.assertOwned();
     await writePersistedInstalledPluginIndexInstallRecordsWithLease(
       nextRecords,

@@ -101,44 +101,68 @@ describe("runPostCorePluginConvergence", () => {
     return pluginDir;
   }
 
-  it("calls repair with OPENCLAW_UPDATE_POST_CORE_CONVERGENCE=1 set", async () => {
-    const cfg = { plugins: { entries: {} } } as unknown as OpenClawConfig;
-    await runPostCorePluginConvergence({
-      cfg,
-      env: { OPENCLAW_UPDATE_IN_PROGRESS: "1" },
-    });
-    expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledTimes(1);
-    expect(mocks.maybeRepairStaleManagedNpmBundledPlugins).toHaveBeenCalledWith({
-      config: cfg,
-      env: {
-        OPENCLAW_UPDATE_IN_PROGRESS: "1",
-        OPENCLAW_COMPATIBILITY_HOST_VERSION: VERSION,
-        OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
-      },
-      prompter: { shouldRepair: true },
-    });
-    expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledWith({
-      cfg,
-      env: {
-        OPENCLAW_UPDATE_IN_PROGRESS: "1",
-        OPENCLAW_COMPATIBILITY_HOST_VERSION: VERSION,
-        OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
-      },
-      onWarning: expect.any(Function),
-      beforePersistentEffect: expect.any(Function),
-    });
-    expect(
-      expectDefined(
-        mocks.maybeRepairStaleManagedNpmBundledPlugins.mock.invocationCallOrder[0],
-        "stale managed cleanup call order",
-      ),
-    ).toBeLessThan(
-      expectDefined(
-        mocks.repairMissingConfiguredPluginInstalls.mock.invocationCallOrder[0],
-        "missing configured plugin repair call order",
-      ),
-    );
-  });
+  it.each([false, true])(
+    "calls repair with update context and cancellation (cancelled: %s)",
+    async (cancelled) => {
+      const cfg = { plugins: { entries: {} } } as unknown as OpenClawConfig;
+      const controller = new AbortController();
+      const reason = new Error("Gateway startup interrupted by SIGTERM");
+      if (cancelled) {
+        mocks.repairMissingConfiguredPluginInstalls.mockImplementationOnce(async ({ signal }) => {
+          const workSignal = expectDefined(signal, "configured plugin repair cancellation signal");
+          expect(workSignal.aborted).toBe(false);
+          controller.abort(reason);
+          expect(workSignal.reason).toBe(reason);
+          workSignal.throwIfAborted();
+          throw new Error("Expected configured plugin repair to be cancelled");
+        });
+      }
+      const operation = runPostCorePluginConvergence({
+        cfg,
+        env: { OPENCLAW_UPDATE_IN_PROGRESS: "1" },
+        signal: controller.signal,
+      });
+      if (cancelled) {
+        await expect(operation).rejects.toBe(reason);
+        expect(mocks.relinkOpenClawPeerDependenciesInManagedNpmRoot).not.toHaveBeenCalled();
+        expect(mocks.runPluginPayloadSmokeCheck).not.toHaveBeenCalled();
+      } else {
+        await expect(operation).resolves.toMatchObject({ errored: false });
+      }
+      expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledTimes(1);
+      expect(mocks.maybeRepairStaleManagedNpmBundledPlugins).toHaveBeenCalledWith({
+        config: cfg,
+        env: {
+          OPENCLAW_UPDATE_IN_PROGRESS: "1",
+          OPENCLAW_COMPATIBILITY_HOST_VERSION: VERSION,
+          OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
+        },
+        prompter: { shouldRepair: true },
+      });
+      expect(mocks.repairMissingConfiguredPluginInstalls).toHaveBeenCalledWith({
+        cfg,
+        env: {
+          OPENCLAW_UPDATE_IN_PROGRESS: "1",
+          OPENCLAW_COMPATIBILITY_HOST_VERSION: VERSION,
+          OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1",
+        },
+        onWarning: expect.any(Function),
+        beforePersistentEffect: expect.any(Function),
+        signal: expect.any(AbortSignal),
+      });
+      expect(
+        expectDefined(
+          mocks.maybeRepairStaleManagedNpmBundledPlugins.mock.invocationCallOrder[0],
+          "stale managed cleanup call order",
+        ),
+      ).toBeLessThan(
+        expectDefined(
+          mocks.repairMissingConfiguredPluginInstalls.mock.invocationCallOrder[0],
+          "missing configured plugin repair call order",
+        ),
+      );
+    },
+  );
 
   it.each(["authority", "filesystem"] as const)(
     "joins admitted peer repairs before reporting a %s failure",
@@ -263,6 +287,7 @@ describe("runPostCorePluginConvergence", () => {
       },
       onWarning: expect.any(Function),
       beforePersistentEffect: expect.any(Function),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -281,6 +306,7 @@ describe("runPostCorePluginConvergence", () => {
       },
       onWarning: expect.any(Function),
       beforePersistentEffect: expect.any(Function),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -455,6 +481,7 @@ describe("runPostCorePluginConvergence", () => {
       baselineRecords: baseline,
       onWarning: expect.any(Function),
       beforePersistentEffect: expect.any(Function),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -507,6 +534,7 @@ describe("runPostCorePluginConvergence", () => {
       },
       onWarning: expect.any(Function),
       beforePersistentEffect: expect.any(Function),
+      signal: expect.any(AbortSignal),
     });
     expect(result.changes).toEqual([
       'Removed stale local bundled plugin install record "discord".',

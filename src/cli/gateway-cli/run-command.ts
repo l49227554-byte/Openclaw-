@@ -77,6 +77,9 @@ export function addGatewayRunCommand(cmd: Command, hooks: GatewayRunCommandHooks
       return withAgentDatabaseStartupAdmission(async () => {
         try {
           await hooks.beforeRun?.(resolved);
+          if (getGatewayRunRuntimeHooks().startupSignal?.aborted) {
+            return;
+          }
           const { runGatewayCommand } = await import("./run.js");
           await runGatewayCommand(resolved, getGatewayRunRuntimeHooks());
         } catch (error) {

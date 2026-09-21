@@ -281,18 +281,21 @@ export async function prepareDoctorMigrationPlugins(params: {
   snapshotRead: DoctorConfigPreflightPluginSnapshotRead;
   readRefreshedSnapshot: () => Promise<DoctorConfigPreflightPluginSnapshotRead>;
   beforeStateMigrations?: (snapshot: ConfigFileSnapshot) => Promise<boolean>;
+  signal?: AbortSignal;
   onWarnings: (warnings: readonly string[]) => void;
   onDeferredPlugins: (
     pending: readonly DeferredPluginMigration[],
     inspection?: PluginMigrationInspection,
   ) => void;
 }): Promise<DoctorConfigPreflightPluginSnapshotRead> {
+  params.signal?.throwIfAborted();
   if (params.converge) {
     params.lease?.heartbeat();
   }
   const convergence = await (
     params.converge ? runDoctorPluginConvergence : refreshStartupPluginQuarantine
   )(params);
+  params.signal?.throwIfAborted();
   setActiveDegradedPlugins(convergence.quarantinedPlugins);
   params.onWarnings(convergence.warnings ?? []);
   params.lease?.heartbeat();

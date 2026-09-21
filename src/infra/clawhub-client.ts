@@ -33,6 +33,7 @@ export type ClawHubRequestParams = {
   json?: unknown;
   token?: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
   search?: Record<string, string | undefined>;
   fetchImpl?: ClawHubFetch;
   skipAuth?: boolean;
@@ -245,7 +246,9 @@ async function requestClawHub(params: ClawHubRequestParams): Promise<ClawHubResp
     try {
       const response = await (params.fetchImpl ?? fetch)(url, {
         ...init,
-        signal: controller.signal,
+        signal: params.signal
+          ? AbortSignal.any([params.signal, controller.signal])
+          : controller.signal,
       });
       return { response, url, hasToken: Boolean(token), releaseDeadline };
     } catch (error) {
@@ -264,6 +267,7 @@ async function requestClawHub(params: ClawHubRequestParams): Promise<ClawHubResp
       releaseDeadline();
       await cancelUnreadResponseBody(response);
     },
+    ...(params.signal ? { signal: params.signal } : {}),
   });
 }
 

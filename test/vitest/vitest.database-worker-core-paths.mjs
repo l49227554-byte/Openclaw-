@@ -173,6 +173,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/update-cohort.integration.test.ts",
   "src/plugins/update-cohort.test.ts",
   "src/plugins/update.test.ts",
+  "src/plugins/update.cancellation.test.ts",
   "src/plugins/update.work-deadline.test.ts",
   "src/state/openclaw-agent-canonical-validation-schema.test.ts",
   "src/state/openclaw-agent-db-maintenance.test.ts",

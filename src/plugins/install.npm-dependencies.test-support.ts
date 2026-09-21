@@ -75,6 +75,8 @@ export function registerManagedNpmDependencyTests({
     npmRoot: string;
     dependency?: { name: string; version: string };
     peerDependencies?: Record<string, string>;
+    pluginId?: string;
+    expectedDependencySpec?: string;
   }) => void;
   runCommandWithTimeoutMock: Mock;
   resolveOpenClawPackageRootSyncMock: Mock;
@@ -82,6 +84,57 @@ export function registerManagedNpmDependencyTests({
   resolveTestPluginPackageDir: (npmRoot: string, packageName: string) => string;
   isManagedNpmInstallCommand: (argv: unknown) => argv is string[];
 }) {
+  it("propagates an aborted managed npm install without entering recovery", async () => {
+    const npmRoot = path.join(makeTempDir(), "npm");
+    const packageName = "aborted-install-plugin";
+    const npmProjectRoot = resolvePluginNpmProjectDir({ npmDir: npmRoot, packageName });
+    const abortReason = new Error("startup SIGTERM");
+    const controller = new AbortController();
+    mockNpmViewAndInstall({
+      spec: `${packageName}@1.0.0`,
+      packageName,
+      version: "1.0.0",
+      pluginId: packageName,
+      npmRoot,
+      expectedDependencySpec: "1.0.0",
+    });
+    const delegate = runCommandWithTimeoutMock.getMockImplementation();
+    if (!delegate) {
+      throw new Error("expected npm mock implementation");
+    }
+    let managedInstallAttempts = 0;
+    runCommandWithTimeoutMock.mockImplementation(async (argv, options) => {
+      // The staged managed-npm flow installs inside a stage directory before
+      // publication, so intercept by command identity rather than final root.
+      if (isManagedNpmInstallCommand(argv)) {
+        managedInstallAttempts += 1;
+        controller.abort(abortReason);
+        return {
+          code: null,
+          stdout: "",
+          stderr: "",
+          signal: "SIGTERM",
+          killed: true,
+          termination: "signal" as const,
+        };
+      }
+      return await delegate(argv, options);
+    });
+
+    await expect(
+      installPluginFromNpmSpec({
+        spec: `${packageName}@1.0.0`,
+        npmDir: npmRoot,
+        logger: { info: () => {}, warn: () => {} },
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(abortReason);
+    expect(managedInstallAttempts).toBe(1);
+    expect(fs.existsSync(path.join(npmProjectRoot, "_openclaw-quarantined-npm-projects"))).toBe(
+      false,
+    );
+  });
+
   const dependencyCases = [
     { payload: "missing", mode: "install", existingProject: false },
     { payload: "empty", mode: "install", existingProject: false },

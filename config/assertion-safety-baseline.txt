@@ -2199,7 +2199,7 @@ src/cli/exec-policy-cli.ts	3
 src/cli/gateway-cli/dev.ts	1
 src/cli/gateway-cli/qa-parent-watchdog.ts	3
 src/cli/gateway-cli/register.ts	4
-src/cli/gateway-cli/run.ts	12
+src/cli/gateway-cli/run.ts	10
 src/cli/gateway-cli/suspend-cli.ts	2
 src/cli/logs-cli.ts	1
 src/cli/mcp-cli.ts	1
@@ -3149,7 +3149,7 @@ src/plugins/capability-provider-runtime.ts	13
 src/plugins/captured-registration.ts	2
 src/plugins/channel-presence-policy.ts	2
 src/plugins/channel-validation.ts	1
-src/plugins/clawhub.ts	10
+src/plugins/clawhub.ts	7
 src/plugins/cli-gateway-nodes-runtime.ts	2
 src/plugins/command-registration.ts	3
 src/plugins/computer-use-contract.ts	3
@@ -3208,7 +3208,7 @@ src/plugins/manifest-capability-normalizers.ts	3
 src/plugins/manifest-install-owner.ts	1
 src/plugins/manifest-setup-normalizers.ts	4
 src/plugins/manifest.ts	2
-src/plugins/marketplace.ts	6
+src/plugins/marketplace.ts	5
 src/plugins/memory-runtime.ts	1
 src/plugins/native-module-require.ts	2
 src/plugins/official-external-provider-endpoints.ts	1
@@ -3269,7 +3269,7 @@ src/plugins/uninstall-package-plan.ts	1
 src/plugins/uninstall.ts	3
 src/plugins/update-channel.ts	2
 src/plugins/update-config.ts	2
-src/plugins/update-installed.ts	5
+src/plugins/update-installed.ts	1
 src/plugins/update-summary.ts	2
 src/plugins/web-search-credential-presence.ts	1
 src/plugins/web-search-install-catalog.ts	2

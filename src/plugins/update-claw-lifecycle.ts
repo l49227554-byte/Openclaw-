@@ -34,6 +34,7 @@ export async function runPluginUpdateWithClawHubLease<T>(params: {
   dryRun: boolean;
   beforePersistentEffect?: () => void;
   run: () => Promise<T>;
+  signal?: AbortSignal;
 }): Promise<T | { kind: "exception"; message: string; error: unknown }> {
   try {
     if (!params.clawhubPackage || params.dryRun) {
@@ -53,6 +54,7 @@ export async function runPluginUpdateWithClawHubLease<T>(params: {
       { required: true },
     );
   } catch (error) {
+    params.signal?.throwIfAborted();
     return {
       kind: "exception",
       message: `Failed to update ${params.pluginId}: ${error instanceof Error ? error.message : String(error)}`,

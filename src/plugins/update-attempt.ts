@@ -305,6 +305,7 @@ export async function buildDryRunPluginUpdateOutcome(params: {
   hasSpecOverride: boolean;
   updateChannel?: UpdateChannel;
   timeoutMs?: number;
+  signal?: AbortSignal;
   channelFallbackSuffix: string;
   checkNewerExactPinnedClawHubDefaultLine?: boolean;
 }): Promise<PluginUpdateOutcome> {
@@ -325,6 +326,7 @@ export async function buildDryRunPluginUpdateOutcome(params: {
           probeNpmVersion: npmProbeVersion,
           updateChannel: params.updateChannel,
           timeoutMs: params.timeoutMs,
+          ...(params.signal ? { signal: params.signal } : {}),
         })
       : undefined;
   const newerExactPinnedClawHubDefaultLine =
@@ -340,6 +342,7 @@ export async function buildDryRunPluginUpdateOutcome(params: {
           timeoutMs: params.timeoutMs,
         })
       : undefined;
+  params.signal?.throwIfAborted();
 
   if (unchanged) {
     const message =
@@ -400,7 +403,10 @@ export async function runPluginUpdateAttempt(params: {
   installNpmSpecForUpdate: typeof installPluginFromNpmSpec;
   logger: PluginUpdateLogger;
   onIntegrityDrift?: (params: PluginUpdateIntegrityDriftParams) => boolean | Promise<boolean>;
+  signal?: AbortSignal;
 }): Promise<PluginUpdateAttemptResult> {
+  const throwIfAborted = () => params.signal?.throwIfAborted();
+  throwIfAborted();
   const dryRunOption = params.dryRun ? { dryRun: true } : {};
   const phase = params.dryRun ? "check" : "update";
   const installNpmSpec = params.dryRun ? installPluginFromNpmSpec : params.installNpmSpecForUpdate;
@@ -432,6 +438,7 @@ export async function runPluginUpdateAttempt(params: {
                 onIntegrityDrift: params.onIntegrityDrift,
               }),
               logger: params.logger,
+              ...(params.signal ? { signal: params.signal } : {}),
             }),
           )
         : params.record.source === "clawhub"
@@ -449,6 +456,7 @@ export async function runPluginUpdateAttempt(params: {
                 onBeforePluginArtifactCommit: params.onBeforePluginArtifactCommit,
                 expectedPluginId: params.pluginId,
                 logger: params.logger,
+                ...(params.signal ? { signal: params.signal } : {}),
               }),
             )
           : params.record.source === "git"
@@ -465,6 +473,7 @@ export async function runPluginUpdateAttempt(params: {
                   onBeforePluginArtifactCommit: params.onBeforePluginArtifactCommit,
                   expectedPluginId: params.pluginId,
                   logger: params.logger,
+                  ...(params.signal ? { signal: params.signal } : {}),
                 }),
               )
             : await installPluginFromMarketplace(
@@ -481,14 +490,21 @@ export async function runPluginUpdateAttempt(params: {
                   onBeforePluginArtifactCommit: params.onBeforePluginArtifactCommit,
                   expectedPluginId: params.pluginId,
                   logger: params.logger,
+                  ...(params.signal ? { signal: params.signal } : {}),
                 }),
               );
   } catch (error) {
+    throwIfAborted();
     return {
       kind: "exception",
       message: `Failed to ${phase} ${params.pluginId}: ${String(error)}`,
       error,
     };
+  }
+  // A successful installer may already have published a deferred transaction.
+  // Its caller must own that result before cancellation can unwind the update.
+  if (!result.ok) {
+    throwIfAborted();
   }
 
   let activeClawHubInstallSpec = params.effectiveSpec;
@@ -509,6 +525,7 @@ export async function runPluginUpdateAttempt(params: {
     params.logger.info?.(
       `Plugin "${params.pluginId}" has no beta ClawHub release for ${params.clawhubSpecs.fallbackLabel ?? params.effectiveSpec}; using ${params.clawhubSpecs.fallbackSpec} instead. Core update can still complete.`,
     );
+    throwIfAborted();
     result = await installPluginFromClawHub(
       installParams({
         spec: params.clawhubSpecs.fallbackSpec,
@@ -523,8 +540,12 @@ export async function runPluginUpdateAttempt(params: {
         onBeforePluginArtifactCommit: params.onBeforePluginArtifactCommit,
         expectedPluginId: params.pluginId,
         logger: params.logger,
+        ...(params.signal ? { signal: params.signal } : {}),
       }),
     );
+    if (!result.ok) {
+      throwIfAborted();
+    }
     activeClawHubInstallSpec = params.clawhubSpecs.fallbackSpec;
   }
 

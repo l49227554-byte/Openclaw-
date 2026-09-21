@@ -53,6 +53,7 @@ export async function ensureCliExecutionBootstrap(params: {
   validateConfigOnly?: boolean;
   skipPristineCoreStateMigrations?: boolean;
   skipPristineStartupStateMigrations?: boolean;
+  signal?: AbortSignal;
 }) {
   const {
     runtime,
@@ -75,6 +76,7 @@ export async function ensureCliExecutionBootstrap(params: {
           runtime,
           commandPath,
           measure: (stage, run) => measureCliCommandStartup(stage, run),
+          ...(params.signal ? { signal: params.signal } : {}),
           ...(allowInvalid ? { allowInvalid: true } : {}),
           ...(validateConfigOnly ? { validateConfigOnly: true } : {}),
           ...(beforeStateMigrations ? { beforeStateMigrations } : {}),

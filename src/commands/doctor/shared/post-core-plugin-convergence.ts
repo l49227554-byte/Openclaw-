@@ -203,12 +203,18 @@ export async function runPostCorePluginConvergence(params: {
   baselineInstallRecords?: Record<string, PluginInstallRecord>;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentEffect?: () => void;
+  signal?: AbortSignal;
 }): Promise<PostCoreConvergenceResult> {
   return await withPluginLifecycleLease(
-    { env: params.env, assertCurrent: params.beforePersistentEffect },
+    {
+      env: params.env,
+      acquisitionSignal: params.signal,
+      assertCurrent: params.beforePersistentEffect,
+    },
     (lease) =>
       runPostCorePluginConvergenceWithLease({
         ...params,
+        signal: params.signal ? AbortSignal.any([params.signal, lease.signal]) : lease.signal,
         beforePersistentEffect: () => lease.assertOwned(),
       }),
   );
@@ -217,6 +223,7 @@ export async function runPostCorePluginConvergence(params: {
 async function runPostCorePluginConvergenceWithLease(
   params: Parameters<typeof runPostCorePluginConvergence>[0],
 ): Promise<PostCoreConvergenceResult> {
+  params.signal?.throwIfAborted();
   const env: NodeJS.ProcessEnv = {
     ...params.env,
     OPENCLAW_COMPATIBILITY_HOST_VERSION: params.compatibilityHostVersion ?? VERSION,
@@ -248,6 +255,7 @@ async function runPostCorePluginConvergenceWithLease(
     env,
     ...(prunedBaseline ? { baselineRecords: prunedBaseline.records } : {}),
     onCapabilityConsent: params.onCapabilityConsent,
+    ...(params.signal ? { signal: params.signal } : {}),
     onWarning: ({ message, pluginId }) => {
       warnings.push({
         ...(pluginId ? { kind: "repair", pluginId } : {}),
@@ -284,6 +292,7 @@ async function runPostCorePluginConvergenceWithLease(
     records,
     env,
   });
+  params.signal?.throwIfAborted();
   const smokeRecords = filterRecordsToActive({ cfg: params.cfg, records, env });
   const resolveInstallRecordPaths = (
     installRecords: Record<string, PluginInstallRecord>,

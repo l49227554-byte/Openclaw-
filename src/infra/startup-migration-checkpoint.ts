@@ -60,6 +60,7 @@ type StartupMigrationLeaseWaitParams = Omit<StartupMigrationLeaseParams, "nowMs"
   now?: () => number;
   monotonicNow?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  signal?: AbortSignal;
 };
 
 class StartupMigrationLeaseConflictError extends Error {
@@ -404,13 +405,15 @@ export async function acquireStartupMigrationLeaseWithWait(
     pollIntervalMs,
     now: monotonicNow,
     sleep: params.sleep,
-    acquire: () =>
-      acquireStartupMigrationLease({
+    acquire: () => {
+      params.signal?.throwIfAborted();
+      return acquireStartupMigrationLease({
         env: params.env,
         nowMs: now(),
         owner,
         ownerPid: params.ownerPid,
-      }),
+      });
+    },
     shouldRetry: (error) =>
       error instanceof StartupMigrationLeaseConflictError && error.canWaitForSameHostOwner,
   });

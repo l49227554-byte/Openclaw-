@@ -29,7 +29,9 @@ async function planStartupPluginVerification(params: {
   cfg: OpenClawConfig;
   env: NodeJS.ProcessEnv;
   measure?: ConfigSnapshotReadMeasure;
+  signal?: AbortSignal;
 }) {
+  params.signal?.throwIfAborted();
   const { planStartupPluginConvergence } = await measureDoctorConfigPreflightStep(
     "plugin-plan-import",
     () => import("./doctor/shared/startup-plugin-convergence-plan.js"),
@@ -85,7 +87,9 @@ export async function runDoctorPluginConvergence(params: {
   cfg: OpenClawConfig;
   env: NodeJS.ProcessEnv;
   measure?: ConfigSnapshotReadMeasure;
+  signal?: AbortSignal;
 }): Promise<StartupPluginConvergenceResult> {
+  params.signal?.throwIfAborted();
   const plan = await planStartupPluginVerification(params);
   if (!plan.required) {
     return { quarantinedPlugins: [] };
@@ -129,6 +133,7 @@ export async function runDoctorPluginConvergence(params: {
         cfg: params.cfg,
         env: params.env,
         compatibilityHostVersion: resolveCompatibilityHostVersion(params.env),
+        ...(params.signal ? { signal: params.signal } : {}),
       }),
     params.measure,
   );
@@ -195,7 +200,9 @@ export async function refreshStartupPluginQuarantine(params: {
   cfg: OpenClawConfig;
   env: NodeJS.ProcessEnv;
   measure?: ConfigSnapshotReadMeasure;
+  signal?: AbortSignal;
 }): Promise<StartupPluginConvergenceResult> {
+  params.signal?.throwIfAborted();
   const plan = await planStartupPluginVerification(params);
   if (!plan.required) {
     return { quarantinedPlugins: [] };

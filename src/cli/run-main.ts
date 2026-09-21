@@ -37,11 +37,14 @@ import { maybeRunCliInContainer, parseCliContainerArgs } from "./container-targe
 import { tryRunGatewayServiceUpdateCapabilityProbe } from "./daemon-cli/update-capability.js";
 import { shouldStartLocalOnboarding } from "./fresh-install-config.js";
 import {
-  consumeGatewayFastPathRootOptionToken,
-  consumeGatewayRunOptionToken,
+  installGatewayCliStartupSignalOwner,
+  type GatewayStartupSignalOwner,
+} from "./gateway-cli/startup-signal.js";
+import {
   resolveGatewayCatalogCommandPath,
   resolveGatewayRunPreBootstrapOptions,
 } from "./gateway-run-argv.js";
+import { isGatewayRunFastPathArgv } from "./gateway-run-fast-path-argv.js";
 import {
   hasJsonOutputFlag,
   isJsonOutputModeActive,
@@ -75,6 +78,8 @@ import {
 } from "./startup-trace.js";
 import { normalizeWindowsArgv } from "./windows-argv.js";
 
+export { isGatewayRunFastPathArgv } from "./gateway-run-fast-path-argv.js";
+
 export {
   rewriteUpdateFlagArgv,
   shouldHandleBareRoot,
@@ -107,53 +112,6 @@ function isRemoteAgentDispatchInvocation(argv: string[], primary: string | null)
   return primary === "agent" && !argv.includes("--local");
 }
 
-export function isGatewayRunFastPathArgv(argv: string[]): boolean {
-  const invocation = resolveCliArgvInvocation(argv);
-  if (invocation.hasHelpOrVersion) {
-    return false;
-  }
-  const args = argv.slice(2);
-  let sawGateway = false;
-  let sawRun = false;
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (!arg || arg === "--") {
-      return false;
-    }
-    if (!sawGateway) {
-      const consumed = consumeGatewayFastPathRootOptionToken(args, index);
-      if (consumed > 0) {
-        index += consumed - 1;
-        continue;
-      }
-      if (arg !== "gateway") {
-        return false;
-      }
-      sawGateway = true;
-      continue;
-    }
-
-    const rootConsumed = consumeGatewayFastPathRootOptionToken(args, index);
-    if (rootConsumed > 0) {
-      index += rootConsumed - 1;
-      continue;
-    }
-    const consumed = consumeGatewayRunOptionToken(args, index);
-    if (consumed > 0) {
-      index += consumed - 1;
-      continue;
-    }
-    if (!sawRun && arg === "run") {
-      sawRun = true;
-      continue;
-    }
-    return false;
-  }
-
-  return sawGateway;
-}
-
 function isGatewayRunInvocationArgv(argv: string[]): boolean {
   const commandPath = resolveGatewayCatalogCommandPath(argv);
   return (
@@ -165,6 +123,7 @@ function isGatewayRunInvocationArgv(argv: string[]): boolean {
 async function tryRunGatewayRunFastPath(
   argv: string[],
   startupTrace: ReturnType<typeof createGatewayDispatchStartupTrace>,
+  startupSignalOwner?: GatewayStartupSignalOwner,
 ): Promise<boolean> {
   if (!isGatewayRunFastPathArgv(argv)) {
     return false;
@@ -214,7 +173,11 @@ async function tryRunGatewayRunFastPath(
         wasPreparedGatewayRunCoreStatePristine,
         wasPreparedGatewayRunStatePristine,
       } = await import("./gateway-cli/pre-bootstrap.js");
-      const prepared = await prepareGatewayRunBootstrap({ opts, runtime: defaultRuntime });
+      const prepared = await prepareGatewayRunBootstrap({
+        opts,
+        runtime: defaultRuntime,
+        ...(startupSignalOwner ? { signal: startupSignalOwner.signal } : {}),
+      });
       if (prepared) {
         skipPristineStartupStateMigrations = wasPreparedGatewayRunStatePristine();
         skipPristineCoreStateMigrations = wasPreparedGatewayRunCoreStatePristine();
@@ -230,19 +193,30 @@ async function tryRunGatewayRunFastPath(
     if (!shouldBootstrap) {
       return;
     }
-    await startupTrace.measure("gateway-run-bootstrap", async () => {
-      await ensureCliExecutionBootstrap({
-        runtime: defaultRuntime,
-        commandPath,
-        startupPolicy,
-        loadPlugins: false,
-        ...(beforeStateMigrations ? { beforeStateMigrations } : {}),
-        ...(skipPristineStartupStateMigrations ? { skipPristineStartupStateMigrations: true } : {}),
-        ...(skipPristineCoreStateMigrations ? { skipPristineCoreStateMigrations: true } : {}),
+    try {
+      await startupTrace.measure("gateway-run-bootstrap", async () => {
+        await ensureCliExecutionBootstrap({
+          runtime: defaultRuntime,
+          commandPath,
+          startupPolicy,
+          loadPlugins: false,
+          ...(startupSignalOwner ? { signal: startupSignalOwner.signal } : {}),
+          ...(beforeStateMigrations ? { beforeStateMigrations } : {}),
+          ...(skipPristineStartupStateMigrations
+            ? { skipPristineStartupStateMigrations: true }
+            : {}),
+          ...(skipPristineCoreStateMigrations ? { skipPristineCoreStateMigrations: true } : {}),
+        });
+        const { reloadTrustedGatewayRunEnvironment } =
+          await import("./gateway-cli/pre-bootstrap.js");
+        await reloadTrustedGatewayRunEnvironment({ runtime: defaultRuntime });
       });
-      const { reloadTrustedGatewayRunEnvironment } = await import("./gateway-cli/pre-bootstrap.js");
-      await reloadTrustedGatewayRunEnvironment({ runtime: defaultRuntime });
-    });
+    } catch (error) {
+      if (startupSignalOwner?.signal.aborted) {
+        return;
+      }
+      throw error;
+    }
   };
   const gateway = addGatewayRunCommand(
     program.command("gateway").description("Run, inspect, and query the WebSocket Gateway"),
@@ -1299,6 +1273,9 @@ async function runCliWithPreparedOutputMode(
   };
   let uninstallGatewayRunRuntimeHooks: (() => void) | null = null;
   let unhandledRejectionHandlerInstalled = false;
+  const gatewayStartupSignalOwner = isGatewayRunInvocation
+    ? installGatewayCliStartupSignalOwner()
+    : null;
 
   try {
     const startupTraces = [startupTrace, options.additionalStartupTrace].filter(
@@ -1353,6 +1330,12 @@ async function runCliWithPreparedOutputMode(
       uninstallGatewayRunRuntimeHooks = installGatewayRunRuntimeHooks({
         releaseManagedProxy: stopStartedProxy,
         refreshManagedProxy: replaceStartedProxy,
+        ...(gatewayStartupSignalOwner
+          ? {
+              startupSignal: gatewayStartupSignalOwner.signal,
+              releaseStartupSignalOwner: () => gatewayStartupSignalOwner.release(),
+            }
+          : {}),
       });
     }
 
@@ -1512,7 +1495,11 @@ async function runCliWithPreparedOutputMode(
     }
     if (
       !bootstrapProxyBeforeFastPath &&
-      (await tryRunGatewayRunFastPath(normalizedArgv, startupTrace))
+      (await tryRunGatewayRunFastPath(
+        normalizedArgv,
+        startupTrace,
+        gatewayStartupSignalOwner ?? undefined,
+      ))
     ) {
       return;
     }
@@ -1525,7 +1512,11 @@ async function runCliWithPreparedOutputMode(
 
     if (
       bootstrapProxyBeforeFastPath &&
-      (await tryRunGatewayRunFastPath(normalizedArgv, startupTrace))
+      (await tryRunGatewayRunFastPath(
+        normalizedArgv,
+        startupTrace,
+        gatewayStartupSignalOwner ?? undefined,
+      ))
     ) {
       return;
     }
@@ -1729,13 +1720,18 @@ async function runCliWithPreparedOutputMode(
       stopStartupProgress();
     }
   } finally {
-    pluginCliSession?.close();
-    uninstallGatewayRunRuntimeHooks?.();
-    const resources = options.harnessCleanup?.pluginResources;
-    await runCliDisposer("managed-proxy", stopStartedProxy, resources?.runCleanup);
-    await closeCliResources(options.harnessCleanup);
-    if (!resources) {
-      pauseNonTtyStdinForCliExit();
+    try {
+      gatewayStartupSignalOwner?.dispose();
+      pluginCliSession?.close();
+      uninstallGatewayRunRuntimeHooks?.();
+      const resources = options.harnessCleanup?.pluginResources;
+      await runCliDisposer("managed-proxy", stopStartedProxy, resources?.runCleanup);
+      await closeCliResources(options.harnessCleanup);
+      if (!resources) {
+        pauseNonTtyStdinForCliExit();
+      }
+    } finally {
+      gatewayStartupSignalOwner?.completeCleanup();
     }
   }
 }

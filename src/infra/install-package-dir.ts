@@ -6,6 +6,7 @@ import path from "node:path";
 import { assertDirectoryIdentitySync, readDirectoryIdentity } from "@openclaw/fs-safe/advanced";
 import type { MovePathPublicationReceipt } from "@openclaw/fs-safe/atomic";
 import { isRecord as isObjectRecord } from "@openclaw/normalization-core/record-coerce";
+import { logError } from "../logger.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { hasErrnoCode } from "./errno.js";
 import { FsSafeError, pathExists } from "./fs-safe.js";
@@ -274,7 +275,9 @@ export async function installPackageDir<
   afterInstall?: (installedDir: string) => Promise<InstallPackageDirSuccess | TAfterInstallFailure>;
   afterBackup?: (backupDir: string) => Promise<InstallPackageDirSuccess | TAfterInstallFailure>;
   beforePersistentApply?: () => void;
+  signal?: AbortSignal;
 }): Promise<InstallPackageDirSuccess | InstallPackageDirFailure | TAfterInstallFailure> {
+  params.signal?.throwIfAborted();
   const transactionRequest = resolvePackageDirInstallTransactionRequest(params);
   const deferCommit = transactionRequest !== undefined;
   // Retained transactions keep their original lease, even inside a successor's async context.
@@ -289,7 +292,9 @@ export async function installPackageDir<
       installBaseDir,
       candidatePaths: [params.targetDir],
     });
+    params.signal?.throwIfAborted();
   } catch (err) {
+    params.signal?.throwIfAborted();
     return { ok: false, error: `${params.copyErrorPrefix}: ${String(err)}` };
   }
   let installBaseRealPath: string;
@@ -302,7 +307,9 @@ export async function installPackageDir<
     if (installBaseRealPath !== initialInstallBaseRealPath) {
       throw new Error(INSTALL_BASE_CHANGED_ERROR_MESSAGE);
     }
+    params.signal?.throwIfAborted();
   } catch (err) {
+    params.signal?.throwIfAborted();
     if (isInstallBaseChangedError(err)) {
       params.logger?.warn?.(INSTALL_BASE_CHANGED_ABORT_WARNING);
     }
@@ -327,6 +334,9 @@ export async function installPackageDir<
   };
   const assertPersistentApply = () => {
     params.beforePersistentApply?.();
+    // A startup cancellation observed between the pre-move abort check and the
+    // rename must refuse publication; ownership guards alone do not see it.
+    params.signal?.throwIfAborted();
     assertRollbackOwned();
   };
   let stageDir: string | null = null;
@@ -406,6 +416,15 @@ export async function installPackageDir<
       error: [error, ...recovery].join("; "),
     };
   };
+  const failOrRethrow = async (error: string, cause?: unknown) => {
+    const failure = await fail(error, cause);
+    if (params.signal?.aborted && (published.backup || published.install)) {
+      // Cancellation can discard caller-buffered warnings; record recovery failures directly.
+      logError(`Plugin install recovery failed after cancellation: ${failure.error}`);
+    }
+    params.signal?.throwIfAborted();
+    return failure;
+  };
   const restoreBackup = async (): Promise<void> => {
     if (!published.backup) {
       return;
@@ -468,18 +487,21 @@ export async function installPackageDir<
         verbatimSymlinks: true,
       });
     }
+    params.signal?.throwIfAborted();
   } catch (err) {
-    return await fail(`${params.copyErrorPrefix}: ${String(err)}`, err);
+    return await failOrRethrow(`${params.copyErrorPrefix}: ${String(err)}`, err);
   }
 
   try {
     await params.afterCopy?.(stageDir);
+    params.signal?.throwIfAborted();
   } catch (err) {
-    return await fail(`post-copy validation failed: ${String(err)}`, err);
+    return await failOrRethrow(`post-copy validation failed: ${String(err)}`, err);
   }
 
   if (params.hasDeps) {
     try {
+      params.signal?.throwIfAborted();
       const restoreManifest = await sanitizeManifestForNpmInstall(
         stageDir,
         params.omitOpenClawHostDependency === true,
@@ -490,6 +512,7 @@ export async function installPackageDir<
         params.logger?.info?.(params.depsLogMessage);
         const npmRes = await (async () => {
           try {
+            params.signal?.throwIfAborted();
             return await runCommandWithTimeout(
               // Plugins install into isolated directories, so omitting peer deps can strip
               // runtime requirements that npm would otherwise materialize for the package.
@@ -510,6 +533,7 @@ export async function installPackageDir<
                   Math.max(params.timeoutMs, 300_000),
                 ),
                 cwd: stageDir,
+                ...(params.signal ? { signal: params.signal, killProcessTree: true } : {}),
                 env: createSafeNpmInstallEnv(process.env, {
                   npmConfigCwd: stageDir,
                   ignoreWorkspaces: true,
@@ -520,6 +544,7 @@ export async function installPackageDir<
             await restoreProjectNpmConfigAfterInstall(hiddenProjectNpmConfig);
           }
         })();
+        params.signal?.throwIfAborted();
         if (npmRes.code !== 0) {
           npmFailure = `npm install failed: ${formatNpmCommandFailureOutput(npmRes)}`;
         }
@@ -527,26 +552,37 @@ export async function installPackageDir<
         await restoreManifest();
       }
       if (npmFailure) {
-        return await fail(npmFailure);
+        return await failOrRethrow(npmFailure);
       }
     } catch (error) {
-      return await fail(`npm install failed: ${String(error)}`, error);
+      return await failOrRethrow(`npm install failed: ${String(error)}`, error);
     }
   }
 
   if (params.afterInstall) {
     try {
       const postInstallResult = await params.afterInstall(stageDir);
+      params.signal?.throwIfAborted();
       if (!postInstallResult.ok) {
-        const failed = await fail(postInstallResult.error);
+        const failed = await failOrRethrow(postInstallResult.error);
         return { ...postInstallResult, error: failed.error };
       }
     } catch (err) {
-      return await fail(`post-install validation failed: ${String(err)}`, err);
+      return await failOrRethrow(`post-install validation failed: ${String(err)}`, err);
     }
   }
 
-  if (params.mode === "update" && (await pathExists(canonicalTargetDir))) {
+  let existingTargetPresent = false;
+  if (params.mode === "update") {
+    try {
+      params.signal?.throwIfAborted();
+      existingTargetPresent = await pathExists(canonicalTargetDir);
+      params.signal?.throwIfAborted();
+    } catch (err) {
+      return await failOrRethrow(`${params.copyErrorPrefix}: ${String(err)}`, err);
+    }
+  }
+  if (existingTargetPresent) {
     const backupRoot = path.join(installBaseRealPath, ".openclaw-install-backups");
     const backupPath = path.join(
       backupRoot,
@@ -572,8 +608,11 @@ export async function installPackageDir<
         sourceHardlinks,
         to: backupPath,
       });
+      params.signal?.throwIfAborted();
     } catch (err) {
-      return await fail(`${params.copyErrorPrefix}: ${String(err)}`, err);
+      // A refused move leaves no publication receipt, so rollback has nothing to restore;
+      // a post-rename failure keeps the receipt and rollback still restores the original tree.
+      return await failOrRethrow(`${params.copyErrorPrefix}: ${String(err)}`, err);
     }
   }
 
@@ -582,16 +621,18 @@ export async function installPackageDir<
     // reach the replacement, while a refusal can still restore the original tree.
     try {
       const backupResult = await params.afterBackup(published.backup.path);
+      params.signal?.throwIfAborted();
       if (!backupResult.ok) {
-        const failed = await fail(backupResult.error);
+        const failed = await failOrRethrow(backupResult.error);
         return { ...backupResult, error: failed.error };
       }
     } catch (err) {
-      return await fail(`backup validation failed: ${String(err)}`, err);
+      return await failOrRethrow(`backup validation failed: ${String(err)}`, err);
     }
   }
 
   try {
+    params.signal?.throwIfAborted();
     await assertInstallBaseStable({
       installBaseDir,
       expectedRealPath: installBaseRealPath,
@@ -607,7 +648,7 @@ export async function installPackageDir<
     });
     stageDir = null;
   } catch (err) {
-    return await fail(`${params.copyErrorPrefix}: ${String(err)}`, err);
+    return await failOrRethrow(`${params.copyErrorPrefix}: ${String(err)}`, err);
   }
 
   if (published.backup) {
@@ -653,6 +694,7 @@ export async function installPackageDir<
           if (quarantine) {
             throw new Error("cannot commit an install after rollback has started");
           }
+          params.signal?.throwIfAborted();
           assertOwned?.();
           if (published.backup) {
             assertDirectoryIdentity(published.backup.path, published.backup);

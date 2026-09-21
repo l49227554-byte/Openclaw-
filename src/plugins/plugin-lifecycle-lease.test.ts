@@ -147,6 +147,76 @@ function runLeaseChild(
 }
 
 describe("plugin lifecycle lease", () => {
+  it("cancels startup plugin repair while another lifecycle owner still holds the lease", async () => {
+    const { repairMissingConfiguredPluginInstalls } =
+      await import("../commands/doctor/shared/missing-configured-plugin-install.js");
+    await withOpenClawTestState({ label: "plugin-repair-cancel-wait" }, async (state) => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      const holder = withPluginLifecycleLease({ env: state.env }, async () => {
+        entered.resolve();
+        await release.promise;
+      });
+      await entered.promise;
+      const controller = new AbortController();
+      const reason = new Error("Gateway startup interrupted by SIGTERM");
+      const repair = repairMissingConfiguredPluginInstalls({
+        cfg: {},
+        env: state.env,
+        signal: controller.signal,
+      });
+      const settled = repair.then(
+        () => ({ status: "completed" as const }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        controller.abort(reason);
+        const outcome = await Promise.race([
+          settled,
+          new Promise<{ status: "still-waiting" }>((resolve) => {
+            timeout = setTimeout(() => resolve({ status: "still-waiting" }), 500);
+          }),
+        ]);
+        expect(outcome).toMatchObject({
+          status: "rejected",
+          error: { outcome: { kind: "aborted" }, cause: reason },
+        });
+      } finally {
+        clearTimeout(timeout);
+        release.resolve();
+        await Promise.all([holder, settled]);
+      }
+    });
+  });
+
+  it("keeps acquisition cancellation separate from owned cleanup", async () => {
+    await withOpenClawTestState({ label: "plugin-lifecycle-cancel-cleanup" }, async (state) => {
+      const controller = new AbortController();
+      const reason = new Error("Gateway startup interrupted by SIGTERM");
+      const cleanupPath = state.path("cleanup.txt");
+      const operation = withPluginLifecycleLease(
+        { env: state.env, acquisitionSignal: controller.signal },
+        async (lease) => {
+          const instance = new PluginInstance("cancelled-install");
+          instance.lifecycle.onDispose(async () => {
+            lease.assertOwned();
+            await fs.writeFile(cleanupPath, "rolled back");
+            lease.assertOwned();
+          });
+          getPluginCache().setupModules.set(instance.pluginId, instance);
+          controller.abort(reason);
+          controller.signal.throwIfAborted();
+        },
+      );
+      await expect(operation).rejects.toBe(reason);
+      expect(await fs.readFile(cleanupPath, "utf8")).toBe("rolled back");
+      await expect(
+        withPluginLifecycleLease({ env: state.env, waitMs: 0 }, async () => "released"),
+      ).resolves.toBe("released");
+    });
+  });
+
   it.each([
     [false, false],
     [true, false],

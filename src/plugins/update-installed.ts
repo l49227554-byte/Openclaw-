@@ -1,6 +1,5 @@
 import { PLUGIN_CAPABILITY_CONSENT_REQUIRED } from "../../packages/gateway-protocol/src/capability-consent-error-details.js";
 import { formatCliCommand } from "../cli/command-format.js";
-import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { resolveNpmSpecMetadata } from "../infra/install-source-utils.js";
 import { parseRegistryNpmSpec } from "../infra/npm-registry-spec.js";
 import {
@@ -13,7 +12,6 @@ import {
   resolveSourceCheckoutBundledPluginIds,
 } from "./bundled-sources.js";
 import { capturePluginCapabilityConsentHandlerErrors } from "./capability-consent.js";
-import { buildClawHubPluginInstallRecordFields } from "./clawhub-install-records.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
 import { formatSourceBundledPluginNotice } from "./dev-source-root.js";
 import {
@@ -26,7 +24,7 @@ import {
   withPluginInstallTransactions,
 } from "./install-transaction.js";
 import { PLUGIN_INSTALL_ERROR_CODE, resolvePluginInstallDir } from "./install.js";
-import { buildNpmResolutionInstallFields, recordPluginInstall } from "./installs.js";
+import { recordPluginInstall } from "./installs.js";
 import { ManagedPluginLifecycleError } from "./management-lifecycle-error.js";
 import type { PackageManifest } from "./manifest.js";
 import {
@@ -46,10 +44,6 @@ import {
   readClawHubTrustErrorCode,
   runPluginUpdateAttempt,
   shouldSkipClawHubTrustFailureForExistingInstall,
-  type ClawHubPluginUpdateSuccess,
-  type GitPluginUpdateSuccess,
-  type MarketplacePluginUpdateSuccess,
-  type NpmPluginUpdateSuccess,
 } from "./update-attempt.js";
 import { preparePluginUpdateCapabilityConsent } from "./update-capability-consent.js";
 import {
@@ -58,6 +52,7 @@ import {
   runPluginUpdateWithClawHubLease,
 } from "./update-claw-lifecycle.js";
 import {
+  buildPluginUpdateInstallRecord,
   hasRunnableInstalledNpmPayload,
   migratePluginConfigId,
   repairRegisteredOpenClawHostLink,
@@ -96,7 +91,7 @@ export async function updateNpmInstalledPlugins(
   if (params.dryRun) {
     return await runInstalledPluginUpdate(params);
   }
-  return await withPluginLifecycleLease({}, (lease) =>
+  return await withPluginLifecycleLease({ acquisitionSignal: params.signal }, (lease) =>
     withPluginInstallTransactions(params, () => lease.assertOwned(), runInstalledPluginUpdate),
   );
 }
@@ -105,6 +100,7 @@ async function runInstalledPluginUpdate(
   params: UpdateInstalledPluginsParams,
   assertCurrent?: () => void,
 ): Promise<PluginUpdateSummary> {
+  params.signal?.throwIfAborted();
   const logger = params.logger ?? {};
   const retainOnUnavailable = params.retainOnUnavailable === true;
   const consentCallbacks = capturePluginCapabilityConsentHandlerErrors(params.onCapabilityConsent);
@@ -154,6 +150,7 @@ async function runInstalledPluginUpdate(
   const completedCanonicalUpdates = new Set<string>();
 
   for (const pluginId of targets) {
+    params.signal?.throwIfAborted();
     if (params.skipIds?.has(pluginId)) {
       recordSkippedOutcome(pluginId, `Skipping "${pluginId}" (already updated).`);
       continue;
@@ -416,6 +413,7 @@ async function runInstalledPluginUpdate(
         : await resolveNpmSpecMetadata({
             spec: effectiveSpec!,
             timeoutMs: params.timeoutMs,
+            ...(params.signal ? { signal: params.signal } : {}),
           });
       if (metadataResult.ok) {
         const bypassTrustedOfficialUnchangedNpmCheck = shouldBypassTrustedOfficialUnchangedNpmCheck(
@@ -430,21 +428,22 @@ async function runInstalledPluginUpdate(
               metadata: metadataResult.metadata,
               spec: effectiveSpec!,
               timeoutMs: params.timeoutMs,
+              ...(params.signal ? { signal: params.signal } : {}),
             })
           : undefined;
-        const expectedIntegrityMetadata =
-          trustedPrereleaseFallback?.metadata ?? metadataResult.metadata;
+        params.signal?.throwIfAborted();
+        const expectedMetadata = trustedPrereleaseFallback?.metadata ?? metadataResult.metadata;
         expectedIntegrity =
           catalogExpectedIntegrity ??
           expectedIntegrityForNpmUpdate({
             effectiveSpec,
-            metadata: expectedIntegrityMetadata,
+            metadata: expectedMetadata,
             record,
             trustedSourceLinkedOfficialInstall,
           });
         if (
           !catalogExpectedIntegrity &&
-          (!isNpmMetadataCompatibleWithCurrentHost(expectedIntegrityMetadata) ||
+          (!isNpmMetadataCompatibleWithCurrentHost(expectedMetadata) ||
             (bypassTrustedOfficialUnchangedNpmCheck && !trustedPrereleaseFallback))
         ) {
           expectedIntegrity = undefined;
@@ -472,6 +471,7 @@ async function runInstalledPluginUpdate(
             resolution: metadataResult.metadata,
             updateChannel,
             timeoutMs: params.timeoutMs,
+            ...(params.signal ? { signal: params.signal } : {}),
             hasSpecOverride: Boolean(npmSpecOverride),
             syncOfficialInstall: Boolean(
               params.syncOfficialPluginInstalls && trustedSourceLinkedOfficialInstall,
@@ -528,6 +528,7 @@ async function runInstalledPluginUpdate(
           installNpmSpecForUpdate,
           logger,
           onIntegrityDrift: params.onIntegrityDrift,
+          ...(params.signal ? { signal: params.signal } : {}),
         }),
       );
     const attempt = await runPluginUpdateWithClawHubLease({
@@ -536,7 +537,18 @@ async function runInstalledPluginUpdate(
       dryRun: params.dryRun === true,
       run: runAttempt,
       beforePersistentEffect: assertCurrent,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
+    if (attempt.kind === "result" && attempt.result.ok && !params.dryRun) {
+      // Keep rollback custody before cancellation or consent can reject the result.
+      recordPluginUpdateTransaction(
+        transactionState,
+        attempt.result,
+        pluginId,
+        attempt.result.pluginId,
+      );
+    }
+    params.signal?.throwIfAborted();
     consentCallbacks.rethrowCallbackError();
     if (attempt.kind === "exception") {
       const error = attempt.error;
@@ -624,6 +636,7 @@ async function runInstalledPluginUpdate(
           hasSpecOverride: Boolean(npmSpecOverride),
           updateChannel,
           timeoutMs: params.timeoutMs,
+          ...(params.signal ? { signal: params.signal } : {}),
           channelFallbackSuffix,
           checkNewerExactPinnedClawHubDefaultLine:
             Boolean(trustedOfficialClawHubInstall) && recordSpec === record.spec,
@@ -634,45 +647,18 @@ async function runInstalledPluginUpdate(
     }
 
     const resolvedPluginId = result.pluginId;
-    recordPluginUpdateTransaction(transactionState, result, pluginId, resolvedPluginId);
     if (resolvedPluginId !== pluginId) {
       next = migratePluginConfigId(next, pluginId, resolvedPluginId);
     }
 
     const nextVersion = result.version ?? (await readInstalledPackageVersion(result.targetDir));
-    let installRecord: PluginInstallRecord;
-    if (resultSource === "npm") {
-      const npmResult = result as NpmPluginUpdateSuccess;
-      installRecord = {
-        source: "npm",
-        spec: recordSpec,
-        ...buildNpmResolutionInstallFields(npmResult.npmResolution),
-      };
-    } else if (resultSource === "clawhub") {
-      const clawhubResult = result as ClawHubPluginUpdateSuccess;
-      installRecord = {
-        ...buildClawHubPluginInstallRecordFields(clawhubResult.clawhub),
-        spec: recordSpec ?? record.spec ?? `clawhub:${record.clawhubPackage!}`,
-      };
-    } else if (record.source === "git") {
-      const gitResult = result as GitPluginUpdateSuccess;
-      installRecord = {
-        source: "git",
-        spec: effectiveSpec ?? record.spec,
-        resolvedAt: gitResult.git.resolvedAt,
-        gitUrl: gitResult.git.url,
-        gitRef: gitResult.git.ref,
-        gitCommit: gitResult.git.commit,
-      };
-    } else {
-      const marketplaceResult = result as MarketplacePluginUpdateSuccess;
-      installRecord = {
-        source: "marketplace",
-        marketplaceName: marketplaceResult.marketplaceName ?? record.marketplaceName,
-        marketplaceSource: record.marketplaceSource,
-        marketplacePlugin: record.marketplacePlugin,
-      };
-    }
+    const installRecord = buildPluginUpdateInstallRecord({
+      result,
+      resultSource,
+      record,
+      effectiveSpec,
+      recordSpec,
+    });
     next = recordPluginInstall(
       next,
       capabilityConsent.acceptInstallRecord({

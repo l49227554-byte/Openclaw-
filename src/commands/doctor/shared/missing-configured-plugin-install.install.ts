@@ -91,6 +91,7 @@ export async function installCandidate(params: {
   repairReason?: InstallCandidateRepairReason;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentEffect?: () => void | Promise<void>;
+  signal?: AbortSignal;
 }): Promise<{
   records: Record<string, PluginInstallRecord>;
   changes: string[];
@@ -100,6 +101,7 @@ export async function installCandidate(params: {
   code?: string;
 }> {
   const consent = capturePluginCapabilityConsentHandlerErrors(params.onCapabilityConsent);
+  params.signal?.throwIfAborted();
   try {
     const result = await installCandidatePackage({
       ...params,
@@ -176,6 +178,7 @@ async function installCandidatePackage(
           : undefined,
         coreVersion: resolveCompatibilityHostVersion(params.env),
         versionBoundToCore: candidate.versionBoundToOpenClaw,
+        ...(params.signal ? { signal: params.signal } : {}),
       })
     : null;
   const clawhubInstallSpec = clawhubSpecs?.installSpec ?? candidate.clawhubSpec;
@@ -265,6 +268,7 @@ async function installCandidatePackage(
             expectedPluginId: candidate.pluginId,
             expectedIntegrity: source.expectedIntegrity,
             onBeforePluginArtifactCommit: capabilityConsent.onBeforePluginArtifactCommit,
+            ...(params.signal ? { signal: params.signal } : {}),
           });
           if (source.source === "clawhub") {
             const result = await installPluginFromClawHub({

@@ -2,10 +2,12 @@ import { clearRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { markGatewayRestartTrace } from "../../gateway/restart-trace.js";
 import type { GatewayStartupOperation } from "../../gateway/server-public.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { acquireGatewayLock, type GatewayLockOptions } from "../../infra/gateway-lock.js";
 import { SqliteIntegrityWorkerInterruptedError } from "../../infra/sqlite-integrity-worker-error.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
+import { sleep } from "../../utils/sleep.js";
 
 export function createGatewayStartupOperations(): {
   run: GatewayStartupOperation;
@@ -110,4 +112,20 @@ export async function prepareGatewayRestartIteration(
   }
   await reloadTaskRuntimeStateFromStore();
   markGatewayRestartTrace("restart.next-start");
+}
+
+export async function acquireGatewayStartupLock(
+  params: Pick<GatewayLockOptions, "port" | "supervisor" | "lifecycleDeadlineMs"> & {
+    signal?: AbortSignal;
+  },
+): Promise<Awaited<ReturnType<typeof acquireGatewayLock>>> {
+  return await acquireGatewayLock({
+    port: params.port,
+    listenerMode: params.supervisor ? "supervised" : "foreground",
+    supervisor: params.supervisor,
+    ...(params.signal ? { sleep: async (ms: number) => await sleep(ms, params.signal) } : {}),
+    ...(params.lifecycleDeadlineMs !== undefined
+      ? { lifecycleDeadlineMs: params.lifecycleDeadlineMs }
+      : {}),
+  });
 }

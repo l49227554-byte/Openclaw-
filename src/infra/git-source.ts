@@ -19,12 +19,14 @@ export async function acquireGitSource(params: {
   refMode: "detached" | "resolve-remote" | "shallow-branch";
   timeoutMs?: number;
   workTimeoutMs?: number | null;
+  signal?: AbortSignal;
   commandEnv?: () => { baseEnv?: NodeJS.ProcessEnv; env?: NodeJS.ProcessEnv };
   cloneSeparator?: boolean;
   recordCommit?: boolean;
   formatFailure?: (failure: GitSourceFailure) => string;
   cleanupOnFailure?: () => Promise<void>;
 }): Promise<{ ok: true; commit?: string } | { ok: false; error: string }> {
+  params.signal?.throwIfAborted();
   const run = (argv: string[], cwd?: string, work = false) =>
     runCommandWithTimeout(argv, {
       ...params.commandEnv?.(),
@@ -32,6 +34,7 @@ export async function acquireGitSource(params: {
       timeoutMs: work
         ? resolveInstallWorkTimeoutMs(params.workTimeoutMs, params.timeoutMs ?? 120_000)
         : (params.timeoutMs ?? 120_000),
+      ...(params.signal ? { signal: params.signal } : {}),
     });
   const failure = async (details: GitSourceFailure) => {
     await params.cleanupOnFailure?.();
@@ -63,6 +66,7 @@ export async function acquireGitSource(params: {
   }
   argv.push(params.url, params.repoDir);
   const clone = await run(argv, undefined, true);
+  params.signal?.throwIfAborted();
   if (clone.code !== 0) {
     return await failure({ action: "clone", ...clone });
   }
@@ -95,6 +99,7 @@ export async function acquireGitSource(params: {
       params.repoDir,
       true,
     );
+    params.signal?.throwIfAborted();
     if (checkout.code !== 0) {
       return await failure({ action: "checkout", ...checkout });
     }
@@ -104,6 +109,7 @@ export async function acquireGitSource(params: {
     return { ok: true };
   }
   const rev = await run(["git", "rev-parse", "HEAD"], params.repoDir);
+  params.signal?.throwIfAborted();
   if (rev.code !== 0) {
     return await failure({ action: "resolve commit for", ...rev });
   }

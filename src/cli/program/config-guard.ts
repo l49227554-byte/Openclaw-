@@ -232,6 +232,7 @@ export async function ensureConfigReady(
     skipPristineCoreStateMigrations?: boolean;
     skipPristineStartupStateMigrations?: boolean;
     validateConfigOnly?: boolean;
+    signal?: AbortSignal;
   },
   recoveryDeps?: InvalidConfigRecoveryDeps,
 ): Promise<void> {
@@ -302,6 +303,7 @@ export async function ensureConfigReady(
         ...(params.skipPristineCoreStateMigrations
           ? { skipPristineCoreStateMigrations: true }
           : {}),
+        ...(params.signal ? { signal: params.signal } : {}),
       });
     try {
       return !params.suppressDoctorStdout

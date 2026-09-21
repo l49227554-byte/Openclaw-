@@ -55,7 +55,12 @@ export async function requestGatewayLocalHttpProbe(params: {
       }
       settled = true;
       clearTimeout(deadline);
+      params.signal?.removeEventListener("abort", onAbort);
       resolve(result);
+    };
+    const onAbort = () => {
+      req.destroy();
+      finish(null);
     };
     const pins = params.tlsFingerprints?.map(normalizeTlsFingerprint);
     const request = pins ? httpsRequest : httpRequest;
@@ -111,6 +116,7 @@ export async function requestGatewayLocalHttpProbe(params: {
       req.destroy();
       finish(null);
     }, params.timeoutMs);
+    params.signal?.addEventListener("abort", onAbort, { once: true });
     req.once("timeout", () => {
       req.destroy();
       finish(null);

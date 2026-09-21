@@ -2,6 +2,7 @@ import path from "node:path";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { resolveUserPath } from "../utils.js";
+import { buildClawHubPluginInstallRecordFields } from "./clawhub-install-records.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "./config-state.js";
 import {
   getExternalizedBundledPluginLegacyPathSuffix,
@@ -10,11 +11,18 @@ import {
 } from "./externalized-bundled-plugins.js";
 import { resolveDefaultPluginExtensionsDir } from "./install-paths.js";
 import { resolvePluginInstallDir } from "./install.js";
+import { buildNpmResolutionInstallFields } from "./installs.js";
 import { resolvePackageExtensionEntries, type PackageManifest } from "./manifest.js";
 import { validatePackageExtensionEntriesForInstall } from "./package-entry-resolution.js";
 import { reconcileRegisteredOpenClawHostLinks } from "./plugin-peer-link.js";
 import { resetPluginSlotsToDefaults } from "./slots.js";
 import { setPluginEnabledInConfig } from "./toggle-config.js";
+import type {
+  NpmPluginUpdateSuccess,
+  ClawHubPluginUpdateSuccess,
+  GitPluginUpdateSuccess,
+  MarketplacePluginUpdateSuccess,
+} from "./update-attempt.js";
 import type { PluginUpdateLogger } from "./update-source.js";
 
 export async function hasRunnableInstalledNpmPayload(params: {
@@ -393,4 +401,56 @@ export async function repairOpenClawPeerLinksForNpmInstalls(params: {
     },
   });
   return result.repaired > 0;
+}
+
+export function buildPluginUpdateInstallRecord(params: {
+  result:
+    | NpmPluginUpdateSuccess
+    | ClawHubPluginUpdateSuccess
+    | GitPluginUpdateSuccess
+    | MarketplacePluginUpdateSuccess;
+  resultSource: PluginInstallRecord["source"];
+  record: PluginInstallRecord;
+  effectiveSpec?: string;
+  recordSpec?: string;
+}): PluginInstallRecord {
+  const { result, resultSource, record, effectiveSpec, recordSpec } = params;
+  let installRecord: PluginInstallRecord;
+  if (resultSource === "npm") {
+    // SAFETY: runPluginUpdateAttempt selects the npm installer for this source and preserves its result.
+    const npmResult = result as NpmPluginUpdateSuccess;
+    installRecord = {
+      source: "npm",
+      spec: recordSpec,
+      ...buildNpmResolutionInstallFields(npmResult.npmResolution),
+    };
+  } else if (resultSource === "clawhub") {
+    // SAFETY: Both the primary and fallback ClawHub attempts return the ClawHub install contract.
+    const clawhubResult = result as ClawHubPluginUpdateSuccess;
+    installRecord = {
+      ...buildClawHubPluginInstallRecordFields(clawhubResult.clawhub),
+      spec: recordSpec ?? record.spec ?? `clawhub:${record.clawhubPackage!}`,
+    };
+  } else if (record.source === "git") {
+    // SAFETY: The attempt uses the Git installer for this record; only ClawHub has a fallback.
+    const gitResult = result as GitPluginUpdateSuccess;
+    installRecord = {
+      source: "git",
+      spec: effectiveSpec ?? record.spec,
+      resolvedAt: gitResult.git.resolvedAt,
+      gitUrl: gitResult.git.url,
+      gitRef: gitResult.git.ref,
+      gitCommit: gitResult.git.commit,
+    };
+  } else {
+    // SAFETY: The caller admits only npm, ClawHub, Git, or marketplace records before running the attempt.
+    const marketplaceResult = result as MarketplacePluginUpdateSuccess;
+    installRecord = {
+      source: "marketplace",
+      marketplaceName: marketplaceResult.marketplaceName ?? record.marketplaceName,
+      marketplaceSource: record.marketplaceSource,
+      marketplacePlugin: record.marketplacePlugin,
+    };
+  }
+  return installRecord;
 }

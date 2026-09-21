@@ -12,16 +12,12 @@ import {
 import type { GatewayHostLifecycle, GatewayStartupOperation } from "../../gateway/server-public.js";
 import { GatewayStartupCleanupError } from "../../gateway/server-shutdown.js";
 import type { startGatewayServer } from "../../gateway/server.js";
-import {
-  registerGatewayInstallationReplacementHandler,
-  type GatewayInstallationReplacement,
-} from "../../gateway/stale-install.js";
+import type { GatewayInstallationReplacement } from "../../gateway/stale-install.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   GATEWAY_BOOT_REASON_MAX_UTF16_CODE_UNITS,
   type GatewayBootLifecycleCompletion,
 } from "../../infra/gateway-boot-lifecycle.js";
-import { acquireGatewayLock } from "../../infra/gateway-lock.js";
 import { consumeGatewaySuspendHandoff } from "../../infra/gateway-suspend-coordinator.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
 import type { GatewayRestartEmitter } from "../../infra/restart.js";
@@ -51,7 +47,9 @@ import {
   resolveGatewayShutdownBudget,
 } from "./run-loop-shutdown-budget.js";
 import { formatShutdownReason } from "./run-loop-shutdown-format.js";
+import { installGatewayRunSignalHandlers } from "./run-loop-signals.js";
 import {
+  acquireGatewayStartupLock,
   createGatewayStartupOperations,
   prepareGatewayRestartIteration,
 } from "./run-loop-startup.js";
@@ -87,7 +85,11 @@ export async function runGatewayLoop(params: {
   beginBoot?: (startedAtMs: number) => void | Promise<void>;
   completeBoot?: (completion: GatewayBootLifecycleCompletion) => void;
   onRestartStartupFailure?: (error: unknown, signal: AbortSignal) => Promise<void>;
+  /** Signal owned by CLI preflight until this loop installs its process handlers. */
+  startupSignal?: AbortSignal;
+  releaseStartupSignalOwner?: () => void;
 }) {
+  params.startupSignal?.throwIfAborted();
   // macOS/BSD process inspection reports process.title instead of the original
   // argv. Give the long-running Gateway a verifiable identity for lock readers.
   if (process.title === "openclaw") {
@@ -98,6 +100,7 @@ export async function runGatewayLoop(params: {
   // dist chunks; a late import can fail and leave the restart token unconsumed,
   // coalescing every subsequent restart.
   const eagerLifecycleRuntime = await gatewayLifecycleRuntimeLoader.load();
+  params.startupSignal?.throwIfAborted();
   const supervisor = eagerLifecycleRuntime.detectGatewayRespawnSupervisorIdentity(
     process.env,
     process.platform,
@@ -105,18 +108,12 @@ export async function runGatewayLoop(params: {
   );
   const supervisorMode = supervisor?.kind ?? null;
   const restartDecision = eagerLifecycleRuntime.resolveGatewayRestartDecision();
-  let lock = await acquireGatewayLock({
-    port: params.lockPort,
-    listenerMode: supervisorMode ? "supervised" : "foreground",
-    supervisor,
-    ...(params.lifecycleLockDeadlineMs !== undefined
-      ? { lifecycleDeadlineMs: params.lifecycleLockDeadlineMs }
-      : {}),
-  });
+
   // Process-owned signal handling must survive gaps with no listening server.
   // Node's signal listeners and pending promises do not retain the event loop.
   const processLifetime = params.ownsProcessLifecycle ? new MessageChannel() : undefined;
   processLifetime?.port1.ref();
+  let lock: Awaited<ReturnType<typeof acquireGatewayStartupLock>> = null;
   let server: Awaited<ReturnType<typeof startGatewayServer>> | null = null;
   let hostLifecycle: ReturnType<typeof createGatewayHostLifecycle> | undefined;
   let startupOperations = createGatewayStartupOperations();
@@ -156,11 +153,9 @@ export async function runGatewayLoop(params: {
   const getManagedUpdateOwner = () =>
     (pendingStartupRequest ?? activeRestartRequest)?.restartIntent?.successorOwner;
 
+  let releaseRunSignalHandlers: (() => void) | undefined;
   const cleanupSignals = () => {
-    releaseInstallationObserver();
-    process.removeListener("SIGTERM", onSigterm);
-    process.removeListener("SIGINT", onSigint);
-    process.removeListener("SIGUSR2", onRestartSignal);
+    releaseRunSignalHandlers?.();
     processLifetime?.port1.close();
     processLifetime?.port2.close();
   };
@@ -353,9 +348,8 @@ export async function runGatewayLoop(params: {
       }
       if (!updateSuccessor.stopRequested) {
         try {
-          lock = await acquireGatewayLock({
+          lock = await acquireGatewayStartupLock({
             port: params.lockPort,
-            listenerMode: supervisorMode ? "supervised" : "foreground",
             supervisor,
           });
         } catch (err) {
@@ -1233,22 +1227,31 @@ export async function runGatewayLoop(params: {
     });
   };
 
-  process.on("SIGTERM", onSigterm);
-  process.on("SIGINT", onSigint);
-  // SIGUSR1 belongs to Node's on-demand inspector; never register a listener for it.
-  process.on("SIGUSR2", onRestartSignal);
-  const releaseInstallationObserver = registerGatewayInstallationReplacementHandler((fact) => {
-    installationReplacement = fact;
-    gatewayLog.warn(fact.message);
-    if (!supervisorMode) {
-      gatewayLog.error(
-        `The foreground Gateway must stop after its installation was replaced. Restart it with: ${formatCliCommand("openclaw gateway run")}`,
-      );
-    }
-    request("restart", "SIGUSR2", fact.reason);
-  });
-
   try {
+    // Acquisition belongs to cleanup so cancellation cannot strand the lock.
+    lock = await acquireGatewayStartupLock({
+      port: params.lockPort,
+      supervisor,
+      lifecycleDeadlineMs: params.lifecycleLockDeadlineMs,
+      signal: params.startupSignal,
+    });
+    params.startupSignal?.throwIfAborted();
+
+    releaseRunSignalHandlers = installGatewayRunSignalHandlers({
+      onSigterm,
+      onSigint,
+      onRestartSignal,
+      onInstallationReplacement: (fact) => {
+        installationReplacement = fact;
+      },
+      requestRestart: (reason) => request("restart", "SIGUSR2", reason),
+      supervised: Boolean(supervisorMode),
+      logger: gatewayLog,
+    });
+    // Install normal handlers before releasing preflight signal ownership.
+    params.releaseStartupSignalOwner?.();
+    params.startupSignal?.throwIfAborted();
+
     // Keep process alive; SIGUSR2 triggers an in-process restart (no supervisor required).
     // SIGTERM/SIGINT still exit after a graceful shutdown.
     let isFirstIteration = true;

@@ -214,6 +214,7 @@ const runtimeConsumers = [
     "src/infra/update-managed-service-handoff-lifecycle.test.ts",
     "src/infra/update-managed-service-handoff-repair-validating.test.ts",
     "src/infra/update-managed-service-handoff-repair-verifying.test.ts",
+    "src/plugin-state/plugin-state-store.authority.test.ts",
   ].map((file) => ({
     file,
     configs: ["test/vitest/vitest.infra.config.ts"],

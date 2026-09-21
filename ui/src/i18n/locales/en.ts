@@ -3893,6 +3893,8 @@ export const en: TranslationMap & {
       pendingOne: "{count} unanswered question",
       pendingMany: "{count} unanswered questions",
       inComposer: "Answer above the message box.",
+      archived: "No longer pending",
+      archivedReason: "The conversation moved on. You can still answer this question.",
       sendFailed: "Could not send your answer. Your draft is preserved.",
     },
     questions: {

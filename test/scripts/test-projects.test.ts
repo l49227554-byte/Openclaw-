@@ -5052,6 +5052,14 @@ describe("scripts/test-projects full-suite sharding", () => {
         const toolingPlans = targetedPlans("test/vitest/vitest.tooling.config.ts");
         expect(toolingPlans.length).toBeGreaterThan(1);
         expect(toolingPlans.every((plan) => plan.forwardedArgs.length <= 2)).toBe(true);
+        const toolingTargets = toolingPlans.flatMap((plan) => plan.forwardedArgs);
+        expect(toolingTargets.filter((file) => file.startsWith("test/fixtures/"))).toEqual([]);
+        expect(plans.flatMap((plan) => plan.forwardedArgs)).toEqual(
+          expect.arrayContaining([
+            "test/scripts/oxlint-boundary-guards.test.ts",
+            "test/scripts/ts-topology.test.ts",
+          ]),
+        );
         for (const plan of plans.filter((entry) => entry.forwardedArgs.length > 0)) {
           expect(plan.timingTargets).toEqual(plan.forwardedArgs);
           expect(plan.includePatterns).toBeNull();

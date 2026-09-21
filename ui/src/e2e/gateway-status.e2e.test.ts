@@ -258,6 +258,7 @@ suite.define(() => {
         await page.setViewportSize({ width: 390, height: 844 });
         await page.getByRole("button", { name: "Expand sidebar" }).click();
         await footer.locator(".sidebar-identity-card").click();
+        await menu.getByText("Alex", { exact: true }).waitFor();
         const retry = menu.locator('wa-dropdown-item[value="command:retry-connect"]');
         await retry.waitFor();
         expect(await menu.locator(".sidebar-identity-menu__outbox").count()).toBe(0);
@@ -265,6 +266,7 @@ suite.define(() => {
         expect(bounds).not.toBeNull();
         expect(bounds!.x).toBeGreaterThanOrEqual(0);
         expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+        expect(await footer.textContent()).not.toContain("in outbox");
         if (process.env.OPENCLAW_CAPTURE_UI_PROOF === "1") {
           await page.screenshot({
             path: path.join(suite.artifactDir, "outbox-account-menu-mobile.png"),

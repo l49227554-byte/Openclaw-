@@ -21,6 +21,8 @@ import * as updateRunLedger from "../../infra/update-run-ledger.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import * as stateOwnership from "../../state/openclaw-state-ownership.js";
 import * as shared from "./shared.js";
+import * as admissionEnvOwner from "./update-command-admission-env.js";
+import { resolveUpdateCommandAdmissionEnv } from "./update-command-admission-env.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
 import { executeMutableUpdate } from "./update-command-execution.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
@@ -28,7 +30,7 @@ import * as managedContext from "./update-command-managed-context.js";
 import { finishAlreadyCurrentUpdate } from "./update-command-noop.js";
 import type { RefuseUpdate } from "./update-command-result.js";
 import * as commandRun from "./update-command-run.js";
-import { prepareUpdateCommand, resolveUpdateCommandAdmissionEnv } from "./update-command-run.js";
+import { prepareUpdateCommand } from "./update-command-run.js";
 import { preflightUpdateCommandSchemas } from "./update-command-schema.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import * as servicePlan from "./update-command-service-plan.js";
@@ -224,14 +226,16 @@ it.each(["preparation", "environment", "state preflight"] as const)(
       }
       return prepared;
     });
-    const resolveEnv = commandRun.resolveUpdateCommandAdmissionEnv;
-    vi.spyOn(commandRun, "resolveUpdateCommandAdmissionEnv").mockImplementation(async (params) => {
-      const env = await resolveEnv(params);
-      if (boundary === "environment") {
-        await expire();
-      }
-      return env;
-    });
+    const resolveEnv = admissionEnvOwner.resolveUpdateCommandAdmissionEnv;
+    vi.spyOn(admissionEnvOwner, "resolveUpdateCommandAdmissionEnv").mockImplementation(
+      async (params) => {
+        const env = await resolveEnv(params);
+        if (boundary === "environment") {
+          await expire();
+        }
+        return env;
+      },
+    );
     const admit = commandRun.admitUpdateCommandRun;
     vi.spyOn(commandRun, "admitUpdateCommandRun").mockImplementation(async (params) => {
       admitting = true;

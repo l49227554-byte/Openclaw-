@@ -6,7 +6,7 @@ import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { createUpdateProgress, type UpdateDisplayProgress } from "./progress.js";
-import type { UpdateCommandOptions } from "./shared.js";
+import { resolveGitInstallDir, type UpdateCommandOptions } from "./shared.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import {
   acquireLegacyUpdateInitializationFence,
@@ -64,10 +64,45 @@ export async function initializeAndRunUpdate(
               return;
             }
             const packageAdmission = { serviceRoot: target.managedServiceRoot };
+            const freebsdRootFence = prepared.freebsdRootAdmission
+              ? await executor.enter(target.root, {
+                  preflight: true,
+                  serviceRoot: target.managedServiceRoot,
+                })
+              : undefined;
+            const assertInitializationCurrent = () => {
+              prepared.freebsdRootAdmission?.assertCurrent();
+              freebsdRootFence?.assertCurrent();
+            };
+            const revalidateInitialization = async (candidateRoot?: string) => {
+              if (!prepared.freebsdRootAdmission || !freebsdRootFence) {
+                return;
+              }
+              await prepared.freebsdRootAdmission.revalidate(
+                {
+                  roots: [
+                    prepared.discoveredRoot,
+                    target.root,
+                    ...(target.packageInstallTarget?.packageRoot
+                      ? [target.packageInstallTarget.packageRoot]
+                      : []),
+                    ...(target.switchToGit ? [resolveGitInstallDir()] : []),
+                    ...(candidateRoot ? [candidateRoot] : []),
+                  ],
+                  env,
+                  timeoutMs: prepared.timeoutMs,
+                },
+                freebsdRootFence.assertCurrent,
+              );
+            };
+            if (freebsdRootFence) {
+              await revalidateInitialization();
+            }
             const initialization: InitializedUpdate = {
               env,
               runId,
               executor,
+              ...(freebsdRootFence ? { freebsdRootFence } : {}),
               registerRun: async (run) => {
                 registerRun(run);
                 handleFailure = await prepareUpdateCommandFailureTriage(
@@ -114,6 +149,7 @@ export async function initializeAndRunUpdate(
               }),
               installTarget: target.packageInstallTarget,
               requirePackageReplacement: target.managedServiceRoot !== undefined,
+              ...(freebsdRootFence ? { assertCurrent: assertInitializationCurrent } : {}),
             });
             const runSelectedTarget = async () => {
               assertUpdatePackageActivationAdmission(target.root, packageAdmission);
@@ -189,9 +225,13 @@ export async function initializeAndRunUpdate(
                 serviceRoot: target.managedServiceRoot,
               });
               const assertCurrent = () => {
+                assertInitializationCurrent();
                 fence.assertCurrent();
                 assertUpdatePackageActivationAdmission(target.root, packageAdmission);
               };
+              if (freebsdRootFence) {
+                await revalidateInitialization();
+              }
               const { stagePackageInstallUpdate } = await import("./update-command-package.js");
               assertCurrent();
               const legacyFence = acquireLegacyUpdateInitializationFence({
@@ -213,6 +253,9 @@ export async function initializeAndRunUpdate(
                           );
                         }
                         assertCurrent();
+                        if (freebsdRootFence) {
+                          await revalidateInitialization(initialization.stagedPackage?.root);
+                        }
                         await initializeUpdateStateFromTarget({
                           root: initialization.stagedPackage?.root ?? target.root,
                           env,

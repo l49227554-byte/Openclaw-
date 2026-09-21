@@ -20,6 +20,7 @@ export function assertUpdateCommandRecovery(opts: UpdateCommandOptions): void {
 }
 
 export function assertUpdateCommandRecoveryState(opts: UpdateCommandOptions): void {
+  opts.run?.freebsdRootAdmission?.assertCurrent();
   if (opts.recovery) {
     throw new UpdateCommandRecoveryPendingError(
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
@@ -39,12 +40,14 @@ export async function assertUpdateCommandPackageFinalization(
 ): Promise<void> {
   const run = params.opts.run;
   const executor = run?.executorFence;
+  const admission = run?.freebsdRootAdmission;
   const assertCurrent = () => {
     if (params.opts.run !== run || run?.executorFence !== executor) {
       throw new UpdateCommandRecoveryPendingError(
         "Package finalization lost its original executor.",
       );
     }
+    admission?.assertCurrent();
     executor?.assertCurrent();
   };
   try {
@@ -76,11 +79,13 @@ export function createUpdateCommandFinalizationFence(
 ): () => void {
   const originalRun = params.opts.run;
   const executor = originalRun?.executorFence;
+  const admission = originalRun?.freebsdRootAdmission;
   const assertCurrent = () => {
     try {
       if (params.opts.run !== originalRun || originalRun?.executorFence !== executor) {
         throw new Error("Package finalization lost its original executor.");
       }
+      admission?.assertCurrent();
       executor?.assertCurrent();
     } catch (cause) {
       throw new UpdateCommandPendingRecoveryFailure(params.result, formatErrorMessage(cause), {

@@ -78,6 +78,7 @@ export async function finishUpdate(
     meta: params.controlPlaneUpdateSentinelMeta,
     jsonMode: Boolean(params.opts.json),
     env: params.opts.run?.env ?? params.ownedManagedUpdateEnv,
+    run: params.opts.run,
   };
   assertCurrent();
   await assertUpdateCommandPackageFinalization(params);

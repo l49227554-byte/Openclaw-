@@ -63,9 +63,11 @@ export async function runUpdateCommandRepair(
     | { phase: "verifying"; result: UpdateRunResult }
   ),
 ) {
+  const admission = params.run?.freebsdRootAdmission;
   const retained = params.phase === "validating" ? params.validation.retainedRehearsal : undefined;
   let cleanupUncertain = false;
   try {
+    admission?.assertCurrent();
     const candidateRoot = params.phase === "validating" ? params.candidateRoot : params.root;
     const result: UpdateRunResult =
       params.phase === "validating"
@@ -86,10 +88,12 @@ export async function runUpdateCommandRepair(
       redactPaths: params.phase === "validating" ? [params.root, candidateRoot] : [params.root],
     };
     const runId = params.run?.runId;
+    admission?.assertCurrent();
     const admittedRun = runId ? getUpdateRun(runId, options) : undefined;
     const requester = resolveManagedUpdateRequester(admittedRun?.origin.requester);
     const requesterAuthority = params.run?.requesterAuthority;
     const isCurrent = () => {
+      admission?.assertCurrent();
       if ((requester && !requesterAuthority) || requesterAuthority?.isCurrent() === false) {
         throw new UpdateRequesterRevokedError();
       }
@@ -187,7 +191,11 @@ export async function runUpdateCommandRepair(
               turnStartedAtMs = Date.now();
               activeTurn = event.turn;
             }
-            if (runId) {
+            if (event.type === "turn-finished") {
+              completedTurns += 1;
+            }
+            // Preserve presentation, but pending or rejected admission cannot write history.
+            if (runId && admission?.canWrite !== false) {
               if (event.type === "turn-started" || event.type === "turn-finished") {
                 recordUpdateRunStep(
                   runId,
@@ -208,7 +216,6 @@ export async function runUpdateCommandRepair(
                 );
               }
               if (event.type === "turn-finished") {
-                completedTurns += 1;
                 recordUpdateRunRepairAttempt(
                   runId,
                   {

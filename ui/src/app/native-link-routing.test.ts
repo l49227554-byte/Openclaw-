@@ -7,6 +7,10 @@ import {
   BROWSER_PANEL_TOGGLE_EVENT,
   type BrowserPanelToggleDetail,
 } from "../components/panel-toggle-contract.ts";
+import {
+  externalLinkOpensInPanel,
+  refreshExternalLinkPresentation,
+} from "../lib/external-link-presentation.ts";
 import "../components/modal-dialog.ts";
 import { TEST_LINK_READER } from "../test-helpers/link-reader.ts";
 import { postNativeUpdate, startNativeLinkRouting } from "./native-link-routing.ts";
@@ -187,6 +191,7 @@ describe("native link routing", () => {
     });
     const anchor = appendLink("https://example.com/report");
 
+    expect(externalLinkOpensInPanel()).toBe(false);
     expect(click(anchor).defaultPrevented).toBe(true);
     expect(bridge.messages).toEqual([
       { type: "open-link", url: "https://example.com/report", target: "external" },
@@ -194,6 +199,8 @@ describe("native link routing", () => {
     expect(bridge.browserRequests).toEqual([]);
 
     canPresentBrowserPanel = true;
+    refreshExternalLinkPresentation();
+    expect(externalLinkOpensInPanel()).toBe(true);
     expect(click(anchor).defaultPrevented).toBe(true);
     expect(bridge.messages).toHaveLength(1);
     expect(bridge.browserRequests).toEqual([

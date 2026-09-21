@@ -24,6 +24,7 @@ import {
   invalidateChatMetadataForSessionEvent,
   invalidateChatMetadataStore,
 } from "../lib/chat/chat-metadata-cache.ts";
+import { refreshExternalLinkPresentation } from "../lib/external-link-presentation.ts";
 import { createIdleImport } from "../lib/idle-import.ts";
 import { invalidateModelAuthStatusRequests } from "../lib/model-auth-request-state.ts";
 import { resolveSessionDisplayName } from "../lib/session-display.ts";
@@ -445,6 +446,7 @@ class OpenClawShell
     }
     this.outboxStoreImport.schedule();
     this.shellChrome.connect();
+    refreshExternalLinkPresentation();
     // Write-through of synced display prefs to config ui.prefs. Server-applied
     // deltas are suppressed so a reconcile never echoes back to the gateway.
     setSettingsChangeListener((previous, next) => {
@@ -465,6 +467,7 @@ class OpenClawShell
 
   override disconnectedCallback() {
     this.shellChrome.disconnect();
+    refreshExternalLinkPresentation();
     syncControlUiSystemChrome();
     this.outboxStoreImport.dispose();
     this.sidebarUpdateCardImport.dispose();
@@ -679,6 +682,7 @@ class OpenClawShell
     // can change whether the committed shell uses the chat background.
     if (changed.has("routeState") || changed.has("runtime")) {
       syncControlUiSystemChrome();
+      refreshExternalLinkPresentation();
     }
     // Render-gated pending lazy actions replay on the update that first
     // renders their element, independent of further context updates.

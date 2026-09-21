@@ -1,5 +1,6 @@
 import { html, nothing } from "lit";
 import type { SessionPermissionMode } from "../../../../../packages/gateway-protocol/src/index.js";
+import { renderExternalLinkLabel } from "../../../components/external-link.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerModelControlsEnglish } from "../../../i18n/locales/en-model-controls.ts";
@@ -151,7 +152,7 @@ export function renderChatPermissionPicker(params: ChatPermissionPickerProps) {
           href=${PERMISSION_MODES_DOCS_URL}
           target=${EXTERNAL_LINK_TARGET}
           rel=${buildExternalLinkRel()}
-          >${t("common.learnMore")}</a
+          >${renderExternalLinkLabel(t("common.learnMore"))}</a
         >
       </div>
       ${PERMISSION_OPTIONS.map((mode, index) => {

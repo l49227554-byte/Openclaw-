@@ -3,6 +3,7 @@ import {
   BROWSER_PANEL_TOGGLE_EVENT,
   type BrowserPanelToggleDetail,
 } from "../components/panel-toggle-contract.ts";
+import { bindExternalLinkPresentation } from "../lib/external-link-presentation.ts";
 import {
   anchorFromNavigationEvent,
   externalHttpLinkFromEvent,
@@ -129,6 +130,15 @@ export function startNativeLinkRouting(options: NativeLinkRoutingOptions = {}): 
   ) {
     return { dispose() {} };
   }
+  const browserLinkTarget = () =>
+    hasNativeBrowserBridge()
+      ? options.canPresentBrowserPanel?.() === false
+        ? "external"
+        : "panel"
+      : options.shouldOpenInControlUiBrowser?.()
+        ? "panel"
+        : null;
+  const stopPresentation = bindExternalLinkPresentation(() => browserLinkTarget() === "panel");
   let menu: NativeLinkMenu | null = null;
   let menuModule: Promise<typeof import("../components/native-link-menu.runtime.ts")> | undefined;
   let menuRequest = 0;
@@ -195,14 +205,15 @@ export function startNativeLinkRouting(options: NativeLinkRoutingOptions = {}): 
       }
       return;
     }
-    if (
+    const target =
       webLink &&
       (hasNativeBrowserBridge()
         ? shouldHandleNavigationClick(event)
-        : shouldHandleControlUiBrowserActivation(event)) &&
-      (hasNativeBrowserBridge() || options.shouldOpenInControlUiBrowser?.())
-    ) {
-      if (hasNativeBrowserBridge() && options.canPresentBrowserPanel?.() === false) {
+        : shouldHandleControlUiBrowserActivation(event))
+        ? browserLinkTarget()
+        : null;
+    if (webLink && target) {
+      if (target === "external") {
         if (postMessage) {
           postNativeLink(postMessage, webLink.url, "external");
         }
@@ -253,6 +264,7 @@ export function startNativeLinkRouting(options: NativeLinkRoutingOptions = {}): 
 
   const dispose = () => {
     disposed = true;
+    stopPresentation();
     options.signal?.removeEventListener("abort", dispose);
     window.removeEventListener("click", handleClick);
     window.removeEventListener("auxclick", handleClick);

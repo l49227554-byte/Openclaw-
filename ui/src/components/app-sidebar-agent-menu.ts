@@ -14,6 +14,7 @@ import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../lib/external-link
 import { openExternalUrlSafe } from "../lib/open-external-url.ts";
 import { normalizeAgentId } from "../lib/sessions/session-key.ts";
 import { renderAgentSelectAvatar, renderAgentSelectCopy } from "./agent-select.ts";
+import { renderExternalLinkLabel } from "./external-link.ts";
 import { icons, type IconName } from "./icons.ts";
 import {
   consumeDropdownKeyboardDismissal,
@@ -277,7 +278,9 @@ function renderIdentityMenuHelpSubmenu() {
             tabindex="-1"
           >
             <span slot="icon" class="nav-item__icon" aria-hidden="true">${icons[link.icon]}</span>
-            <span class="sidebar-customize-menu__text">${link.label()}</span>
+            <span class="sidebar-customize-menu__text"
+              >${renderExternalLinkLabel(link.label(), link.href, "menu")}</span
+            >
           </a>
         </wa-dropdown-item>
       `,

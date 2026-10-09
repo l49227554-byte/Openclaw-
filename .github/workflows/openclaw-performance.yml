@@ -741,7 +741,7 @@ jobs:
         id: upload_kova_artifacts
         if: ${{ always() && steps.lane.outputs.run == 'true' }}
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: openclaw-performance-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -753,7 +753,7 @@ jobs:
 
       - name: Retry Kova artifact upload
         if: ${{ always() && steps.lane.outputs.run == 'true' && steps.upload_kova_artifacts.outcome == 'failure' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: openclaw-performance-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -1096,7 +1096,7 @@ jobs:
         id: upload_source_performance_artifacts
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: openclaw-performance-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/openclaw-performance/source
@@ -1105,7 +1105,7 @@ jobs:
 
       - name: Retry source performance artifact upload
         if: ${{ always() && steps.upload_source_performance_artifacts.outcome == 'failure' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: openclaw-performance-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/openclaw-performance/source
@@ -1245,7 +1245,7 @@ jobs:
         id: download
         if: steps.artifact.outputs.id != ''
         continue-on-error: ${{ env.REPORT_PUBLISH_REQUIRED != 'true' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ steps.artifact.outputs.ids }}
           path: ${{ steps.paths.outputs.input_root }}
@@ -1700,7 +1700,7 @@ jobs:
 
       - name: Upload Vitest pair artifact
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: vitest-pair-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/vitest-pair/results
